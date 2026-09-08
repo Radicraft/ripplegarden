@@ -194,7 +194,8 @@ final class GameController: ObservableObject, TouchInput {
             field.forgetStrike(at: strike.centre)
             breakThrough(at: point, limit: strike.ring * 1.1, crossing: true)
         } else if field.isEdge(at: point, within: 46) {
-            breakThrough(at: point, limit: 95, crossing: true)
+            let opened = field.breakPolygon(at: point, ring: CGFloat.random(in: 60...95))
+            afterBreak(at: point, opened: opened, limit: 90)
         } else {
             field.strike(at: point)
         }
@@ -205,17 +206,28 @@ final class GameController: ObservableObject, TouchInput {
     /// piece it will take out and turned at random; when the piece goes,
     /// the fracture goes with it.
     private func rebuildCrackSprites(_ field: IceField) {
-        crackSprites = field.strikes.map { strike in
-            let side = strike.ring * 1.9
-            return Sprite("fracture_\(strike.pattern + 1)", at: strike.centre, size: CGSize(width: side, height: side),
-                          rotation: strike.turn, alpha: 0.92, z: 0.012)
+        func sprite(_ strike: (centre: CGPoint, ring: CGFloat, pattern: Int, turn: Float), alpha: Float) -> Sprite {
+            // The painted fractures run well past the piece that gives way,
+            // so a hole is left ringed by the cracks that made it.
+            let side = strike.ring * 2.9
+            var s = Sprite("fracture_\(strike.pattern + 1)", at: strike.centre, size: CGSize(width: side, height: side),
+                           rotation: strike.turn, alpha: alpha, z: 0.012)
+            s.gpu.mode |= SpriteInstance.maskIce
+            return s
         }
+        crackSprites = field.scars.map { sprite($0, alpha: 0.85) } + field.strikes.map { sprite($0, alpha: 0.95) }
     }
 
     private func breakThrough(at point: CGPoint, limit: CGFloat, crossing: Bool) {
         guard let field = iceField else { return }
         let opened = field.breakThrough(at: point, limit: limit, crossing: crossing)
         guard opened > 0 else { field.strike(at: point); return }
+        afterBreak(at: point, opened: opened, limit: limit)
+    }
+
+    /// The splash, the chunks and the bookkeeping after any piece gives way.
+    private func afterBreak(at point: CGPoint, opened: CGFloat, limit: CGFloat) {
+        guard let field = iceField, opened > 0 else { return }
         haptics.holdRelease(charge: 0.9)
         renderer?.addSplat(at: point, in: viewSize, radius: 22, amplitude: -0.45)
         // Chunks in proportion to what gave way, drifting off to melt or beach.

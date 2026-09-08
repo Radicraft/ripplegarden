@@ -12,6 +12,7 @@ enum DemoScript {
     private static var syntheticID = 9000
     private static var holding = false
     private static var beats = 0
+    private static var lastIceTap: CGPoint?
     private static var attempts: [Int: Int] = [:]
 
     static var isEnabled: Bool {
@@ -46,8 +47,15 @@ enum DemoScript {
         // Ice first: tap a spot twice to break through, then work outward
         // from the holes with taps in the open water beside the edge.
         if let field = controller.iceField, field.fraction > 0.06 {
+            // Finish what was started: a struck spot still on ice gets its second tap.
+            if let last = lastIceTap, field.ice(at: last) > 0.5, field.strike(containing: last) != nil {
+                lastIceTap = nil
+                tap(controller, at: last, size: size)
+                return
+            }
             let centre = CGPoint(x: size.width / 2, y: size.height * 0.48)
             if field.ice(at: centre) > 0.5 {
+                lastIceTap = centre
                 tap(controller, at: centre, size: size)     // strike, then break through
             } else if let edge = field.nearestIce(to: centre, range: 2000) {
                 // Alternate: a tap on the fractured ice just inside the edge,
@@ -57,6 +65,7 @@ enum DemoScript {
                 // Strike well inside the sheet, then break it, then move on.
                 let deep = CGPoint(x: edge.x - dx / len * 150, y: edge.y - dy / len * 150)
                 let target = field.ice(at: deep) > 0.5 ? deep : CGPoint(x: edge.x - dx / len * 20, y: edge.y - dy / len * 20)
+                lastIceTap = target
                 tap(controller, at: target, size: size)
             }
             return

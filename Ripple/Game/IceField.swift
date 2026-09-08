@@ -18,6 +18,9 @@ final class IceField {
     /// Where the sheet has been struck, how far its ring of fractures
     /// reaches, and which painted fracture shows it, at what turn.
     private(set) var strikes: [(centre: CGPoint, ring: CGFloat, pattern: Int, turn: Float)] = []
+    /// Strikes that have broken through: the hole is open, and the fractures
+    /// that ran out beyond it stay in the sheet around it, as they do.
+    private(set) var scars: [(centre: CGPoint, ring: CGFloat, pattern: Int, turn: Float)] = []
     private(set) var dirty = true
     private var seed: UInt32 = 11
 
@@ -137,13 +140,35 @@ final class IceField {
         crackLines.append(([a, CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2), b], lineWidth))
     }
 
+    /// Ice never gives way in a circle. This rings a point with straight
+    /// chords at ragged radii and opens everything inside them, crossing any
+    /// radial fractures: an irregular polygon of a hole. Returns the area.
+    @discardableResult
+    func breakPolygon(at p: CGPoint, ring: CGFloat) -> CGFloat {
+        let n = 6 + Int(noise() * 4)
+        let base = noise() * 2 * .pi
+        var tips: [CGPoint] = []
+        for k in 0..<n {
+            let angle = base + Float(k) / Float(n) * 2 * .pi + (noise() - 0.5) * 0.6
+            let r = ring * CGFloat(0.55 + noise() * 0.8)
+            tips.append(CGPoint(x: p.x + CGFloat(cos(angle)) * r, y: p.y + CGFloat(sin(angle)) * r))
+        }
+        for k in 0..<n { straightFracture(from: tips[k], to: tips[(k + 1) % n], kind: 2, lineWidth: 2) }
+        // Start just inside, in case the point itself sits on a fracture.
+        let opened = breakThrough(at: p, limit: ring * 1.6, crossing: true)
+        return opened
+    }
+
     /// The strike whose ring this point lies inside, if any.
     func strike(containing p: CGPoint) -> (centre: CGPoint, ring: CGFloat, pattern: Int, turn: Float)? {
         strikes.first { hypot($0.centre.x - p.x, $0.centre.y - p.y) < $0.ring }
     }
 
+    /// The strike has broken through: its fractures stay as a scar around the hole.
     func forgetStrike(at centre: CGPoint) {
-        strikes.removeAll { $0.centre == centre }
+        if let i = strikes.firstIndex(where: { $0.centre == centre }) {
+            scars.append(strikes.remove(at: i))
+        }
     }
 
     /// The sheet gives way around a point: every cell reachable from it
@@ -201,8 +226,8 @@ final class IceField {
     func bite(nearestTo p: CGPoint, range: CGFloat) -> CGPoint? {
         guard let edge = nearestIce(to: p, range: range) else { return nil }
         let away = atan2(Float(edge.y - p.y), Float(edge.x - p.x))
-        let inward = CGPoint(x: edge.x + CGFloat(cos(away)) * 8, y: edge.y + CGFloat(sin(away)) * 8)
-        breakThrough(at: inward, limit: CGFloat(40 + noise() * 40), crossing: true)
+        let inward = CGPoint(x: edge.x + CGFloat(cos(away)) * 12, y: edge.y + CGFloat(sin(away)) * 12)
+        breakPolygon(at: inward, ring: CGFloat(34 + noise() * 30))
         dirty = true
         return edge
     }

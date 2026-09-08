@@ -27,6 +27,8 @@ struct SpriteInstance {
     static let weed: UInt32 = 32
     /// Stands up from its root on the surface plane (reeds).
     static let stands: UInt32 = 64
+    /// Only visible where the ice mask says ice (fractures).
+    static let maskIce: UInt32 = 128
 }
 
 struct SpriteParams {
@@ -236,7 +238,7 @@ final class SpriteBatch {
     func beginFrame() { cursor = 0 }
 
     /// Uploads the sprites and draws them in order, in runs by texture.
-    func draw(_ sprites: [Sprite], encoder: MTLRenderCommandEncoder, params: SpriteParams, field: MTLTexture, spines: MTLBuffer, camera: inout CameraParams) {
+    func draw(_ sprites: [Sprite], encoder: MTLRenderCommandEncoder, params: SpriteParams, field: MTLTexture, spines: MTLBuffer, camera: inout CameraParams, ice: MTLTexture? = nil) {
         guard !sprites.isEmpty else { return }
         let start = cursor
         let count = min(sprites.count, SpriteBatch.maxInstances - start)
@@ -257,6 +259,7 @@ final class SpriteBatch {
         encoder.setVertexBytes(&camera, length: MemoryLayout<CameraParams>.stride, index: 4)
         encoder.setVertexTexture(field, index: 0)
         encoder.setFragmentBytes(&p, length: MemoryLayout<SpriteParams>.stride, index: 0)
+        if let ice { encoder.setFragmentTexture(ice, index: 2) }
 
         var runStart = 0
         while runStart < count {

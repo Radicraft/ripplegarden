@@ -749,7 +749,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
                 floorBatch.beginFrame()
-                floorBatch.draw(submergedSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam)
+                floorBatch.draw(submergedSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam, ice: iceTexture ?? blankIce)
                 encoder.endEncoding()
             }
         }
@@ -780,7 +780,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
             spriteParams.screen.w = 0
             surfaceBatch.beginFrame()
-            surfaceBatch.draw(surfaceSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam)
+            surfaceBatch.draw(surfaceSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam, ice: iceTexture ?? blankIce)
             encoder.endEncoding()
         }
 

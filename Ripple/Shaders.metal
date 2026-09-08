@@ -519,6 +519,7 @@ struct SpriteOut {
     uint   flags;
     float2 rot;            // cos, sin of the sprite rotation, for the normal
     float  roll;           // signed, brightens the flank turned to the light
+    float2 worldUV;        // where this vertex sits on the pond, for masks
 };
 
 vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stage_in]],
@@ -624,6 +625,7 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
     SpriteOut out;
     out.position = float4(clip.x * 2.0 - 1.0, 1.0 - clip.y * 2.0, 0.0, 1.0);
     out.roll = roll * (uv.x - 0.5) * 2.0;
+    out.worldUV = onSurface / cam.world.xy;
     out.uv = uv;
     out.tint = s.tint;
     out.alpha = s.alpha;
@@ -639,6 +641,7 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
 fragment float4 sprite_fragment(SpriteOut in                             [[stage_in]],
                                 texture2d<float, access::sample> tex     [[texture(0)]],
                                 texture2d<float, access::sample> relief  [[texture(1)]],
+                                texture2d<float, access::sample> iceMask [[texture(2)]],
                                 constant SpriteParams &p                 [[buffer(0)]])
 {
     constexpr sampler smp(filter::linear, address::clamp_to_edge, mip_filter::linear);
@@ -646,6 +649,12 @@ fragment float4 sprite_fragment(SpriteOut in                             [[stage
     // Textures load premultiplied.
     float a = c.a * in.alpha;
     float3 rgb = c.rgb * in.tint.rgb * in.alpha;
+    if ((in.flags & 128u) != 0u) {
+        // A fracture exists only in ice: fade it out where the water is open.
+        float onIce = smoothstep(0.35, 0.7, iceMask.sample(smp, in.worldUV).r);
+        a *= onIce;
+        rgb *= onIce;
+    }
 
     if (in.mode == 3u) {
         return float4(0.0, 0.0, 0.0, a * 0.42);
