@@ -15,7 +15,15 @@ enum DemoScript {
     private static var attempts: [Int: Int] = [:]
 
     static var isEnabled: Bool {
-        ProcessInfo.processInfo.arguments.contains("-demo")
+        let args = ProcessInfo.processInfo.arguments
+        return args.contains("-demo") || args.contains("-tour")
+    }
+
+    /// A fresh level: start the beat count over.
+    static func reset() {
+        beats = 0
+        attempts = [:]
+        holding = false
     }
 
     static func startIfRequested(controller: GameController) {

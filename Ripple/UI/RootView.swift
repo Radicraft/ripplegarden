@@ -20,7 +20,7 @@ struct RootView: View {
         if let i = args.firstIndex(of: "-level"), i + 1 < args.count, let l = Library.level(id: args[i + 1]) {
             start = l
             first = .level(l.id)
-        } else if args.contains("-demo") {
+        } else if args.contains("-demo"), !args.contains("-tour") {
             first = .level(start.id)
         }
         _game = StateObject(wrappedValue: GameController(level: start, style: style))
@@ -44,6 +44,16 @@ struct RootView: View {
             }
         }
         .modelContainer(ProgressStore.shared.container)
-        .onAppear { DemoScript.startIfRequested(controller: game) }
+        .onAppear {
+            DemoScript.startIfRequested(controller: game)
+            Tour.shared.open = { level in
+                game.prepare(level: level)
+                withAnimation(.easeInOut(duration: 0.6)) { screen = .level(level.id) }
+            }
+            Tour.shared.exit = { withAnimation(.easeInOut(duration: 0.6)) { screen = .garden } }
+            Tour.shared.next = { game.next() }
+            Tour.shared.phase = { game.phase }
+            Tour.shared.start()
+        }
     }
 }
