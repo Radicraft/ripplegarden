@@ -1,6 +1,7 @@
 import Metal
 import MetalKit
 import simd
+import os
 
 // Layouts below must stay in step with the structs in Shaders.metal.
 
@@ -18,6 +19,10 @@ struct SimParams {
     var edgeBand: UInt32
     var nonlinearity: Float
     var splatCount: UInt32
+    var shallowSpeed: Float
+    var pad0: Float = 0
+    var pad1: Float = 0
+    var pad2: Float = 0
 }
 
 struct RenderParams {
@@ -31,10 +36,47 @@ struct RenderParams {
     var sparkleGain: Float
     var detailGain: Float
     var dispersion: Float
+    var waterTint: SIMD4<Float>
 }
 
 struct FloorParams {
-    var viewport: SIMD2<Float>
+    var viewport: SIMD4<Float>
+    var deep: SIMD4<Float>
+    var mid: SIMD4<Float>
+    var shallow: SIMD4<Float>
+    var mosaic: SIMD4<Float>
+    var counts: SIMD4<Float>
+    var reveal: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>)
+}
+
+/// What the pond floor looks like this level: the season's palette, its water
+/// cast, and where the mosaic sits.
+struct FloorLook {
+    var deep: SIMD3<Float>
+    var mid: SIMD3<Float>
+    var shallow: SIMD3<Float>
+    var waterTint: SIMD3<Float>
+    var waterTintStrength: Float
+    /// Roundel centre in unit screen coordinates, radius as a fraction of the
+    /// screen height, and how visible the tile is while still under silt.
+    var mosaicCentre: SIMD2<Float>
+    var mosaicRadius: Float
+    var mosaicGhost: Float
+    var mosaicImage: String
+    var sectors: Int
+
+    static let plain = FloorLook(deep: [0.012, 0.046, 0.066], mid: [0.036, 0.120, 0.142],
+                                 shallow: [0.082, 0.208, 0.226], waterTint: [1, 1, 1],
+                                 waterTintStrength: 0, mosaicCentre: [0.5, 0.5],
+                                 mosaicRadius: 0, mosaicGhost: 0, mosaicImage: "",
+                                 sectors: 8)
+}
+
+/// What the water is doing under one probe: height, slope, vertical velocity.
+struct FieldSample {
+    var height: Float
+    var slope: SIMD2<Float>
+    var velocity: Float
 }
 
 /// Every number worth arguing about, in one place.
@@ -59,6 +101,9 @@ enum Tuning {
     /// Extra damping in the border band, so the basin does not ring forever.
     static let edgeDamp: Float = 0.90
     static let edgeBand: UInt32 = 12
+
+    /// Wave-speed multiplier in the shallowest water the depth map allows.
+    static let shallowSpeed: Float = 0.30
 
     /// Simulation steps per SECOND, not per frame. Stepping per frame ties
     /// wave speed to the refresh rate, so water crawled at 60fps and sped up at
@@ -101,6 +146,14 @@ enum Tuning {
     /// sweep at the same time.
     static let chargeCancelDistance: CGFloat = 6
 
+    /// Two fingers down at once make a swell: the segment between them is a
+    /// wide trough that moves with the hands, throwing a broad front ahead of
+    /// itself. Radius in cells; amplitude per point of travel, capped.
+    static let swellRadius: Float = 20
+    static let swellAmplitudePerPoint: Float = -0.012
+    static let swellAmplitudeCap: Float = -0.16
+    static let swellSpacing: Float = 12          // cells between splats along the segment
+
     // --- ambience -----------------------------------------------------------
 
     /// A faint, very wide disturbance now and then, so untouched water is never
@@ -121,6 +174,7 @@ enum Tuning {
     static let dispersion: Float = 0.22
 
     static let maxSplatsPerFrame = 96
+    static let maxProbes = 64
 }
 
 /// A finger currently down: where it is, and how long it has been still.
@@ -129,6 +183,7 @@ private struct Hold {
     var viewSize: CGSize
     var weight: Float
     var charge: Float = 0      // 0...1
+    var order: Int             // arrival order, so the swell pair is stable
 }
 
 final class WaterRenderer: NSObject, MTKViewDelegate {
@@ -136,22 +191,34 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let simPipeline: MTLComputePipelineState
+    private let probePipeline: MTLComputePipelineState
     private let drawPipeline: MTLRenderPipelineState
     private let floorPipeline: MTLRenderPipelineState
 
     private var fieldA: MTLTexture?
     private var fieldB: MTLTexture?
+    private var depthTexture: MTLTexture?
     private var floorTexture: MTLTexture?
+    private var mosaicTexture: MTLTexture?
+    private var blankMosaic: MTLTexture?
     private var needsFloorBake = true
 
-    private var gridSize = SIMD2<UInt32>(0, 0)
+    private(set) var gridSize = SIMD2<UInt32>(0, 0)
     private var viewportSize = SIMD2<Float>(0, 0)
 
     private var splatBuffer: MTLBuffer
     private var pendingSplats: [Splat] = []
     private var scheduledSplats: [(fireAt: TimeInterval, splat: Splat)] = []
 
+    private var probeBuffer: MTLBuffer
+    private var resultBuffer: MTLBuffer
+    private var probeCount = 0
+    private var resultLock = OSAllocatedUnfairLock(initialState: [SIMD4<Float>]())
+
     private var holds: [Int: Hold] = [:]
+    private var holdOrder = 0
+    private var swellLast: (a: CGPoint, b: CGPoint)?
+    private var swellActive = false
 
     private let startTime = CACurrentMediaTime()
     private var lastFrameTime = CACurrentMediaTime()
@@ -166,8 +233,31 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private var statWorstFrame: Double = 0
     private var nextBreezeTime = CACurrentMediaTime() + 1.5
 
+    // --- hooks for the game -------------------------------------------------
+
     /// Called when a charged press is released, so the view can fire haptics.
     var onChargedRelease: ((Float) -> Void)?
+    /// Called once when a two-finger swell stroke begins moving.
+    var onSwellStart: (() -> Void)?
+    /// Called at the top of every frame with the elapsed time, after the
+    /// previous frame's probe results have landed.
+    var onFrame: ((Float) -> Void)?
+    /// Builds the depth map for a grid of the given size, values 0 (wall) to 1
+    /// (deep). Called whenever the grid is (re)allocated.
+    var depthPainter: ((Int, Int) -> [Float])?
+
+    /// The pond floor. Setting it re-bakes on the next frame.
+    var floorLook = FloorLook.plain {
+        didSet {
+            loadMosaic(named: floorLook.mosaicImage)
+            needsFloorBake = true
+        }
+    }
+
+    /// Per-sector reveal of the mosaic, 0...1 each. Setting it re-bakes.
+    var reveal: [Float] = Array(repeating: 0, count: 16) {
+        didSet { needsFloorBake = true }
+    }
 
     init?(view: MTKView) {
         guard let device = view.device ?? MTLCreateSystemDefaultDevice(),
@@ -175,12 +265,14 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
               let library = device.makeDefaultLibrary() else { return nil }
 
         guard let stepFn = library.makeFunction(name: "wave_step"),
+              let probeFn = library.makeFunction(name: "sample_field"),
               let vertFn = library.makeFunction(name: "fullscreen_vertex"),
               let fragFn = library.makeFunction(name: "water_fragment"),
               let floorFn = library.makeFunction(name: "floor_fragment") else { return nil }
 
         do {
             simPipeline = try device.makeComputePipelineState(function: stepFn)
+            probePipeline = try device.makeComputePipelineState(function: probeFn)
 
             let desc = MTLRenderPipelineDescriptor()
             desc.vertexFunction = vertFn
@@ -199,15 +291,28 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         }
 
         guard let buf = device.makeBuffer(length: MemoryLayout<Splat>.stride * Tuning.maxSplatsPerFrame,
-                                          options: .storageModeShared) else { return nil }
+                                          options: .storageModeShared),
+              let pbuf = device.makeBuffer(length: MemoryLayout<SIMD2<Float>>.stride * Tuning.maxProbes,
+                                           options: .storageModeShared),
+              let rbuf = device.makeBuffer(length: MemoryLayout<SIMD4<Float>>.stride * Tuning.maxProbes,
+                                           options: .storageModeShared) else { return nil }
         splatBuffer = buf
+        probeBuffer = pbuf
+        resultBuffer = rbuf
 
         self.device = device
         self.queue = queue
         super.init()
+
+        // A 1x1 transparent mosaic so the floor shader always has a texture.
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false)
+        d.usage = .shaderRead
+        blankMosaic = device.makeTexture(descriptor: d)
+        var zero: UInt32 = 0
+        blankMosaic?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zero, bytesPerRow: 4)
     }
 
-    // MARK: - Input
+    // MARK: - Coordinates
 
     /// Maps a touch's contact-patch radius to a 0...1 weight.
     static func weight(forMajorRadius r: CGFloat) -> Float {
@@ -220,11 +325,19 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         range.lowerBound + (range.upperBound - range.lowerBound) * t
     }
 
-    private func cell(for point: CGPoint, in size: CGSize) -> SIMD2<Float>? {
+    func cell(for point: CGPoint, in size: CGSize) -> SIMD2<Float>? {
         guard size.width > 0, size.height > 0, gridSize.x > 0 else { return nil }
         return SIMD2<Float>(Float(point.x / size.width) * Float(gridSize.x),
                             Float(point.y / size.height) * Float(gridSize.y))
     }
+
+    /// Points per cell along x, for turning slopes into forces.
+    func pointsPerCell(in size: CGSize) -> Float {
+        guard gridSize.x > 0 else { return 1 }
+        return Float(size.width) / Float(gridSize.x)
+    }
+
+    // MARK: - Input
 
     func addSplat(at point: CGPoint, in size: CGSize, radius: Float, amplitude: Float) {
         guard pendingSplats.count < Tuning.maxSplatsPerFrame,
@@ -246,12 +359,25 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                                           radius: rad * 0.62,
                                           amplitude: amp * Tuning.reboundScale)))
         }
-        holds[id] = Hold(position: point, viewSize: size, weight: w)
+        holdOrder += 1
+        holds[id] = Hold(position: point, viewSize: size, weight: w, order: holdOrder)
+        if holds.count >= 2 { swellLast = nil; swellActive = false }
     }
 
     /// The finger moved. Lays a trail and cancels any charge in progress.
     func touchMoved(id: Int, to point: CGPoint, in size: CGSize) {
         guard var hold = holds[id] else { return }
+
+        // With two fingers down the pair is a swell, handled per frame; the
+        // individual fingers stop drawing their own wakes.
+        if holds.count >= 2 {
+            hold.position = point
+            hold.viewSize = size
+            hold.charge = 0
+            holds[id] = hold
+            return
+        }
+
         let dx = point.x - hold.position.x, dy = point.y - hold.position.y
         let distance = (dx * dx + dy * dy).squareRoot()
 
@@ -278,6 +404,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// what turns a long press into a big slow swell.
     func touchUp(id: Int) {
         guard let hold = holds.removeValue(forKey: id) else { return }
+        if holds.count < 2 { swellLast = nil; swellActive = false }
         guard hold.charge > 0.05 else { return }
 
         let rad = Tuning.tapRadius * (1.0 + Tuning.holdRadiusGrowth * hold.charge)
@@ -286,11 +413,33 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         onChargedRelease?(hold.charge)
     }
 
-    func cancelAll() { holds.removeAll() }
+    /// Current charge of a held finger, 0...1, for sound and haptics.
+    func charge(of id: Int) -> Float { holds[id]?.charge ?? 0 }
+
+    func cancelAll() { holds.removeAll(); swellLast = nil; swellActive = false }
 
     func reset() {
         if let a = fieldA { zero(a) }
         if let b = fieldB { zero(b) }
+    }
+
+    // MARK: - Probes
+
+    /// Where the game wants readings next frame, in cells.
+    func setProbes(_ cells: [SIMD2<Float>]) {
+        let n = min(cells.count, Tuning.maxProbes)
+        probeCount = n
+        guard n > 0 else { return }
+        probeBuffer.contents().withMemoryRebound(to: SIMD2<Float>.self, capacity: n) { ptr in
+            for i in 0..<n { ptr[i] = cells[i] }
+        }
+    }
+
+    /// The most recent readings, in the order the probes were set.
+    func latestSamples() -> [FieldSample] {
+        resultLock.withLock { raw in
+            raw.map { FieldSample(height: $0.x, slope: SIMD2($0.y, $0.z), velocity: $0.w) }
+        }
     }
 
     // MARK: - MTKViewDelegate
@@ -301,7 +450,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         guard let src = fieldA, let dst = fieldB,
-              let floorTexture,
+              let depthTexture, let floorTexture,
               let descriptor = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable,
               let commands = queue.makeCommandBuffer() else { return }
@@ -311,11 +460,13 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         lastFrameTime = now
 
         if logFrames { recordFrame(now: now, dt: Double(dt)) }
+        onFrame?(dt)
         accumulateHolds(dt: dt)
+        accumulateSwell()
         releaseScheduledSplats(now: now)
         maybeBreeze(now: now)
 
-        // --- bake the floor, once per resize ---------------------------------
+        // --- bake the floor ---------------------------------------------------
 
         if needsFloorBake {
             let pass = MTLRenderPassDescriptor()
@@ -323,8 +474,9 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             pass.colorAttachments[0].loadAction = .dontCare
             pass.colorAttachments[0].storeAction = .store
             if let encoder = commands.makeRenderCommandEncoder(descriptor: pass) {
-                var fp = FloorParams(viewport: viewportSize)
+                var fp = floorParams()
                 encoder.setRenderPipelineState(floorPipeline)
+                encoder.setFragmentTexture(mosaicTexture ?? blankMosaic, index: 0)
                 encoder.setFragmentBytes(&fp, length: MemoryLayout<FloorParams>.stride, index: 0)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 encoder.endEncoding()
@@ -368,12 +520,14 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                                    edgeDamp: Tuning.edgeDamp,
                                    edgeBand: Tuning.edgeBand,
                                    nonlinearity: Tuning.nonlinearity,
-                                   splatCount: step == 0 ? UInt32(count) : 0)
+                                   splatCount: step == 0 ? UInt32(count) : 0,
+                                   shallowSpeed: Tuning.shallowSpeed)
 
             guard let encoder = commands.makeComputeCommandEncoder() else { break }
             encoder.setComputePipelineState(simPipeline)
             encoder.setTexture(read, index: 0)
             encoder.setTexture(write, index: 1)
+            encoder.setTexture(depthTexture, index: 2)
             encoder.setBytes(&params, length: MemoryLayout<SimParams>.stride, index: 0)
             encoder.setBuffer(splatBuffer, offset: 0, index: 1)
 
@@ -390,6 +544,30 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         fieldA = read
         fieldB = write
 
+        // --- probe ------------------------------------------------------------
+
+        let probes = probeCount
+        if probes > 0, let encoder = commands.makeComputeCommandEncoder() {
+            var n = UInt32(probes)
+            encoder.setComputePipelineState(probePipeline)
+            encoder.setTexture(read, index: 0)
+            encoder.setBuffer(probeBuffer, offset: 0, index: 0)
+            encoder.setBuffer(resultBuffer, offset: 0, index: 1)
+            encoder.setBytes(&n, length: MemoryLayout<UInt32>.size, index: 2)
+            encoder.dispatchThreads(MTLSize(width: probes, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: min(probes, 32), height: 1, depth: 1))
+            encoder.endEncoding()
+
+            let results = resultBuffer
+            let lock = resultLock
+            commands.addCompletedHandler { _ in
+                let copy = results.contents().withMemoryRebound(to: SIMD4<Float>.self, capacity: probes) { ptr in
+                    Array(UnsafeBufferPointer(start: ptr, count: probes))
+                }
+                lock.withLock { $0 = copy }
+            }
+        }
+
         // --- draw -------------------------------------------------------------
 
         var rp = RenderParams(size: gridSize,
@@ -401,7 +579,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                               crestGain: Tuning.crestGain,
                               sparkleGain: Tuning.sparkleGain,
                               detailGain: Tuning.detailGain,
-                              dispersion: Tuning.dispersion)
+                              dispersion: Tuning.dispersion,
+                              waterTint: SIMD4(floorLook.waterTint, floorLook.waterTintStrength))
 
         if let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) {
             encoder.setRenderPipelineState(drawPipeline)
@@ -414,6 +593,21 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
         commands.present(drawable)
         commands.commit()
+    }
+
+    private func floorParams() -> FloorParams {
+        let look = floorLook
+        var r = reveal
+        if r.count < 16 { r += Array(repeating: 0, count: 16 - r.count) }
+        return FloorParams(
+            viewport: SIMD4(viewportSize.x, viewportSize.y, 0, 0),
+            deep: SIMD4(look.deep, 1),
+            mid: SIMD4(look.mid, 1),
+            shallow: SIMD4(look.shallow, 1),
+            mosaic: SIMD4(look.mosaicCentre.x, look.mosaicCentre.y, look.mosaicRadius, look.mosaicGhost),
+            counts: SIMD4(Float(look.sectors), 0, 0, 0),
+            reveal: (SIMD4(r[0], r[1], r[2], r[3]), SIMD4(r[4], r[5], r[6], r[7]),
+                     SIMD4(r[8], r[9], r[10], r[11]), SIMD4(r[12], r[13], r[14], r[15])))
     }
 
     private func recordFrame(now: TimeInterval, dt: Double) {
@@ -439,7 +633,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// approaches 1 rather than running away, so the bowl settles at a depth
     /// instead of drilling a hole.
     private func accumulateHolds(dt: Float) {
-        guard !holds.isEmpty else { return }
+        guard !holds.isEmpty, holds.count < 2 else { return }
         for (id, var hold) in holds {
             hold.charge = min(1.0, hold.charge + dt / Tuning.holdChargeSeconds)
 
@@ -450,6 +644,39 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                      amplitude: -press * lerp(Tuning.weightAmplitudeRange, hold.weight))
 
             holds[id] = hold
+        }
+    }
+
+    /// Two fingers down: the segment between them is a wide trough that moves
+    /// with the hands. It only disturbs the water while it moves, so resting
+    /// two fingers does nothing and sweeping them throws a broad front.
+    private func accumulateSwell() {
+        guard holds.count >= 2 else { return }
+        let pair = holds.values.sorted { $0.order < $1.order }.suffix(2)
+        guard let a = pair.first, let b = pair.last else { return }
+
+        defer { swellLast = (a.position, b.position) }
+        guard let last = swellLast else { return }
+
+        let moved = max(hypot(a.position.x - last.a.x, a.position.y - last.a.y),
+                        hypot(b.position.x - last.b.x, b.position.y - last.b.y))
+        guard moved > 0.8 else { return }
+
+        if !swellActive {
+            swellActive = true
+            onSwellStart?()
+        }
+
+        let amp = max(Tuning.swellAmplitudePerPoint * Float(moved), Tuning.swellAmplitudeCap)
+        guard let ca = cell(for: a.position, in: a.viewSize),
+              let cb = cell(for: b.position, in: b.viewSize) else { return }
+        let length = simd_distance(ca, cb)
+        let n = max(1, min(Int(length / Tuning.swellSpacing), 24))
+        for i in 0...n {
+            let t = Float(i) / Float(n)
+            let c = ca + (cb - ca) * t
+            guard pendingSplats.count < Tuning.maxSplatsPerFrame else { break }
+            pendingSplats.append(Splat(pos: c, radius: Tuning.swellRadius, amplitude: amp))
         }
     }
 
@@ -504,6 +731,14 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         fieldA = device.makeTexture(descriptor: desc)
         fieldB = device.makeTexture(descriptor: desc)
 
+        let depthDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r32Float,
+                                                                 width: w, height: h,
+                                                                 mipmapped: false)
+        depthDesc.usage = .shaderRead
+        depthDesc.storageMode = .shared
+        depthTexture = device.makeTexture(descriptor: depthDesc)
+        rebuildDepth()
+
         // The floor is static, so it is baked once, at full resolution. Baking
         // it at half size blurred the grain into fog.
         let floorDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -517,6 +752,27 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         needsFloorBake = true
 
         reset()
+    }
+
+    /// Repaints the depth map from the painter. Call after the level changes.
+    func rebuildDepth() {
+        guard let depthTexture else { return }
+        let w = depthTexture.width, h = depthTexture.height
+        var values = depthPainter?(w, h) ?? Array(repeating: 1, count: w * h)
+        if values.count != w * h { values = Array(repeating: 1, count: w * h) }
+        values.withUnsafeBytes { raw in
+            depthTexture.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0,
+                                 withBytes: raw.baseAddress!, bytesPerRow: w * 4)
+        }
+    }
+
+    private func loadMosaic(named name: String) {
+        guard !name.isEmpty, let url = Bundle.main.url(forResource: name, withExtension: "png") else {
+            mosaicTexture = nil
+            return
+        }
+        let loader = MTKTextureLoader(device: device)
+        mosaicTexture = try? loader.newTexture(URL: url, options: [.SRGB: false])
     }
 
     private func zero(_ texture: MTLTexture) {

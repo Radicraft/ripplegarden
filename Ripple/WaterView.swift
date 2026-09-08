@@ -2,21 +2,25 @@ import SwiftUI
 import MetalKit
 import UIKit
 
-/// An MTKView that forwards raw touches to the renderer. UIKit rather than a
-/// SwiftUI gesture because we want every touch, multi-finger, with no
-/// recognizer delay in front of it.
+/// Where raw touches go. The game decides what a touch means (tap, hold,
+/// swell, edge current, koi poke) and forwards the water-shaped part of it to
+/// the renderer.
+protocol TouchInput: AnyObject {
+    func touchBegan(id: Int, at point: CGPoint, in size: CGSize, weight: Float)
+    func touchMoved(id: Int, to point: CGPoint, in size: CGSize)
+    func touchEnded(id: Int, at point: CGPoint, in size: CGSize)
+}
+
+/// An MTKView that forwards raw touches. UIKit rather than a SwiftUI gesture
+/// because we want every touch, multi-finger, with no recognizer delay in
+/// front of it.
 final class TouchMetalView: MTKView {
 
-    var renderer: WaterRenderer?
-
-    private let tapHaptic = UIImpactFeedbackGenerator(style: .soft)
-    private let releaseHaptic = UIImpactFeedbackGenerator(style: .medium)
+    weak var input: TouchInput?
 
     override init(frame frameRect: CGRect, device: MTLDevice?) {
         super.init(frame: frameRect, device: device)
         isMultipleTouchEnabled = true
-        tapHaptic.prepare()
-        releaseHaptic.prepare()
     }
 
     required init(coder: NSCoder) { fatalError("not used") }
@@ -30,37 +34,33 @@ final class TouchMetalView: MTKView {
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
-            let w = weight(of: touch)
-            renderer?.touchDown(id: touch.hash,
-                                at: touch.location(in: self),
-                                in: bounds.size,
-                                weight: w)
-            tapHaptic.impactOccurred(intensity: CGFloat(0.45 + 0.55 * w))
+            input?.touchBegan(id: touch.hash, at: touch.location(in: self),
+                              in: bounds.size, weight: weight(of: touch))
         }
-        tapHaptic.prepare()
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
-            renderer?.touchMoved(id: touch.hash, to: touch.location(in: self), in: bounds.size)
+            input?.touchMoved(id: touch.hash, to: touch.location(in: self), in: bounds.size)
         }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for touch in touches { renderer?.touchUp(id: touch.hash) }
+        for touch in touches {
+            input?.touchEnded(id: touch.hash, at: touch.location(in: self), in: bounds.size)
+        }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for touch in touches { renderer?.touchUp(id: touch.hash) }
-    }
-
-    func chargedRelease(_ charge: Float) {
-        releaseHaptic.impactOccurred(intensity: CGFloat(0.4 + 0.6 * charge))
-        releaseHaptic.prepare()
+        for touch in touches {
+            input?.touchEnded(id: touch.hash, at: touch.location(in: self), in: bounds.size)
+        }
     }
 }
 
 struct WaterView: UIViewRepresentable {
+
+    let controller: GameController
 
     final class Coordinator {
         var renderer: WaterRenderer?
@@ -77,16 +77,13 @@ struct WaterView: UIViewRepresentable {
         view.preferredFramesPerSecond = 120
         view.enableSetNeedsDisplay = false
         view.isPaused = false
+        view.input = controller
 
         if let renderer = WaterRenderer(view: view) {
             view.delegate = renderer
-            view.renderer = renderer
             context.coordinator.renderer = renderer
-            renderer.onChargedRelease = { [weak view] charge in
-                view?.chargedRelease(charge)
-            }
+            controller.attach(renderer: renderer)
             renderer.mtkView(view, drawableSizeWillChange: view.drawableSize)
-            if DemoScript.isEnabled { DemoScript.run(on: view, renderer: renderer) }
         }
         return view
     }

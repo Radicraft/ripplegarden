@@ -2,13 +2,14 @@ import SwiftUI
 
 @main
 struct RippleApp: App {
+
+    @StateObject private var game = GameController(level: Library.springOne)
+
     var body: some Scene {
         WindowGroup {
-            WaterView()
-                .ignoresSafeArea()
-                .statusBarHidden(true)
-                .persistentSystemOverlays(.hidden)
-                .preferredColorScheme(.dark)
+            LevelView(controller: game)
+                .modelContainer(ProgressStore.shared.container)
+                .onAppear { DemoScript.startIfRequested(controller: game) }
         }
     }
 }

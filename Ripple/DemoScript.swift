@@ -1,75 +1,55 @@
 import UIKit
 
-/// Launch with `-demo` to fire a fixed sequence. Lets the look be checked in
-/// the Simulator, where there is no finger to tap with, and gives a repeatable
-/// frame to compare against after a tuning change.
+/// Launch with `-demo` and the level plays itself: every beat it finds a
+/// piece of debris and taps the water on the far side of it, so it drifts to
+/// the bank. Lets the whole loop, clearing, reveal, bloom and completion, be
+/// checked in the Simulator, where there is no finger to tap with.
+@MainActor
 enum DemoScript {
 
-    private enum Beat {
-        /// A quick tap at a fraction of the view.
-        case tap(TimeInterval, CGFloat, CGFloat)
-        /// Finger down, held for a duration, then lifted.
-        case hold(TimeInterval, CGFloat, CGFloat, TimeInterval)
-    }
-
-    private static let beats: [Beat] = [
-        // Head-on collision: two taps at the same instant, close enough that
-        // their fronts meet in the middle while still strong.
-        .tap(0.20, 0.24, 0.30),
-        .tap(0.20, 0.76, 0.30),
-
-        // A lone ring for comparison, so the collision has something to beat.
-        .tap(1.60, 0.50, 0.62),
-
-        // Into the corner, for the double reflection.
-        .tap(2.60, 0.14, 0.86),
-
-        // A long press: the bowl deepens and widens, then rebounds as a swell.
-        .hold(4.00, 0.50, 0.45, 1.20),
-
-        // Two more collisions across the fresh swell.
-        .tap(6.40, 0.22, 0.55),
-        .tap(6.40, 0.78, 0.55),
-    ]
+    private static var timer: Timer?
+    private static var syntheticID = 9000
 
     static var isEnabled: Bool {
         ProcessInfo.processInfo.arguments.contains("-demo")
     }
 
-    static func run(on view: UIView, renderer: WaterRenderer) {
-        var syntheticID = 9000
-
-        for beat in beats {
-            switch beat {
-            case let .tap(delay, fx, fy):
-                schedule(delay, view) { size in
-                    renderer.addSplat(at: point(fx, fy, size), in: size,
-                                      radius: Tuning.tapRadius,
-                                      amplitude: Tuning.tapAmplitude)
-                }
-
-            case let .hold(delay, fx, fy, duration):
-                syntheticID += 1
-                let id = syntheticID
-                schedule(delay, view) { size in
-                    renderer.touchDown(id: id, at: point(fx, fy, size), in: size, weight: 0.5)
-                }
-                schedule(delay + duration, view) { _ in
-                    renderer.touchUp(id: id)
-                }
-            }
+    static func startIfRequested(controller: GameController) {
+        guard isEnabled, timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 1.15, repeats: true) { _ in
+            Task { @MainActor in beat(controller: controller) }
         }
     }
 
-    private static func point(_ fx: CGFloat, _ fy: CGFloat, _ size: CGSize) -> CGPoint {
-        CGPoint(x: size.width * fx, y: size.height * fy)
+    private static func beat(controller: GameController) {
+        guard controller.phase == .playing else { return }
+        let size = controller.scene.size
+        guard size.width > 0 else { return }
+
+        // The piece nearest a bank goes first, so the pond clears from the
+        // outside in and the reveal reads well on a capture.
+        guard let target = controller.debris.filter({ !$0.cleared }).min(by: {
+            edgeDistance($0.position, size) < edgeDistance($1.position, size)
+        }) else { return }
+
+        let p = target.position
+        let toLeft = p.x, toRight = size.width - p.x
+        let toTop = p.y, toBottom = size.height - p.y
+        let m = min(toLeft, toRight, toTop, toBottom)
+        var away = CGVector(dx: 0, dy: 0)
+        if m == toLeft { away.dx = 1 } else if m == toRight { away.dx = -1 }
+        else if m == toTop { away.dy = 1 } else { away.dy = -1 }
+
+        let tapAt = CGPoint(x: p.x + away.dx * 34, y: p.y + away.dy * 34)
+        syntheticID += 1
+        let id = syntheticID
+        controller.touchBegan(id: id, at: tapAt, in: size, weight: 0.4)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            controller.touchEnded(id: id, at: tapAt, in: size)
+        }
     }
 
-    private static func schedule(_ delay: TimeInterval, _ view: UIView,
-                                 _ body: @escaping (CGSize) -> Void) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak view] in
-            guard let view, view.bounds.width > 0 else { return }
-            body(view.bounds.size)
-        }
+    private static func edgeDistance(_ p: CGPoint, _ size: CGSize) -> CGFloat {
+        min(p.x, size.width - p.x, p.y, size.height - p.y)
     }
 }
