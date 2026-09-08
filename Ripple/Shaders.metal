@@ -360,8 +360,10 @@ fragment float4 floor_compose_fragment(VertexOut in                             
     float aspect = p.viewport.x / p.viewport.y;
     float2 q = float2(in.uv.x * aspect, in.uv.y);
     float deepness = smoothstep(0.35, 1.0, d);
-    float3 abyss = p.deep.rgb * 0.8;
-    col = mix(col, abyss, deepness * 0.6);
+    // The column of water above the deep middle swallows the bed: darker,
+    // bluer, softer. The shelves near the bank stay bright and sharp.
+    float3 abyss = p.deep.rgb * 0.75;
+    col = mix(col, abyss, deepness * 0.7);
     if (d < 0.98) {
         float grain = 0.85 + 0.30 * fbm(q * 30.0, 3);
         float3 sand = mix(p.shallow.rgb, float3(0.70, 0.62, 0.42), 0.6) * grain;

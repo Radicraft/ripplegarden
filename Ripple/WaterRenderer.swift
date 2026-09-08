@@ -254,8 +254,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// everything above or below it parallaxes against it.
     var camera = SIMD2<Float>(0, 0)
     /// Camera height above the surface, in units where surface to bed is 1.
-    static let cameraHeight: Float = 7.0
-    static let cameraShiftGain: Float = 4.0
+    static let cameraHeight: Float = 4.5
+    static let cameraShiftGain: Float = 3.0
 
     /// Heavy floaters and rocks that waves should bounce off, in points.
     var walls: [(centre: CGPoint, radius: CGFloat)] = []

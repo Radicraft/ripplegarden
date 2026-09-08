@@ -117,7 +117,7 @@ enum Library {
         woodblock: ArtSet(
             branch: ["winter_branch_1", "winter_branch_2", "winter_branch_3", "winter_branch_4"],
             branchScale: 0.72, branchInset: 14, branchRightScale: 0.62, branchRightDrop: 70,
-            bank: "winter_bank", bankSink: 6,
+            bank: nil, bankSink: 6,
             light: ["snow_1", "snow_2"],
             heavy: ["ice_1", "ice_2", "stone_1"],
             rock: "stone_1",
@@ -136,12 +136,12 @@ enum Library {
     static let springWoodblock = ArtSet(
         branch: ["spring_branch_1", "spring_branch_2", "spring_branch_3", "spring_branch_4"],
         branchScale: 0.72, branchInset: 14, branchRightScale: 0.62, branchRightDrop: 70,
-        bank: "spring_bank", bankSink: 6,
-        light: ["petal_1", "petal_2", "petal_3"],
+        bank: nil, bankSink: 6,
+        light: ["petal_n_1", "petal_n_2", "petal_n_3", "petal_n_4", "petal_n_5", "petal_n_6"],
         heavy: ["driftwood_1", "stone_1", "mossstone_1"],
         rock: "mossstone_1",
         koi: ["n_koi_1", "n_koi_5", "n_koi_3"], koiForward: koiForward, koiWaveAmp: 0.075,
-        mosaic: "mosaic_spring", petalParticle: "petal_2",
+        mosaic: "mosaic_spring", petalParticle: "petal_n_2",
         floor: FloorLook(deep: [0.09, 0.22, 0.26], mid: [0.17, 0.38, 0.39], shallow: [0.32, 0.56, 0.52],
                          waterTint: [0.90, 1.00, 0.96], waterTintStrength: 0.3,
                          siltColour: [0.36, 0.38, 0.33],
@@ -150,7 +150,7 @@ enum Library {
         weeds: ["weed_1", "weed_2", "weed_3", "weed_4", "weed_5"],
         under: ["tadpole_1", "tadpole_2", "tadpole_3", "boatman_1"],
         skaters: ["skater_1", "skater_2"],
-        flyers: ["dragonfly_1"],
+        flyers: ["dragonfly_body"],
         clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"])
 
     static let springPhoto = ArtSet(
@@ -176,7 +176,7 @@ enum Library {
         woodblock: ArtSet(
             branch: ["summer_branch_1", "summer_branch_2", "summer_branch_3", "summer_branch_4"],
             branchScale: 0.72, branchInset: 14, branchRightScale: 0.62, branchRightDrop: 70,
-            bank: "summer_bank", bankSink: 6,
+            bank: nil, bankSink: 6,
             light: ["duckweed_1", "lilypad_3", "lilypad_2"],
             heavy: ["driftwood_1", "mossstone_1", "lilypad_1"],
             rock: "mossstone_1",
@@ -187,7 +187,7 @@ enum Library {
                              siltColour: [0.40, 0.42, 0.30],
                              mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_summer", bedImage: "bed_summer"),
             weeds: ["weed_s_1", "weed_s_2", "weed_s_3", "weed_s_4", "weed_s_5"],
-            under: ["tadpole_2", "boatman_1", "tadpole_3"], skaters: ["skater_1", "skater_2"], flyers: ["dragonfly_1"],
+            under: ["tadpole_2", "boatman_1", "tadpole_3"], skaters: ["skater_1", "skater_2"], flyers: ["dragonfly_body"],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
         photographic: nil, rootNote: 587.33,
         tagline: "Lotus and long light. The koi are bold now.")
@@ -197,7 +197,7 @@ enum Library {
         woodblock: ArtSet(
             branch: ["autumn_branch_1", "autumn_branch_2", "autumn_branch_3", "autumn_branch_4"],
             branchScale: 0.72, branchInset: 14, branchRightScale: 0.62, branchRightDrop: 70,
-            bank: "autumn_bank", bankSink: 6,
+            bank: nil, bankSink: 6,
             light: ["leaf_1", "leaf_2", "leaf_3"],
             heavy: ["driftwood_1", "stone_1", "mossstone_1"],
             rock: "mossstone_1",

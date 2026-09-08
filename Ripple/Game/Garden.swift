@@ -38,7 +38,7 @@ final class Garden {
     var weedSamples: [Int: FieldSample] = [:]
     private var critters: [Critter] = []
     private var clouds: [Cloud] = []
-    private var flyer: Critter?
+    private var dragonfly: Dragonfly?
     private var nextFlyerAt: TimeInterval = 0
 
     init(art: ArtSet) {
@@ -89,7 +89,7 @@ final class Garden {
                                       root: CGPoint(x: root.x + CGFloat.random(in: -16...16, using: &rng),
                                                     y: root.y + CGFloat.random(in: -10...10, using: &rng)),
                                       height: CGFloat.random(in: 120...200, using: &rng),
-                                      lean: Float.random(in: -0.35...0.35, using: &rng),
+                                      lean: angle + .pi + Float.random(in: -0.7...0.7, using: &rng),
                                       phase: Float.random(in: 0...(2 * .pi), using: &rng),
                                       depth: Float.random(in: 0.2...0.45, using: &rng)))
                 }
@@ -104,8 +104,8 @@ final class Garden {
         clouds = art.clouds.enumerated().map { i, name in
             Cloud(texture: name, seed: i, size: size)
         }
-        flyer = nil
-        nextFlyerAt = time + 12
+        dragonfly = nil
+        nextFlyerAt = time + 6
     }
 
     func resize(_ newSize: CGSize) {
@@ -168,13 +168,11 @@ final class Garden {
 
         for c in critters { c.update(dt: dt, now: now, in: size) }
         for c in clouds { c.update(dt: dt, in: size) }
-        if let f = flyer {
+        if let f = dragonfly {
             f.update(dt: dt, now: now, in: size)
-            if f.gone(in: size) { flyer = nil; nextFlyerAt = now + Double.random(in: 14...30) }
+            if f.done { dragonfly = nil; nextFlyerAt = now + Double.random(in: 10...24) }
         } else if now > nextFlyerAt, let name = art.flyers.first {
-            let f = Critter(texture: name, forward: .pi, size: 46, seed: Int(now) % 7, under: false)
-            f.beginCrossing(in: size)
-            flyer = f
+            dragonfly = Dragonfly(body: name, size: size, now: now)
         }
 
         if bloomRate > 0 {
@@ -274,12 +272,7 @@ final class Garden {
             Sprite(c.texture, at: c.position, size: CGSize(width: c.width, height: c.width * c.aspect),
                    alpha: 0.30, tint: [0.92, 0.97, 1.0, 1], z: 2.2)
         }
-        if let f = flyer {
-            let s = f.spriteSize(textureSize)
-            out.append(Sprite(f.texture, at: CGPoint(x: f.position.x + 14, y: f.position.y + 40), size: s,
-                              rotation: f.rotation, mode: .shadow, alpha: 0.5, z: 0))
-            out.append(Sprite(f.texture, at: f.position, size: s, rotation: f.rotation, alpha: 1, z: 0.6))
-        }
+        if let f = dragonfly { out += f.sprites(textureSize) }
         return out
     }
 
@@ -402,15 +395,19 @@ final class Koi {
         // turn eases in and out rather than snapping to full rate.
         // The path can never bend tighter than the body can follow: the turn
         // radius stays above the fish's width, so the mesh never folds.
+        // Fleeing, the fish turns as hard as its body allows and its speed
+        // decays back to a cruise; otherwise it turns lazily.
+        let fleeing = now < fleeUntil
+        if speed > 46 { speed -= CGFloat(dt) * (fleeing ? 20 : 45) }
         let s = Float(speed) * (depth > 0.9 ? 0.5 : 1) * (1 - 0.15 * min(1, abs(diff)))
-        let maxRate = min(0.5, s / (Float(width) * 1.1))
+        let maxRate = min(fleeing ? 1.6 : 0.5, s / (Float(width) * 1.1))
         let wantRate = min(maxRate, abs(diff) * 0.8)
         let turn = max(-wantRate * dt, min(wantRate * dt, diff))
         heading += turn
         let tightness = min(1, abs(diff) / 1.2)
         position.x += CGFloat(cos(heading) * s * dt)
         position.y += CGFloat(sin(heading) * s * dt)
-        phase += dt * (3.0 + s * 0.09 + tightness * 2.5)
+        phase += dt * (3.0 + s * 0.09 + tightness * 2.5 + (fleeing ? 6 : 0))
         record()
         return splash
     }
@@ -547,14 +544,18 @@ final class Koi {
         stateUntil = now + Double.random(in: quick ? 6...11 : 4...9)
     }
 
-    /// A tap nearby: veer away and put on a little speed, without diving.
+    /// A tap nearby: the fish bolts away from it with a burst of speed and
+    /// a hard tail beat, then settles back into its cruise.
+    private var fleeUntil: TimeInterval = 0
     func startle(from point: CGPoint, now: TimeInterval) {
         let dx = Float(position.x - point.x), dy = Float(position.y - point.y)
         let dist = hypot(dx, dy)
-        guard dist < 170, dist > 0.5 else { return }
-        let away = atan2(dy, dx)
-        target = CGPoint(x: position.x + CGFloat(cos(away)) * 260, y: position.y + CGFloat(sin(away)) * 260)
-        speed = min(60, speed + 22)
+        guard dist < 220, dist > 0.5 else { return }
+        let away = atan2(dy, dx) + Float.random(in: -0.35...0.35)
+        target = CGPoint(x: position.x + CGFloat(cos(away)) * 320, y: position.y + CGFloat(sin(away)) * 320)
+        speed = CGFloat(130 * (1.1 - dist / 260))
+        fleeUntil = now + 1.4
+        stateUntil = max(stateUntil, now + 6)
     }
 }
 
@@ -742,5 +743,103 @@ final class Cloud {
             position.x = -width * 0.6
             position.y = size.height * CGFloat.random(in: 0.1...0.8)
         }
+    }
+}
+
+
+/// A dragonfly: it flies in, hovers over a spot with its wings a blur, darts
+/// to another, and leaves. Body and wings are separate pieces; the wings
+/// beat about their roots, drawn twice per beat so they smear like the
+/// real thing does to the eye.
+final class Dragonfly {
+    let body: String
+    private(set) var position: CGPoint
+    private var heading: Float
+    private var target: CGPoint
+    private var hoverUntil: TimeInterval
+    private var hops = 0
+    private(set) var done = false
+    private var bob: Float = 0
+    private let startedAt: TimeInterval
+
+    init(body: String, size: CGSize, now: TimeInterval) {
+        self.body = body
+        let fromLeft = Bool.random()
+        position = CGPoint(x: fromLeft ? -50 : size.width + 50, y: CGFloat.random(in: 140...(size.height * 0.55)))
+        target = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)), y: CGFloat.random(in: 140...(size.height * 0.6)))
+        heading = atan2(Float(target.y - position.y), Float(target.x - position.x))
+        hoverUntil = 0
+        startedAt = now
+    }
+
+    var rotation: Float { heading + .pi / 2 }   // the body image points up
+
+    func update(dt: Float, now: TimeInterval, in size: CGSize) {
+        bob += dt
+        let dx = Float(target.x - position.x), dy = Float(target.y - position.y)
+        let dist = hypot(dx, dy)
+        if dist < 6 {
+            if hoverUntil == 0 { hoverUntil = now + Double.random(in: 2.0...4.5) }
+            if now > hoverUntil {
+                hops += 1
+                hoverUntil = 0
+                if hops >= 3 {
+                    target = CGPoint(x: position.x < size.width / 2 ? -80 : size.width + 80, y: position.y + CGFloat.random(in: -80...80))
+                } else {
+                    target = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)), y: CGFloat.random(in: 140...(size.height * 0.6)))
+                }
+            }
+            // Hovering: a tiny drift, the heading holds.
+            position.x += CGFloat(sin(bob * 1.7)) * 0.25
+            position.y += CGFloat(cos(bob * 1.3)) * 0.2
+        } else {
+            let want = atan2(dy, dx)
+            var diff = want - heading
+            while diff > .pi { diff -= 2 * .pi }
+            while diff < -.pi { diff += 2 * .pi }
+            heading += max(-4 * dt, min(4 * dt, diff))
+            // Darts are quick and ease out as the spot nears.
+            let speed = min(260, 40 + dist * 2.2)
+            position.x += CGFloat(cos(heading) * speed * dt)
+            position.y += CGFloat(sin(heading) * speed * dt)
+        }
+        if hops >= 3, position.x < -60 || position.x > size.width + 60 { done = true }
+    }
+
+    func sprites(_ textureSize: (String) -> CGSize) -> [Sprite] {
+        let bodyTex = textureSize(body)
+        let bodyH: CGFloat = 52
+        let bodyW = bodyH * bodyTex.width / max(1, bodyTex.height)
+        let wingTex = textureSize("dragonfly_wing")
+        let wingL: CGFloat = 34
+        let wingH = wingL * wingTex.height / max(1, wingTex.width)
+        let hover = CGFloat(sin(bob * 2.1)) * 2.0
+        let at = CGPoint(x: position.x, y: position.y + hover)
+        let r = rotation
+        let cs = CGFloat(cos(r)), sn = CGFloat(sin(r))
+        // Wing roots sit a little below the head on either side of the thorax.
+        func place(_ local: CGPoint) -> CGPoint {
+            CGPoint(x: at.x + local.x * cs - local.y * sn, y: at.y + local.x * sn + local.y * cs)
+        }
+        var out: [Sprite] = []
+        let beat = sin(bob * 52) * 0.45
+        let shadowOffset = CGPoint(x: 12, y: 36)
+        // Shadow of body and wings on the water.
+        out.append(Sprite(body, at: CGPoint(x: at.x + shadowOffset.x, y: at.y + shadowOffset.y),
+                          size: CGSize(width: bodyW, height: bodyH), rotation: r, mode: .shadow, alpha: 0.45, z: 0))
+        for (side, pairY) in [(CGFloat(1), CGFloat(-9)), (CGFloat(-1), CGFloat(-9)), (CGFloat(1), CGFloat(-2)), (CGFloat(-1), CGFloat(-2))] {
+            let root = place(CGPoint(x: side * bodyW * 0.18, y: pairY))
+            let base: Float = side > 0 ? 0 : .pi
+            let flap = Float(pairY == -9 ? beat : -beat)
+            // Two ghosts per wing for the blur, plus the wing itself.
+            for (k, a) in [(-0.6, 0.25), (0.6, 0.25), (0.0, 0.7)] {
+                let ang = base + flap * Float(1 + k)
+                let centre = CGPoint(x: root.x + CGFloat(cos(r + ang)) * wingL * 0.5, y: root.y + CGFloat(sin(r + ang)) * wingL * 0.5)
+                out.append(Sprite("dragonfly_wing", at: centre, size: CGSize(width: wingL, height: wingH),
+                                  rotation: r + ang, alpha: Float(a), flipX: side < 0, z: 0.6))
+            }
+        }
+        out.append(Sprite(body, at: at, size: CGSize(width: bodyW, height: bodyH), rotation: r, alpha: 1, z: 0.6))
+        return out
     }
 }
