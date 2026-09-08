@@ -172,7 +172,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
-				CODE_SIGN_ENTITLEMENTS = Ripple/Ripple.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = VQQCV6BB8R;
 				CURRENT_PROJECT_VERSION = 1;

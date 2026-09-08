@@ -46,15 +46,14 @@ final class ProgressStore {
         let reset = ProcessInfo.processInfo.arguments.contains("-resetProgress")
 
         // CloudKit mirroring does not throw when the entitlement is missing;
-        // it traps on a background queue a moment after launch. An unsigned
-        // Simulator build never carries the entitlement, so it gets a local
-        // store. A device build only installs if signing succeeded, and
-        // signing only succeeds with the iCloud container in place.
+        // it traps on a background queue a moment after launch. So the
+        // entitlement is checked first: Simulator builds and Debug device
+        // builds (signed with the plain team profile) get a local store.
         var attempts: [ModelConfiguration] = []
-        #if !targetEnvironment(simulator)
-        attempts.append(ModelConfiguration("Progress", schema: schema,
-                                           cloudKitDatabase: .private("iCloud.com.radicraft.ripple")))
-        #endif
+        if Entitlements.hasCloudKit {
+            attempts.append(ModelConfiguration("Progress", schema: schema,
+                                               cloudKitDatabase: .private("iCloud.com.radicraft.ripple")))
+        }
         attempts.append(ModelConfiguration("Progress", schema: schema, cloudKitDatabase: .none))
         attempts.append(ModelConfiguration("Memory", schema: schema, isStoredInMemoryOnly: true))
 
@@ -119,4 +118,24 @@ final class Settings: ObservableObject {
         soundOn = d.object(forKey: "settings.sound") as? Bool ?? true
         hapticsOn = d.object(forKey: "settings.haptics") as? Bool ?? true
     }
+}
+
+
+/// What this binary was actually signed with. Development and ad-hoc builds
+/// carry `embedded.mobileprovision`, whose Entitlements dictionary is the
+/// truth. App Store builds carry no profile, and are signed from the Release
+/// entitlements file, which has iCloud in it.
+enum Entitlements {
+    static let hasCloudKit: Bool = {
+        #if targetEnvironment(simulator)
+        return false
+        #else
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .isoLatin1) else {
+            return true
+        }
+        return text.contains("com.apple.developer.icloud-container-identifiers")
+        #endif
+    }()
 }
