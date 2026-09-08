@@ -101,7 +101,7 @@ final class Garden {
                     weeds.append(Weed(texture: name,
                                       root: rootPoint,
                                       bedDepth: depthAt(rootPoint),
-                                      height: CGFloat.random(in: 110...190, using: &rng),
+                                      height: CGFloat.random(in: 130...210, using: &rng),
                                       lean: angle + .pi + Float.random(in: -0.7...0.7, using: &rng),
                                       phase: Float.random(in: 0...(2 * .pi), using: &rng),
                                       depth: Float.random(in: 0.2...0.45, using: &rng)))

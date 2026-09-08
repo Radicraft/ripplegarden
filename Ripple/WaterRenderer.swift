@@ -281,7 +281,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     static let cameraShiftGain: Float = 3.0
     /// The pitched camera: how far off vertical it looks, how far away it
     /// sits, and how many points a pond unit of depth is.
-    static let cameraPitch: Float = 0.32
+    static let cameraPitch: Float = 0.52
     static let cameraDistance: Float = 1500
     static let depthScale: Float = 260
 

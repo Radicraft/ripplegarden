@@ -412,10 +412,21 @@ fragment float4 floor_compose_fragment(VertexOut in                             
     float3 abyss = p.deep.rgb * 0.75;
     col = mix(col, abyss, deepness * 0.7);
 
-    // Shafts of light slanting down through the deep water, drifting slowly.
-    float shaftCoord = q.x * 2.6 + q.y * 0.9 + p.bed.z * 0.03;
-    float shafts = pow(0.5 + 0.5 * sin(shaftCoord * 6.28318), 6.0) * (0.5 + 0.5 * fbm(float2(shaftCoord * 1.7, p.bed.z * 0.02), 2));
-    col += p.shallow.rgb * shafts * deepness * 0.22;
+    // Sunlight through a living surface: a net of caustic light dancing on
+    // the bed, bright on the shelves, fading into the deep; and shafts of
+    // light slanting down through the deep water, drifting slowly.
+    float tm = p.bed.z;
+    float2 c1 = q * 9.0 + float2(tm * 0.11, -tm * 0.07);
+    float2 c2 = q * 7.3 + float2(-tm * 0.09, tm * 0.13);
+    float n1 = valueNoise(c1), n2 = valueNoise(c2 + 3.1);
+    float net = pow(1.0 - abs(sin((n1 + n2) * 6.28318)), 6.0);
+    float net2 = pow(1.0 - abs(sin((valueNoise(c1 * 1.7 + 8.0) + n2) * 6.28318)), 8.0);
+    float caustic = (net * 0.7 + net2 * 0.5) * mix(1.0, 0.35, deepness);
+    col += (p.shallow.rgb * 0.7 + 0.3) * caustic * 0.42;
+
+    float shaftCoord = q.x * 2.2 + q.y * 0.8 + tm * 0.03;
+    float shafts = pow(0.5 + 0.5 * sin(shaftCoord * 6.28318), 4.0) * (0.4 + 0.6 * fbm(float2(shaftCoord * 1.7, tm * 0.02), 2));
+    col += (p.shallow.rgb * 0.6 + 0.25) * shafts * deepness * 0.45;
     if (d < 0.98) {
         float grain = 0.85 + 0.30 * fbm(q * 30.0, 3);
         float3 sand = mix(p.shallow.rgb, float3(0.70, 0.62, 0.42), 0.6) * grain;
@@ -536,7 +547,7 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
         // (in s.depth, pond units), its tip rises toward the surface. The
         // lean (in waveAmp) and the idle sway (in wave) tip it over along its
         // lean direction, growing with the square of the distance up the stem.
-        float bend = 0.55 + s.waveAmp + sin(s.wave + tailness * 2.4) * 0.09;
+        float bend = 0.18 + s.waveAmp + sin(s.wave + tailness * 2.4) * 0.09;
         float2 leanDir = float2(cos(s.rotation), sin(s.rotation));
         float2 lateral = float2(-leanDir.y, leanDir.x);
         float height = s.size.y;
@@ -711,7 +722,9 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // Focus sits on the surface. The deeper the bed below this point, the
     // softer it is drawn: a small cross blur that grows with the depth.
     float dHere = depthTex.sample(smp, wuv).r;
-    float blur = smoothstep(0.3, 1.0, dHere) * 2.2 / float(p.size.y);
+    // Only the deep bed goes soft; anything over the shelves, and the fish,
+    // stay crisp.
+    float blur = smoothstep(0.7, 1.0, dHere) * 1.1 / float(p.size.y);
     float2 c0 = wuv + offset;
     float3 col = floorTex.sample(smp, c0).rgb * 0.4;
     col += floorTex.sample(smp, c0 + float2(blur, 0)).rgb * 0.15;
