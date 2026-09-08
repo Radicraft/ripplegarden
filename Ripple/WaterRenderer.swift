@@ -153,6 +153,7 @@ enum Tuning {
     static let maxProbes = 64
     static let maxWalls = 16
     static let maxCovers = 64
+    static let maxSpines = 8
 }
 
 private struct Hold {
@@ -208,6 +209,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private var wallBuffer: MTLBuffer
     private var coverBuffer: MTLBuffer
     private var siltRowBuffer: MTLBuffer
+    private var spineBuffer: MTLBuffer
     private let siltLock = OSAllocatedUnfairLock(initialState: Float(1))
     private var frameIndex = 0
 
@@ -250,6 +252,9 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// Sprites drawn into the floor (under the water) and over it, per frame.
     var submergedSprites: [Sprite] = []
     var surfaceSprites: [Sprite] = []
+    /// 13 points per spined sprite: xy position in points, zw unit tangent
+    /// toward the head; row 12 is the head.
+    var spines: [SIMD4<Float>] = []
 
     /// Fraction of silt left over the mosaic, 1 = untouched. Updated a few
     /// times a second.
@@ -310,7 +315,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
               let rbuf = device.makeBuffer(length: MemoryLayout<SIMD4<Float>>.stride * Tuning.maxProbes, options: .storageModeShared),
               let wbuf = device.makeBuffer(length: MemoryLayout<SIMD4<Float>>.stride * Tuning.maxWalls, options: .storageModeShared),
               let cbuf = device.makeBuffer(length: MemoryLayout<SIMD4<Float>>.stride * Tuning.maxCovers, options: .storageModeShared),
-              let sbuf = device.makeBuffer(length: MemoryLayout<Float>.stride * 2048, options: .storageModeShared)
+              let sbuf = device.makeBuffer(length: MemoryLayout<Float>.stride * 2048, options: .storageModeShared),
+              let spbuf = device.makeBuffer(length: MemoryLayout<SIMD4<Float>>.stride * 13 * Tuning.maxSpines, options: .storageModeShared)
         else { return nil }
         splatBuffer = buf
         probeBuffer = pbuf
@@ -318,6 +324,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         wallBuffer = wbuf
         coverBuffer = cbuf
         siltRowBuffer = sbuf
+        spineBuffer = spbuf
 
         self.device = device
         self.queue = queue
@@ -622,6 +629,13 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             light: SIMD4(-0.40, -0.56, 0.72, 0),
             relief: style == .woodblock ? SIMD4(0.55, 0.16, 0.28, 0.55) : SIMD4(0.35, 0.10, 0.15, 0.35))
 
+        let spineCount = min(spines.count, 13 * Tuning.maxSpines)
+        if spineCount > 0 {
+            spineBuffer.contents().withMemoryRebound(to: SIMD4<Float>.self, capacity: spineCount) { ptr in
+                for i in 0..<spineCount { ptr[i] = spines[i] }
+            }
+        }
+
         do {
             let pass = MTLRenderPassDescriptor()
             pass.colorAttachments[0].texture = floorTexture
@@ -637,7 +651,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
                 floorBatch.beginFrame()
-                floorBatch.draw(submergedSprites, encoder: encoder, params: spriteParams, field: read)
+                floorBatch.draw(submergedSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer)
                 encoder.endEncoding()
             }
         }
@@ -661,7 +675,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
             surfaceBatch.beginFrame()
-            surfaceBatch.draw(surfaceSprites, encoder: encoder, params: spriteParams, field: read)
+            surfaceBatch.draw(surfaceSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer)
             encoder.endEncoding()
         }
 

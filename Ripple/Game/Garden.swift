@@ -105,22 +105,26 @@ final class Garden {
 
     // MARK: - Sprites
 
-    /// Under the surface: koi and their shadows.
-    func submergedSprites() -> [Sprite] {
+    /// Under the surface: koi and their shadows. Each fish carries a spine
+    /// laid along the path its head swam; the mesh rows sit on it.
+    func submergedSprites() -> (sprites: [Sprite], spines: [SIMD4<Float>]) {
         var out: [Sprite] = []
+        var spines: [SIMD4<Float>] = []
         for k in koi where k.depth < 0.98 {
             let d = k.depth
             let w = k.width
             let h = w * k.aspect
+            let index = spines.count / 13
+            spines += k.spine(length: h)
             let offset = CGFloat(10 + 26 * d)
-            out.append(Sprite(k.texture, at: CGPoint(x: k.position.x + offset * 0.6, y: k.position.y + offset),
-                              size: CGSize(width: w, height: h), rotation: k.rotation, mode: .shadow,
-                              alpha: 0.7 * (1 - d * 0.6), wave: k.phase, waveAmp: k.waveAmp))
-            out.append(Sprite(k.texture, at: k.position, size: CGSize(width: w, height: h),
-                              rotation: k.rotation, mode: .submerged, alpha: 1, depth: d,
-                              wave: k.phase, waveAmp: k.waveAmp))
+            out.append(Sprite(k.texture, at: CGPoint(x: offset * 0.6, y: offset),
+                              size: CGSize(width: w, height: h), mode: .shadow,
+                              alpha: 0.7 * (1 - d * 0.6), wave: k.phase, waveAmp: k.waveAmp, spine: index))
+            out.append(Sprite(k.texture, at: .zero, size: CGSize(width: w, height: h),
+                              mode: .submerged, alpha: 1, depth: d,
+                              wave: k.phase, waveAmp: k.waveAmp, spine: index))
         }
-        return out
+        return (out, spines)
     }
 
     /// Over the surface: falling blossom.
@@ -181,6 +185,9 @@ final class Koi {
     private var depthTarget: Float = 1
     private var depthRate: Float = 0.5
     private var started = false
+    /// Where the head has been, newest first, one entry per couple of points.
+    private var trail: [CGPoint] = []
+    private var trailDistances: [Float] = []
 
     init(texture: String, forward: Float, seed: Int, waveAmp: Float) {
         self.texture = texture
@@ -218,12 +225,75 @@ final class Koi {
         var diff = want - heading
         while diff > .pi { diff -= 2 * .pi }
         while diff < -.pi { diff += 2 * .pi }
-        heading += max(-1.2 * dt, min(1.2 * dt, diff))
-        let s = Float(speed) * (depth > 0.9 ? 0.5 : 1)
+        let turn = max(-1.3 * dt, min(1.3 * dt, diff))
+        heading += turn
+        // A fish slows into a tight turn and beats its tail harder.
+        let tightness = min(1, abs(diff) / 1.2)
+        let s = Float(speed) * (depth > 0.9 ? 0.5 : 1) * (1 - 0.35 * tightness)
         position.x += CGFloat(cos(heading) * s * dt)
         position.y += CGFloat(sin(heading) * s * dt)
-        phase += dt * (3.0 + s * 0.09)
+        phase += dt * (3.0 + s * 0.09 + tightness * 2.5)
+        record()
         return splash
+    }
+
+    private func record() {
+        if let last = trail.first {
+            let step = hypot(position.x - last.x, position.y - last.y)
+            guard step >= 1.5 else { return }
+            trail.insert(position, at: 0)
+            trailDistances.insert(Float(step), at: 0)
+        } else {
+            straightTrail()
+        }
+        if trail.count > 400 {
+            trail.removeLast(trail.count - 400)
+            trailDistances.removeLast(trailDistances.count - 400)
+        }
+    }
+
+    /// A fresh fish (or one that just reappeared) has a straight body behind it.
+    private func straightTrail() {
+        trail = []
+        trailDistances = []
+        let hx = CGFloat(cos(heading)), hy = CGFloat(sin(heading))
+        let back = CGVector(dx: -hx * 2, dy: -hy * 2)
+        var p = position
+        for _ in 0..<200 {
+            trail.append(p)
+            trailDistances.append(2)
+            p = CGPoint(x: p.x + back.dx, y: p.y + back.dy)
+        }
+    }
+
+    /// 13 spine points for the mesh, tail (row 0) to head (row 12): each
+    /// sits the right distance back along the recorded path, so the body
+    /// bends wherever the head turned.
+    func spine(length: CGFloat) -> [SIMD4<Float>] {
+        if trail.isEmpty { straightTrail() }
+        var rows: [SIMD4<Float>] = []
+        let total = Float(length)
+        for row in 0...12 {
+            let back = total * (1 - Float(row) / 12)
+            var acc: Float = 0
+            var i = 0
+            while i < trail.count - 1, acc + trailDistances[i] < back { acc += trailDistances[i]; i += 1 }
+            let a = trail[i]
+            let b = trail[min(i + 1, trail.count - 1)]
+            let seg = max(0.001, trailDistances[min(i, trailDistances.count - 1)])
+            let t = min(1, max(0, (back - acc) / seg))
+            let ct = CGFloat(t)
+            let px = a.x + (b.x - a.x) * ct
+            let py = a.y + (b.y - a.y) * ct
+            let pos = SIMD2<Float>(Float(px), Float(py))
+            // Tangent toward the head: from this point toward the newer sample.
+            let newer = trail[max(0, i - 1)]
+            var tangent = SIMD2(Float(newer.x - b.x), Float(newer.y - b.y))
+            let len = simd_length(tangent)
+            tangent = len > 0.001 ? tangent / len : SIMD2(cos(heading), sin(heading))
+            rows.append(SIMD4(pos.x, pos.y, tangent.x, tangent.y))
+        }
+        return rows
     }
 
     private func pickTarget(in size: CGSize) {
@@ -233,6 +303,14 @@ final class Koi {
     }
 
     private func surface(now: TimeInterval, in size: CGSize) {
+        // Reappear somewhere new only if the fish is fully hidden.
+        if depth > 0.95 {
+            position = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)),
+                               y: CGFloat.random(in: 140...(size.height - 160)))
+            pickTarget(in: size)
+            heading = atan2(Float(target.y - position.y), Float(target.x - position.x))
+            straightTrail()
+        }
         depthTarget = 0.12
         depthRate = 0.9
         stateUntil = now + Double.random(in: 8...14)

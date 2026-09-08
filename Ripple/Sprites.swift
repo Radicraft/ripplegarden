@@ -40,13 +40,15 @@ struct Sprite {
 
     init(_ texture: String, at center: CGPoint, size: CGSize, rotation: Float = 0,
          mode: SpriteInstance.Mode = .plain, alpha: Float = 1, flipX: Bool = false,
-         depth: Float = 0, wave: Float = 0, waveAmp: Float = 0, tint: SIMD4<Float> = [1, 1, 1, 1]) {
+         depth: Float = 0, wave: Float = 0, waveAmp: Float = 0, tint: SIMD4<Float> = [1, 1, 1, 1],
+         spine: Int? = nil) {
         self.texture = texture
         gpu = SpriteInstance(center: SIMD2(Float(center.x), Float(center.y)),
                              size: SIMD2(Float(size.width), Float(size.height)),
                              rotation: rotation, alpha: alpha, depth: depth,
                              wave: wave, waveAmp: waveAmp,
                              mode: mode.rawValue | (flipX ? SpriteInstance.flipX : 0),
+                             pad: SIMD2(Float((spine ?? -1) + 1), 0),
                              tint: tint)
     }
 }
@@ -226,7 +228,7 @@ final class SpriteBatch {
     func beginFrame() { cursor = 0 }
 
     /// Uploads the sprites and draws them in order, in runs by texture.
-    func draw(_ sprites: [Sprite], encoder: MTLRenderCommandEncoder, params: SpriteParams, field: MTLTexture) {
+    func draw(_ sprites: [Sprite], encoder: MTLRenderCommandEncoder, params: SpriteParams, field: MTLTexture, spines: MTLBuffer) {
         guard !sprites.isEmpty else { return }
         let start = cursor
         let count = min(sprites.count, SpriteBatch.maxInstances - start)
@@ -243,6 +245,7 @@ final class SpriteBatch {
         encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 1)
         encoder.setVertexBytes(&p, length: MemoryLayout<SpriteParams>.stride, index: 2)
+        encoder.setVertexBuffer(spines, offset: 0, index: 3)
         encoder.setVertexTexture(field, index: 0)
         encoder.setFragmentBytes(&p, length: MemoryLayout<SpriteParams>.stride, index: 0)
 

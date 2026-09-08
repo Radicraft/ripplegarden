@@ -261,7 +261,9 @@ final class GameController: ObservableObject, TouchInput {
         }
 
         // Sprites. Under the water: koi, plus every floater's shadow on the floor.
-        var under = garden.submergedSprites()
+        let submerged = garden.submergedSprites()
+        renderer.spines = submerged.spines
+        var under = submerged.sprites
         for d in debris where !d.cleared {
             let s = spriteSize(d)
             under.append(Sprite(d.sprite, at: CGPoint(x: d.position.x + 7, y: d.position.y + 10), size: s,

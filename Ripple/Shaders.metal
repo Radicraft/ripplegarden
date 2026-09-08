@@ -379,6 +379,7 @@ struct SpriteOut {
 vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stage_in]],
                                constant SpriteInstance *instances         [[buffer(1)]],
                                constant SpriteParams &p                   [[buffer(2)]],
+                               constant float4 *spines                    [[buffer(3)]],
                                texture2d<float, access::sample> field     [[texture(0)]],
                                uint iid                                   [[instance_id]])
 {
@@ -398,6 +399,33 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
     float wet = 0.0;
     float2 centre = s.center;
     float2 world;
+    float rotation = s.rotation;
+
+    // A spined sprite (a fish) does not rotate as a card: each row of the
+    // mesh sits on the path its head actually swam, so the body bends
+    // through a turn and the tail swings wide. `center` is then an offset.
+    int spine = int(s._pad.x) - 1;
+    if (spine >= 0) {
+        uint row = uint(round(uv.y * 12.0));
+        float4 sp = spines[spine * 13 + row];
+        float2 t = sp.zw;                      // unit tangent, head-ward
+        float2 n = float2(-t.y, t.x);
+        world = sp.xy + n * local.x + s.center;
+        float4 head = spines[spine * 13 + 12];
+        rotation = atan2(head.w, head.z) - M_PI_F * 0.5;
+        SpriteOut out;
+        out.position = float4(world.x / p.viewport.x * 2.0 - 1.0, 1.0 - world.y / p.viewport.y * 2.0, 0.0, 1.0);
+        out.uv = uv;
+        out.tint = s.tint;
+        out.alpha = s.alpha;
+        out.wet = 0.0;
+        out.depth = s.depth;
+        out.mode = mode;
+        out.flags = s.mode;
+        out.rot = float2(cos(rotation), sin(rotation));
+        return out;
+    }
+
     if (mode == 1u) {
         float2 cuv = centre / p.viewport.xy;
         float2 texel = 1.0 / float2(field.get_width(), field.get_height());
