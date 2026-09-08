@@ -2,8 +2,8 @@
 using namespace metal;
 
 // ---------------------------------------------------------------------------
-// Shared types (kept in sync by hand with WaterRenderer.swift). Every field is
-// a float4/uint4 so the Swift and Metal layouts cannot drift apart.
+// Shared types (kept in sync by hand with WaterRenderer.swift and
+// Sprites.swift). Fields are ordered so Swift and Metal agree on padding.
 // ---------------------------------------------------------------------------
 
 struct Splat {
@@ -14,58 +14,77 @@ struct Splat {
 
 struct SimParams {
     uint2  size;
-    float  c2;            // wave speed squared * dt^2
-    float  damping;       // velocity retained per step
-    float  edgeDamp;      // extra damping applied in the border band
-    uint   edgeBand;      // width of that band, in cells
-    float  nonlinearity;  // how much a crest outruns a trough
+    float  c2;
+    float  damping;
+    float  edgeDamp;
+    uint   edgeBand;
+    float  nonlinearity;
     uint   splatCount;
-    float  shallowSpeed;  // c2 multiplier where the depth map reads 0 (just above a wall)
-    float  _pad0, _pad1, _pad2;
+    float  shallowSpeed;
+    uint   wallCount;      // dynamic walls (heavy floaters) in `walls`
+    float  _pad0, _pad1;
 };
 
 struct RenderParams {
-    uint2  size;         // sim grid size
-    float2 viewport;     // drawable size in pixels
+    uint2  size;
+    float2 viewport;
     float  refraction;
     float  causticGain;
     float  specGain;
     float  time;
-    float  crestGain;    // how hard a meeting of two crests announces itself
+    float  crestGain;
     float  sparkleGain;
-    float  detailGain;   // fine capillary chop riding on the big waves
-    float  dispersion;   // chromatic spread in the refraction
-    float4 waterTint;    // season colour cast on the refracted floor (rgb) + strength (a)
+    float  detailGain;
+    float  dispersion;
+    float4 waterTint;      // rgb cast, a = strength
+    float4 style;          // x = 0 photographic, 1 woodblock
+    float4 inkColour;      // woodblock line colour
 };
 
 struct FloorParams {
-    float4 viewport;      // xy = drawable size in pixels
-    float4 deep;          // season floor palette
+    float4 viewport;
+    float4 deep;
     float4 mid;
     float4 shallow;
-    float4 mosaic;        // xy = centre in uv, z = radius as a fraction of height, w = ghost alpha
-    float4 counts;        // x = sector count
-    float4 reveal[4];     // 16 per-sector reveal amounts, 0...1
+    float4 mosaic;         // xy centre (uv), z radius (fraction of height), w silt tint strength
+    float4 siltColour;     // rgb of the silt film
+};
+
+struct SiltParams {
+    float4 viewport;       // xy drawable size
+    float4 size;           // xy silt texture size
+    float4 gains;          // x |h| gain, y |lap| gain, z threshold, w rate*dt
+    float4 mosaic;         // xy centre uv, z radius (fraction of height)
+    uint   coverCount;
+    uint   _pad0, _pad1, _pad2;
+};
+
+struct SpriteInstance {
+    float2 center;         // points, origin top-left
+    float2 size;           // points
+    float  rotation;       // radians, clockwise on screen
+    float  alpha;
+    float  depth;          // submerged: 0 at the surface, 1 deep
+    float  wave;           // spine phase
+    float  waveAmp;        // lateral wag as a fraction of width
+    uint   mode;           // low 2 bits: 0 plain, 1 floater, 2 submerged, 3 shadow; bit 3: flip x
+    float2 _pad;
+    float4 tint;
+};
+
+struct SpriteParams {
+    float4 viewport;       // xy drawable size in points
+    float4 gains;          // x lift, y tilt, z wet threshold, w bob
+    float4 floorTint;      // rgb cast for submerged things at full depth
 };
 
 // ---------------------------------------------------------------------------
-// Simulation
-//
-//   v += laplacian(h) * c2
-//   v *= damping
-//   h += v
-//
-// with two additions. In shallow water the wave speed depends on depth,
-// c = sqrt(g * (H + h)), so a crest travels faster than a trough. Making c2
-// depend on the local height reproduces that. It is what stops two ripples
-// from sliding through each other like ghosts: crests steepen, the meeting
-// point piles up, and the collision leaves a mark instead of passing clean
-// through. The clamp keeps the step inside its stability limit.
-//
-// The second is the depth map. A cell reading zero is a wall: its height is
-// pinned to zero, so neighbouring cells see a fixed end and reflect. Between
-// zero and one the water is shallow and waves slow down, so a wavefront
-// crossing a slope bends the way light bends through glass.
+// Simulation. See the notes in git history for the physics; in short:
+//   v += laplacian(h) * c2 ; v *= damping ; h += v
+// with a height-dependent wave speed (crests outrun troughs, so two ripples
+// collide instead of ghosting through) and a depth map: zero is a wall that
+// reflects, between zero and one the water is shallow and waves slow and bend.
+// Heavy floating things are walls too, passed in as circles per step.
 // ---------------------------------------------------------------------------
 
 kernel void wave_step(texture2d<float, access::read>  src   [[texture(0)]],
@@ -73,11 +92,19 @@ kernel void wave_step(texture2d<float, access::read>  src   [[texture(0)]],
                       texture2d<float, access::read>  depth [[texture(2)]],
                       constant SimParams &p                 [[buffer(0)]],
                       constant Splat *splats                [[buffer(1)]],
+                      constant float4 *walls                [[buffer(2)]],
                       uint2 gid                             [[thread_position_in_grid]])
 {
     if (gid.x >= p.size.x || gid.y >= p.size.y) { return; }
 
     float d = depth.read(gid).r;
+    // Heavy floaters are shallows, not walls: a wave slows and partly
+    // reflects under a log, but the water there still rises, which is what
+    // lifts the log when a big enough swell arrives.
+    for (uint i = 0; i < p.wallCount; ++i) {
+        float2 delta = float2(gid) - walls[i].xy;
+        if (dot(delta, delta) < walls[i].z * walls[i].z) { d = min(d, walls[i].w); }
+    }
     if (d < 0.02) {
         dst.write(float4(0.0, 0.0, 0.0, 0.0), gid);
         return;
@@ -101,7 +128,6 @@ kernel void wave_step(texture2d<float, access::read>  src   [[texture(0)]],
     v += lap * c2;
     v *= p.damping;
 
-    // Soft absorbing border.
     uint edgeDist = min(min(gid.x, maxc.x - gid.x), min(gid.y, maxc.y - gid.y));
     if (edgeDist < p.edgeBand) {
         float t = 1.0 - float(edgeDist) / float(p.edgeBand);
@@ -117,7 +143,6 @@ kernel void wave_step(texture2d<float, access::read>  src   [[texture(0)]],
         float  dist2 = dot(delta, delta);
         float  rad   = splats[i].radius;
         if (dist2 < rad * rad) {
-            // Smooth cosine bump: no hard edges, so no high-frequency buzz.
             float falloff = 0.5 + 0.5 * cos(M_PI_F * sqrt(dist2) / rad);
             h += splats[i].amplitude * falloff;
         }
@@ -127,11 +152,7 @@ kernel void wave_step(texture2d<float, access::read>  src   [[texture(0)]],
 }
 
 // ---------------------------------------------------------------------------
-// Probes. The game asks "what is the water doing under this floating thing?"
-// for a few dozen points a frame. Reading the whole field back would cost
-// megabytes; reading a handful of cells costs nothing.
-//
-// result = (height, dh/dx, dh/dy, vertical velocity), all in cell units.
+// Probes: (height, dh/dx, dh/dy, vertical velocity) under a few dozen points.
 // ---------------------------------------------------------------------------
 
 kernel void sample_field(texture2d<float, access::read> field   [[texture(0)]],
@@ -145,7 +166,6 @@ kernel void sample_field(texture2d<float, access::read> field   [[texture(0)]],
     float2 p = clamp(probes[i], float2(2.0), size - 3.0);
     uint2 c = uint2(p);
 
-    // Average over a small footprint so a one-cell spike cannot fling a petal.
     float hL = 0.5 * (field.read(uint2(c.x - 2, c.y)).r + field.read(uint2(c.x - 1, c.y)).r);
     float hR = 0.5 * (field.read(uint2(c.x + 2, c.y)).r + field.read(uint2(c.x + 1, c.y)).r);
     float hD = 0.5 * (field.read(uint2(c.x, c.y - 2)).r + field.read(uint2(c.x, c.y - 1)).r);
@@ -153,6 +173,68 @@ kernel void sample_field(texture2d<float, access::read> field   [[texture(0)]],
     float2 hv = field.read(c).rg;
 
     results[i] = float4(hv.r, (hR - hL) / 3.0, (hU - hD) / 3.0, hv.g);
+}
+
+// ---------------------------------------------------------------------------
+// Silt. A film over the pond floor that wave energy scours away, more where
+// the water is busiest (two crests meeting), and not at all under anything
+// floating over it. This is the reveal: the player's ripples wash the mosaic
+// clean, and debris has to be moved before the tile beneath it can appear.
+// ---------------------------------------------------------------------------
+
+kernel void silt_erode(texture2d<float, access::read>   siltIn  [[texture(0)]],
+                       texture2d<float, access::write>  siltOut [[texture(1)]],
+                       texture2d<float, access::sample> field   [[texture(2)]],
+                       constant SiltParams &p                   [[buffer(0)]],
+                       constant float4 *covers                  [[buffer(1)]],
+                       uint2 gid                                [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(p.size.x) || gid.y >= uint(p.size.y)) { return; }
+    constexpr sampler smp(filter::linear, address::clamp_to_edge);
+
+    float2 uv = (float2(gid) + 0.5) / p.size.xy;
+    float2 texel = 1.0 / float2(field.get_width(), field.get_height());
+    float hC = field.sample(smp, uv).r;
+    float hL = field.sample(smp, uv - float2(texel.x, 0)).r;
+    float hR = field.sample(smp, uv + float2(texel.x, 0)).r;
+    float hD = field.sample(smp, uv - float2(0, texel.y)).r;
+    float hU = field.sample(smp, uv + float2(0, texel.y)).r;
+    float lap = hL + hR + hD + hU - 4.0 * hC;
+
+    float activity = abs(hC) * p.gains.x + abs(lap) * p.gains.y;
+    float e = max(0.0, activity - p.gains.z);
+
+    float aspect = p.viewport.x / p.viewport.y;
+    float2 q = float2(uv.x * aspect, uv.y);
+    for (uint i = 0; i < p.coverCount; ++i) {
+        float2 c = float2(covers[i].x * aspect, covers[i].y);
+        float r = covers[i].z;
+        float dist = distance(q, c);
+        e *= smoothstep(r * 0.85, r * 1.15, dist);   // shaded underneath, soft edge
+    }
+
+    float s = siltIn.read(gid).r - e * p.gains.w;
+    siltOut.write(float4(max(s, 0.0), 0.0, 0.0, 0.0), gid);
+}
+
+/// One thread per silt row: the silt total inside the mosaic circle.
+kernel void silt_rowsum(texture2d<float, access::read> silt [[texture(0)]],
+                        device float *rows                    [[buffer(0)]],
+                        constant SiltParams &p                [[buffer(1)]],
+                        uint y                                [[thread_position_in_grid]])
+{
+    if (y >= uint(p.size.y)) { return; }
+    float aspect = p.viewport.x / p.viewport.y;
+    float2 c = float2(p.mosaic.x * aspect, p.mosaic.y);
+    float r = p.mosaic.z;
+    float sum = 0.0;
+    uint w = uint(p.size.x);
+    for (uint x = 0; x < w; ++x) {
+        float2 uv = (float2(x, y) + 0.5) / p.size.xy;
+        float2 q = float2(uv.x * aspect, uv.y);
+        if (distance(q, c) < r) { sum += silt.read(uint2(x, y)).r; }
+    }
+    rows[y] = sum;
 }
 
 // ---------------------------------------------------------------------------
@@ -205,92 +287,180 @@ static float fbm(float2 p, int octaves)
 }
 
 // ---------------------------------------------------------------------------
-// Floor bake. Runs once per resize, and again on any frame the mosaic reveal
-// is animating, into its own texture. The water shader then samples it three
-// times for chromatic dispersion.
-//
-// The mosaic is a roundel etched into the pond floor. It sits under a film of
-// silt; each cleared piece of debris lifts the silt off one sector, wiping
-// outward from the centre. Under the silt it is a ghost, so the player senses
-// that something is there before they know what.
+// Floor base: baked once per resize. Sediment, grain, a pool of light.
 // ---------------------------------------------------------------------------
 
-fragment float4 floor_fragment(VertexOut in                             [[stage_in]],
-                               texture2d<float, access::sample> mosaic  [[texture(0)]],
-                               constant FloorParams &p                  [[buffer(0)]])
+fragment float4 floor_base_fragment(VertexOut in           [[stage_in]],
+                                    constant FloorParams &p [[buffer(0)]])
 {
-    constexpr sampler smp(filter::linear, address::clamp_to_edge);
-
     float aspect = p.viewport.x / p.viewport.y;
     float2 q = float2(in.uv.x * aspect, in.uv.y);
 
-    float3 deep    = p.deep.rgb;
-    float3 mid     = p.mid.rgb;
-    float3 shallow = p.shallow.rgb;
-
-    // Light pools toward the upper third, the way a window falls on a basin.
     float radial = distance(q, float2(0.5 * aspect, 0.30));
     float lift   = smoothstep(1.15, 0.02, radial);
+    float3 col = mix(p.deep.rgb, mix(p.mid.rgb, p.shallow.rgb, lift * lift), lift);
 
-    float3 col = mix(deep, mix(mid, shallow, lift * lift), lift);
-
-    // Grain, kept high-frequency. Low-frequency noise on a floor this large
-    // reads as fog rather than as a surface.
     float big   = fbm(q * 5.5, 4);
     float small = fbm(q * 19.0, 4);
     col *= 0.90 + 0.20 * big;
     col *= 0.94 + 0.12 * small;
 
-    // A few darker patches, like stones settled on the bottom.
     float patch = smoothstep(0.60, 0.82, fbm(q * 7.2 + 11.3, 3));
     col = mix(col, col * 0.70, patch * 0.70);
-
-    // Warm sediment, only where the light already reaches.
     col += float3(0.032, 0.023, 0.009) * lift * smoothstep(0.50, 0.88, small);
-
-    // Very low contrast banding, to break up the flat areas.
     col += 0.007 * sin(q.y * 62.0 + big * 7.0);
-
-    // --- the mosaic ---------------------------------------------------------
-    float2 centre = float2(p.mosaic.x * aspect, p.mosaic.y);
-    float  radius = p.mosaic.z;
-    float2 rel = (q - centre) / radius;
-    float  r = length(rel);
-    if (r < 1.0) {
-        float2 muv = rel * 0.5 + 0.5;
-        float4 m = mosaic.sample(smp, muv);
-
-        uint sectors = max(uint(p.counts.x), 1u);
-        float ang = atan2(rel.y, rel.x) + M_PI_F;             // 0 ... 2pi
-        uint s = min(uint(ang / (2.0 * M_PI_F) * float(sectors)), sectors - 1);
-        float rv = p.reveal[s >> 2][s & 3];
-
-        // Wipe outward from the centre, with a soft leading edge.
-        float edge = rv * 1.18;
-        float shown = 1.0 - smoothstep(edge - 0.10, edge + 0.04, r);
-        shown *= step(0.001, rv);
-
-        // Neighbouring sectors bleed a little into each other so the seams
-        // between them read as silt drifting rather than as pie slices.
-        float ghost = p.mosaic.w;
-        float alpha = m.a * mix(ghost, 1.0, shown);
-
-        // Tone the tile toward the floor so it reads as stone under water,
-        // not as a sticker on top of it.
-        float3 tile = m.rgb * 0.70 + col * 0.30;
-        tile = mix(col, tile, 0.84);
-        col = mix(col, tile, alpha);
-    }
 
     return float4(max(col, 0.0), 1.0);
 }
 
 // ---------------------------------------------------------------------------
-// Water
+// Floor compose: every frame. Base + mosaic under its silt; submerged sprites
+// are drawn on top of this in the same pass. The water then refracts all of it.
 // ---------------------------------------------------------------------------
 
-/// What the surface reflects. Not a real environment map, just a gradient with
-/// a sun in it, but the sun is what sells a moving surface.
+fragment float4 floor_compose_fragment(VertexOut in                             [[stage_in]],
+                                       texture2d<float, access::sample> base    [[texture(0)]],
+                                       texture2d<float, access::sample> mosaic  [[texture(1)]],
+                                       texture2d<float, access::sample> silt    [[texture(2)]],
+                                       constant FloorParams &p                  [[buffer(0)]])
+{
+    constexpr sampler smp(filter::linear, address::clamp_to_edge);
+    float3 col = base.sample(smp, in.uv).rgb;
+
+    float aspect = p.viewport.x / p.viewport.y;
+    float2 q = float2(in.uv.x * aspect, in.uv.y);
+    float2 centre = float2(p.mosaic.x * aspect, p.mosaic.y);
+    float2 rel = (q - centre) / p.mosaic.z;
+    float r = length(rel);
+    if (r < 1.02) {
+        float2 muv = rel * 0.5 + 0.5;
+        float4 m = mosaic.sample(smp, muv);
+        float s = silt.sample(smp, in.uv).r;
+        // Silt is a sandy film with its own grain; as it thins the stone shows.
+        // The film is patchy and thins toward its own edge, so it reads as
+        // sediment that has settled rather than a disc laid on the floor.
+        float grain = 0.80 + 0.40 * fbm(q * 40.0, 3);
+        float patch = 0.7 + 0.6 * fbm(q * 9.0 + 3.7, 3);
+        float rim = smoothstep(1.02, 0.80, r);
+        float3 siltCol = mix(col, p.siltColour.rgb * grain, 0.8);
+        float3 tile = m.rgb * 0.82 + col * 0.18;
+        float film = smoothstep(0.03, 0.70, s * patch) * p.mosaic.w * rim;
+        float3 under = mix(tile, siltCol, film);
+        col = mix(col, under, m.a);
+    }
+    return float4(col, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Sprites. One mesh (a strip of 12 quads) for everything; the strip lets a koi
+// wag along its spine. Modes: plain, floater (tilts on the surface and goes
+// wet where the water rises over it), submerged (into the floor, tinted by
+// depth) and shadow (the sprite's silhouette, dark, through the water).
+// ---------------------------------------------------------------------------
+
+struct SpriteVertexIn {
+    float2 uv [[attribute(0)]];
+};
+
+struct SpriteOut {
+    float4 position [[position]];
+    float2 uv;
+    float4 tint;
+    float  alpha;
+    float  wet;
+    float  depth;
+    uint   mode;
+};
+
+vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stage_in]],
+                               constant SpriteInstance *instances         [[buffer(1)]],
+                               constant SpriteParams &p                   [[buffer(2)]],
+                               texture2d<float, access::sample> field     [[texture(0)]],
+                               uint iid                                   [[instance_id]])
+{
+    constexpr sampler smp(filter::linear, address::clamp_to_edge);
+    SpriteInstance s = instances[iid];
+    uint mode = s.mode & 3u;
+    bool flip = (s.mode & 8u) != 0;
+
+    float2 uv = vin.uv;
+    float2 local = (uv - 0.5) * s.size;          // v grows downward in the image
+    if (flip) { local.x = -local.x; }
+
+    // Spine wag: image "up" is the tail. Bigger toward the tail.
+    float tailness = 1.0 - uv.y;
+    local.x += sin(s.wave + uv.y * 4.2) * s.waveAmp * s.size.x * tailness * tailness;
+
+    float wet = 0.0;
+    float2 centre = s.center;
+    float2 world;
+    if (mode == 1u) {
+        float2 cuv = centre / p.viewport.xy;
+        float2 texel = 1.0 / float2(field.get_width(), field.get_height());
+        float hc = field.sample(smp, cuv).r;
+        float gx = field.sample(smp, cuv + float2(texel.x * 2.0, 0)).r - field.sample(smp, cuv - float2(texel.x * 2.0, 0)).r;
+        float gy = field.sample(smp, cuv + float2(0, texel.y * 2.0)).r - field.sample(smp, cuv - float2(0, texel.y * 2.0)).r;
+        float bob = 1.0 + clamp(hc * p.gains.w, -0.25, 0.25);
+        float cs = cos(s.rotation), sn = sin(s.rotation);
+        float2 rotated = float2(local.x * cs - local.y * sn, local.x * sn + local.y * cs) * bob;
+        world = centre + rotated;
+        float hv = field.sample(smp, world / p.viewport.xy).r;
+        // A higher surface lifts that part of the piece toward the eye; the
+        // whole piece slides a little toward downhill.
+        world.y -= (hv - hc) * p.gains.x;
+        world -= float2(gx, gy) * p.gains.y;
+        wet = smoothstep(0.0, p.gains.z, hv - hc);
+    } else {
+        float cs = cos(s.rotation), sn = sin(s.rotation);
+        world = centre + float2(local.x * cs - local.y * sn, local.x * sn + local.y * cs);
+    }
+
+    SpriteOut out;
+    out.position = float4(world.x / p.viewport.x * 2.0 - 1.0, 1.0 - world.y / p.viewport.y * 2.0, 0.0, 1.0);
+    out.uv = uv;
+    out.tint = s.tint;
+    out.alpha = s.alpha;
+    out.wet = wet;
+    out.depth = s.depth;
+    out.mode = mode;
+    return out;
+}
+
+fragment float4 sprite_fragment(SpriteOut in                             [[stage_in]],
+                                texture2d<float, access::sample> tex     [[texture(0)]],
+                                constant SpriteParams &p                 [[buffer(0)]])
+{
+    constexpr sampler smp(filter::linear, address::clamp_to_edge, mip_filter::linear);
+    float4 c = tex.sample(smp, in.uv);
+    // Textures load premultiplied.
+    float a = c.a * in.alpha;
+    float3 rgb = c.rgb * in.tint.rgb * in.alpha;
+
+    if (in.mode == 3u) {
+        return float4(0.0, 0.0, 0.0, a * 0.42);
+    }
+    if (in.mode == 2u) {
+        // Deeper is dimmer, bluer and fainter.
+        float d = in.depth;
+        rgb = mix(rgb, rgb * p.floorTint.rgb, d * 0.8) * (1.0 - d * 0.35);
+        a *= 1.0 - d * 0.75;
+        rgb *= (1.0 - d * 0.75);
+        return float4(rgb, a);
+    }
+    if (in.mode == 1u) {
+        // Where the water rides over it, the piece goes darker and cooler.
+        float3 wetted = rgb * float3(0.55, 0.72, 0.80);
+        rgb = mix(rgb, wetted, in.wet * 0.85);
+    }
+    return float4(rgb, a);
+}
+
+// ---------------------------------------------------------------------------
+// Water. Photographic by default. In woodblock style the same surface is
+// drawn as a print: flat colour, shading cut into bands, an ink line along
+// every crest, foam flecks, paper grain.
+// ---------------------------------------------------------------------------
+
 static float3 skyLook(float3 R, float3 L)
 {
     float up = saturate(R.z);
@@ -320,78 +490,77 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     float2 grad = float2(hR - hL, hU - hD) * 0.5;
     float  lap  = (hL + hR + hD + hU - 4.0 * hC);
 
-    // How busy this patch of water is. Fine chop only appears on water that is
-    // already moving, so still water stays glassy.
-    float activity = saturate(abs(hC) * 5.0 + abs(lap) * 26.0);
+    bool woodblock = p.style.x > 0.5;
 
-    // Capillary detail: small fast ripples riding on the big slow ones. Two
-    // noise taps differenced into a gradient, scrolling against each other.
+    float activity = saturate(abs(hC) * 5.0 + abs(lap) * 26.0);
     float2 dp = float2(0.004, 0.0);
     float2 sc = in.uv * 34.0 + float2(p.time * 0.55, -p.time * 0.42);
     float  n0 = valueNoise(sc);
     float2 fineGrad = float2(valueNoise(sc + dp.xy) - n0,
                              valueNoise(sc + dp.yx) - n0);
+    float detail = woodblock ? p.detailGain * 0.25 : p.detailGain;
+    float3 N = normalize(float3(-(grad * 46.0 + fineGrad * detail * activity), 1.0));
 
-    float3 N = normalize(float3(-(grad * 46.0 + fineGrad * p.detailGain * activity), 1.0));
-
-    // --- refraction, with dispersion ---------------------------------------
-    // Red bends least, blue most. A single-channel offset looks like plastic;
-    // the split is most of what makes it read as water.
-    float2 offset = grad * p.refraction;
-    float  spread = p.dispersion;
+    float2 offset = grad * p.refraction * (woodblock ? 0.6 : 1.0);
+    float  spread = woodblock ? 0.0 : p.dispersion;
     float3 col;
     col.r = floorTex.sample(smp, in.uv + offset * (1.0 + spread)).r;
     col.g = floorTex.sample(smp, in.uv + offset).g;
     col.b = floorTex.sample(smp, in.uv + offset * (1.0 - spread)).b;
 
-    // Season cast: the water column itself carries a colour.
     col = mix(col, col * p.waterTint.rgb, p.waterTint.a);
 
-    // Deeper apparent path length under a trough: tint and darken slightly.
     float depth = saturate(-hC * 1.6 + length(offset) * 5.0);
     col *= mix(1.0, 0.80, depth);
     col = mix(col, col * float3(0.72, 0.96, 1.06), depth * 0.65);
 
-    // --- caustics -----------------------------------------------------------
-    // Converging rays brighten the floor. The laplacian stands in for that
-    // convergence and costs four taps already paid for above.
     float caustic = clamp(-lap * p.causticGain, -0.6, 2.2);
-    col += float3(0.40, 0.74, 0.80) * max(caustic, 0.0) * 0.50;
-    col *= 1.0 + min(caustic, 0.0) * 0.34;
-
-    // --- where two crests meet ---------------------------------------------
-    // Superposition doubles the height. Keying a bloom off a threshold the
-    // single wave sits below means a lone ripple stays quiet and a collision
-    // flares, which is the whole readability problem in one term.
     float crest = smoothstep(0.055, 0.20, hC);
-    col += float3(0.62, 0.86, 0.92) * crest * p.crestGain;
 
-    // --- lighting -----------------------------------------------------------
     float3 L = normalize(float3(-0.40, 0.56, 0.72));
     float3 V = float3(0.0, 0.0, 1.0);
     float3 H = normalize(L + V);
-
     float tight = pow(max(dot(N, H), 0.0), 220.0);
     float broad = pow(max(dot(N, H), 0.0), 26.0);
-    col += float3(0.85, 0.94, 1.00) * (tight * 1.5 + broad * 0.16) * p.specGain;
-
-    // Schlick fresnel, F0 = 0.02 for water. Near flat we look straight through
-    // to the floor; on the steep flank of a wave the sky takes over.
     float f = 0.02 + 0.98 * pow(1.0 - saturate(N.z), 5.0);
     float3 R = reflect(-V, N);
-    col = mix(col, skyLook(R, L), saturate(f * 1.5));
 
-    // --- sparkle ------------------------------------------------------------
-    // Twinkling specks on the brightest caustic bands. Quantised in space and
-    // time so they pop on and off rather than sliding around.
-    float cell  = hash21(floor(in.uv * p.viewport / 3.0) + floor(p.time * 18.0));
-    float glint = step(0.9955, cell) * smoothstep(0.35, 1.3, caustic + crest);
-    col += float3(1.0, 0.99, 0.95) * glint * p.sparkleGain;
+    if (!woodblock) {
+        col += float3(0.40, 0.74, 0.80) * max(caustic, 0.0) * 0.50;
+        col *= 1.0 + min(caustic, 0.0) * 0.34;
+        col += float3(0.62, 0.86, 0.92) * crest * p.crestGain;
+        col += float3(0.85, 0.94, 1.00) * (tight * 1.5 + broad * 0.16) * p.specGain;
+        col = mix(col, skyLook(R, L), saturate(f * 1.5));
 
-    // --- finish -------------------------------------------------------------
-    float2 vc = in.uv - 0.5;
-    col *= 1.0 - dot(vc, vc) * 0.40;
-    col += (hash21(in.uv * p.viewport + p.time) - 0.5) * (1.5 / 255.0);
+        float cell  = hash21(floor(in.uv * p.viewport / 3.0) + floor(p.time * 18.0));
+        float glint = step(0.9955, cell) * smoothstep(0.35, 1.3, caustic + crest);
+        col += float3(1.0, 0.99, 0.95) * glint * p.sparkleGain;
 
+        float2 vc = in.uv - 0.5;
+        col *= 1.0 - dot(vc, vc) * 0.40;
+        col += (hash21(in.uv * p.viewport + p.time) - 0.5) * (1.5 / 255.0);
+        return float4(col, 1.0);
+    }
+
+    // --- woodblock ------------------------------------------------------------
+    // Shading in three flat steps rather than a gradient.
+    float shade = saturate(broad * 0.9 + f * 1.2 + max(caustic, 0.0) * 0.12);
+    float band = floor(shade * 3.0 + 0.5) / 3.0;
+    float3 lightCol = float3(0.78, 0.86, 0.84);
+    col = mix(col, lightCol, band * 0.45);
+    col *= 1.0 + min(caustic, 0.0) * 0.18;
+
+    // Ink along the crests: where the surface is steep and rising.
+    float slope = length(grad) * 38.0;
+    float ink = smoothstep(0.35, 0.75, slope) * smoothstep(-0.02, 0.06, hC);
+    col = mix(col, p.inkColour.rgb, ink * 0.88);
+
+    // Foam flecks on the tallest crests, printed cream.
+    float fleck = step(0.62, hash21(floor(in.uv * p.viewport / 4.0))) * smoothstep(0.5, 1.0, crest);
+    col = mix(col, float3(0.96, 0.94, 0.86), fleck * 0.9);
+
+    // Paper grain over everything.
+    float paper = fbm(in.uv * p.viewport / 6.0, 2);
+    col *= 0.92 + 0.14 * paper;
     return float4(col, 1.0);
 }

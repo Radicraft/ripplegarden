@@ -12,16 +12,17 @@ enum GameTuning {
     static let slopeGain: Float = 125000
     static let trailingPull: Float = 0.18
 
-    /// Below this slope a heavy piece does not budge. A lone tap peaks around
-    /// 0.02; a charged swell reaches 0.08 and up.
-    static let heavyThreshold: Float = 0.055
+    /// Water height under a heavy piece below which it does not budge. A tap's
+    /// ring passes at a few hundredths; a charged swell lifts by tenths.
+    static let heavyThreshold: Float = 0.045
+    static let heavyGain: Float = 11.0
     static let lightMass: Float = 1.0
     static let heavyMass: Float = 7.0
 
     /// Velocity decay per second. Petals stop almost as soon as the water
     /// does; stones stop sooner.
     static let lightDrag: Float = 2.6
-    static let heavyDrag: Float = 6.0
+    static let heavyDrag: Float = 3.0
 
     /// The edge current, in points per second at full strength, and how fast
     /// a stroke along the edge builds it.
@@ -60,6 +61,8 @@ final class Debris: Identifiable {
     var radius: CGFloat
     var scale: CGFloat
     var cleared = false
+    /// Drawn alpha, for pieces on their way out.
+    var fade: Float = 1
     /// Last known water height under the piece, for the bob.
     var height: Float = 0
 
@@ -90,13 +93,15 @@ enum DebrisPhysics {
             // front of a wave shoves harder than its back drags.
             let rising: Float = s.velocity > 0 ? 1.0 : GameTuning.trailingPull
             var push = -s.slope * GameTuning.slopeGain * rising
-            let strength = simd_length(s.slope)
             if d.cls == .heavy {
-                if strength < GameTuning.heavyThreshold {
+                // A tap's ring is a few hundredths high and does nothing. A
+                // held swell lifts the water under the log by tenths, and only
+                // its rising face shoves, so the log moves away from the hand.
+                let lift = abs(s.height)
+                if lift < GameTuning.heavyThreshold || s.velocity <= 0 {
                     push = .zero
                 } else {
-                    // Only the part above the threshold moves the stone.
-                    push *= (strength - GameTuning.heavyThreshold) / strength
+                    push *= min(1, (lift - GameTuning.heavyThreshold) / GameTuning.heavyThreshold) * GameTuning.heavyGain
                 }
             }
             force += push

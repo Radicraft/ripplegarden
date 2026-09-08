@@ -1,5 +1,4 @@
 import SwiftUI
-import SpriteKit
 
 /// Paper and ink, the two colours the interface is allowed.
 enum Ink {
@@ -18,10 +17,6 @@ struct LevelView: View {
         ZStack {
             WaterView(controller: controller)
                 .ignoresSafeArea()
-
-            SpriteView(scene: controller.scene, preferredFramesPerSecond: 120, options: [.allowsTransparency])
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
 
             hud
         }
