@@ -19,9 +19,9 @@ final class LevelRecord {
 @Model
 final class GardenRecord {
     var seasonID: String = ""
-    var bloomStage: Int = 0
+    var bloomStage: Double = 0
 
-    init(seasonID: String, bloomStage: Int) {
+    init(seasonID: String, bloomStage: Double) {
         self.seasonID = seasonID
         self.bloomStage = bloomStage
     }
@@ -34,12 +34,14 @@ final class GardenRecord {
 /// CloudKit (no entitlement yet, or no account), it falls back to local, and
 /// then to memory, rather than refusing to start.
 @MainActor
-final class ProgressStore {
+final class ProgressStore: ObservableObject {
 
     static let shared = ProgressStore()
 
     let container: ModelContainer
     private var context: ModelContext { container.mainContext }
+    /// Bumped on every write so the path redraws.
+    @Published private(set) var version = 0
 
     private init() {
         let schema = Schema([LevelRecord.self, GardenRecord.self])
@@ -71,6 +73,13 @@ final class ProgressStore {
             try? context.delete(model: GardenRecord.self)
             try? context.save()
         }
+        // `-unlockAll` opens every level for testing.
+        if ProcessInfo.processInfo.arguments.contains("-unlockAll") {
+            for l in Library.levels where !isComplete(levelID: l.id) {
+                context.insert(LevelRecord(levelID: l.id, seasonID: l.seasonID))
+            }
+            try? context.save()
+        }
     }
 
     func isComplete(levelID: String) -> Bool {
@@ -83,22 +92,36 @@ final class ProgressStore {
         return (try? context.fetchCount(descriptor)) ?? 0
     }
 
-    func bloomStage(for seasonID: String) -> Int {
+    func bloomStage(for seasonID: String) -> Float {
         let descriptor = FetchDescriptor<GardenRecord>(predicate: #Predicate { $0.seasonID == seasonID })
-        return (try? context.fetch(descriptor))?.map(\.bloomStage).max() ?? 0
+        return Float((try? context.fetch(descriptor))?.map(\.bloomStage).max() ?? 0)
     }
 
-    func markComplete(levelID: String, seasonID: String, bloomStage: Int) {
+    /// A season opens when the one before it is finished.
+    func isUnlocked(season: Season) -> Bool {
+        guard let previous = Library.seasons.first(where: { $0.order == season.order - 1 }) else { return true }
+        return Library.levels(in: previous).allSatisfy { isComplete(levelID: $0.id) }
+    }
+
+    func isUnlocked(level: LevelSpec) -> Bool {
+        guard let season = Library.season(id: level.seasonID), isUnlocked(season: season) else { return false }
+        let siblings = Library.levels(in: season)
+        guard let i = siblings.firstIndex(where: { $0.id == level.id }) else { return false }
+        return i == 0 || isComplete(levelID: siblings[i - 1].id)
+    }
+
+    func markComplete(levelID: String, seasonID: String, bloomStage: Float) {
         if !isComplete(levelID: levelID) {
             context.insert(LevelRecord(levelID: levelID, seasonID: seasonID))
         }
         let descriptor = FetchDescriptor<GardenRecord>(predicate: #Predicate { $0.seasonID == seasonID })
         if let record = (try? context.fetch(descriptor))?.first {
-            record.bloomStage = max(record.bloomStage, bloomStage)
+            record.bloomStage = max(record.bloomStage, Double(bloomStage))
         } else {
-            context.insert(GardenRecord(seasonID: seasonID, bloomStage: bloomStage))
+            context.insert(GardenRecord(seasonID: seasonID, bloomStage: Double(bloomStage)))
         }
         try? context.save()
+        version += 1
     }
 }
 

@@ -10,6 +10,7 @@ enum Ink {
 struct LevelView: View {
 
     @ObservedObject var controller: GameController
+    let onExit: () -> Void
     @ObservedObject private var settings = Settings.shared
     @State private var showSettings = false
 
@@ -29,6 +30,16 @@ struct LevelView: View {
     private var hud: some View {
         VStack {
             HStack(alignment: .top) {
+                Button(action: onExit) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Ink.ink)
+                        .frame(width: 34, height: 34)
+                        .background(Ink.paper.opacity(0.85), in: Circle())
+                }
+                .padding(.leading, 18)
+                .padding(.top, 8)
+                .opacity(controller.phase == .playing ? 0.8 : 0)
                 if controller.showTitle {
                     Text(controller.level.title)
                         .font(.system(size: 22, weight: .regular, design: .serif))
@@ -63,9 +74,10 @@ struct LevelView: View {
             }
 
             if controller.phase == .complete {
-                CompletionCard(season: controller.season) {
-                    controller.next()
-                }
+                CompletionCard(season: controller.season,
+                               hasNext: Library.level(after: controller.level) != nil,
+                               next: { controller.next() },
+                               garden: onExit)
                 .padding(.bottom, 86)
                 .transition(.opacity.combined(with: .offset(y: 16)))
             }
@@ -91,7 +103,9 @@ struct HintBubble: View {
 
 struct CompletionCard: View {
     let season: Season
+    let hasNext: Bool
     let next: () -> Void
+    let garden: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
@@ -101,13 +115,25 @@ struct CompletionCard: View {
             Text("The garden blooms a little further.")
                 .font(.system(size: 15, design: .serif))
                 .foregroundStyle(Ink.ink.opacity(0.75))
-            Button(action: next) {
-                Text("Next")
-                    .font(.system(size: 17, weight: .medium, design: .serif))
-                    .foregroundStyle(Ink.paper)
-                    .padding(.horizontal, 34)
-                    .padding(.vertical, 10)
-                    .background(Ink.ink, in: Capsule())
+            HStack(spacing: 14) {
+                Button(action: garden) {
+                    Text("Garden")
+                        .font(.system(size: 17, weight: .medium, design: .serif))
+                        .foregroundStyle(Ink.ink)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 10)
+                        .overlay(Capsule().stroke(Ink.ink.opacity(0.5), lineWidth: 1))
+                }
+                if hasNext {
+                    Button(action: next) {
+                        Text("Next")
+                            .font(.system(size: 17, weight: .medium, design: .serif))
+                            .foregroundStyle(Ink.paper)
+                            .padding(.horizontal, 34)
+                            .padding(.vertical, 10)
+                            .background(Ink.ink, in: Capsule())
+                    }
+                }
             }
             .padding(.top, 4)
         }
@@ -121,7 +147,9 @@ struct CompletionCard: View {
 
 struct SettingsSheet: View {
     @ObservedObject private var settings = Settings.shared
+    @ObservedObject private var store = Store.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var restoring = false
 
     var body: some View {
         NavigationStack {
@@ -131,6 +159,19 @@ struct SettingsSheet: View {
                         Toggle("Sound", isOn: $settings.soundOn)
                     }
                     Toggle("Haptics", isOn: $settings.hapticsOn)
+                }
+                Section {
+                    Button {
+                        restoring = true
+                        Task { await store.restore(); restoring = false }
+                    } label: {
+                        HStack {
+                            Text("Restore purchases")
+                            Spacer()
+                            if restoring { ProgressView() }
+                        }
+                    }
+                    .disabled(restoring)
                 }
                 Section {
                     Text("Ripple Garden is a calm puzzle about water. Every level is a pond, every ripple is yours, and nothing can go wrong.")

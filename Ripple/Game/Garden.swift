@@ -27,11 +27,14 @@ final class Garden {
         self.art = art
     }
 
-    func configure(art: ArtSet, size: CGSize, bloomStage: Int) {
+    /// Pixel size of a named texture, for keeping aspect; set by the controller.
+    var textureSize: (String) -> CGSize = { _ in CGSize(width: 1, height: 1) }
+
+    func configure(art: ArtSet, size: CGSize, bloomStage: Float) {
         self.art = art
         self.size = size
-        self.bloomStage = Float(bloomStage)
-        bloomTarget = Float(bloomStage)
+        self.bloomStage = bloomStage
+        bloomTarget = bloomStage
         bloomRate = 0
         petals = []
         petalRate = 0
@@ -47,14 +50,13 @@ final class Garden {
 
     // MARK: - Bloom
 
-    func bloom(to stage: Int, duration: Float) {
-        bloomTarget = Float(max(0, min(3, stage)))
-        guard bloomTarget > bloomStage else { return }
+    func bloom(to stage: Float, duration: Float) {
+        bloomTarget = max(0, min(3, stage))
+        guard bloomTarget > bloomStage + 0.01 else { return }
         bloomRate = (bloomTarget - bloomStage) / max(0.1, duration)
-        if stage == 3 {
-            petalRate = 5
-            petalUntil = time + TimeInterval(duration) + 8
-        }
+        // Blossom falls in proportion to how far the garden just came on.
+        petalRate = 2 + 3 * (bloomTarget - bloomStage)
+        petalUntil = time + TimeInterval(duration) + 7
     }
 
     // MARK: - Koi
@@ -159,7 +161,8 @@ final class Garden {
 
         if let bank = art.bank {
             let bw = w * 1.06
-            let bh = bw * art.bankAspect
+            let ts = textureSize(bank)
+            let bh = bw * ts.height / max(1, ts.width)
             out.append(Sprite(bank, at: CGPoint(x: w / 2, y: size.height - bh * 0.5 + art.bankSink),
                               size: CGSize(width: bw, height: bh)))
         }
@@ -225,11 +228,15 @@ final class Koi {
         var diff = want - heading
         while diff > .pi { diff -= 2 * .pi }
         while diff < -.pi { diff += 2 * .pi }
-        let turn = max(-1.3 * dt, min(1.3 * dt, diff))
+        // Real koi turn in wide arcs. The rate is capped so the path the body
+        // is laid along never bends tighter than about a body length, and the
+        // turn eases in and out rather than snapping to full rate.
+        let want_rate = min(0.55, abs(diff) * 0.9)
+        let turn = max(-want_rate * dt, min(want_rate * dt, diff))
         heading += turn
-        // A fish slows into a tight turn and beats its tail harder.
+        // A fish slows a little into a turn and beats its tail harder.
         let tightness = min(1, abs(diff) / 1.2)
-        let s = Float(speed) * (depth > 0.9 ? 0.5 : 1) * (1 - 0.35 * tightness)
+        let s = Float(speed) * (depth > 0.9 ? 0.5 : 1) * (1 - 0.2 * tightness)
         position.x += CGFloat(cos(heading) * s * dt)
         position.y += CGFloat(sin(heading) * s * dt)
         phase += dt * (3.0 + s * 0.09 + tightness * 2.5)
@@ -273,7 +280,17 @@ final class Koi {
         if trail.isEmpty { straightTrail() }
         var rows: [SIMD4<Float>] = []
         let total = Float(length)
+        // The head and the front third of the body are rigid; the bend lives
+        // in the rear two thirds, the way a carp actually flexes.
+        let headTangent = SIMD2(cos(heading), sin(heading))
+        let head = SIMD2(Float(position.x), Float(position.y))
         for row in 0...12 {
+            if row >= 9 {
+                let back = total * (1 - Float(row) / 12)
+                let pos = head - headTangent * back
+                rows.append(SIMD4(pos.x, pos.y, headTangent.x, headTangent.y))
+                continue
+            }
             let back = total * (1 - Float(row) / 12)
             var acc: Float = 0
             var i = 0
@@ -293,13 +310,39 @@ final class Koi {
             tangent = len > 0.001 ? tangent / len : SIMD2(cos(heading), sin(heading))
             rows.append(SIMD4(pos.x, pos.y, tangent.x, tangent.y))
         }
+        // Rows were built tail-first; the rigid front was appended straight.
+        // Smooth the joint: blend the last flexible rows toward the rigid line
+        // so there is no kink where the two meet.
+        let joint = rows[9]
+        for row in stride(from: 8, through: 6, by: -1) {
+            let t = Float(9 - row) / 4      // 0.25, 0.5, 0.75
+            let back = total * (1 - Float(row) / 12)
+            let rigid = head - headTangent * back
+            var r = rows[row]
+            r.x = r.x * t + rigid.x * (1 - t)
+            r.y = r.y * t + rigid.y * (1 - t)
+            let tan = simd_normalize(SIMD2(r.z, r.w) * t + headTangent * (1 - t))
+            r.z = tan.x; r.w = tan.y
+            rows[row] = r
+        }
+        _ = joint
         return rows
     }
 
     private func pickTarget(in size: CGSize) {
-        target = CGPoint(x: CGFloat.random(in: 70...(size.width - 70)),
-                         y: CGFloat.random(in: 130...(size.height - 150)))
-        speed = CGFloat.random(in: 26...44)
+        // Somewhere ahead-ish and far: a fish cruises, it does not dither.
+        for _ in 0..<12 {
+            let candidate = CGPoint(x: CGFloat.random(in: 70...(size.width - 70)),
+                                    y: CGFloat.random(in: 130...(size.height - 150)))
+            let dx = Float(candidate.x - position.x), dy = Float(candidate.y - position.y)
+            let dist = hypot(dx, dy)
+            var diff = atan2(dy, dx) - heading
+            while diff > .pi { diff -= 2 * .pi }
+            while diff < -.pi { diff += 2 * .pi }
+            if dist > 220, abs(diff) < 1.6 { target = candidate; break }
+            target = candidate
+        }
+        speed = CGFloat.random(in: 24...40)
     }
 
     private func surface(now: TimeInterval, in size: CGSize) {

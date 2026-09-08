@@ -65,9 +65,19 @@ final class GameController: ObservableObject, TouchInput {
 
     // MARK: - Wiring
 
+    /// Called from the path before the level screen appears.
+    func prepare(level: LevelSpec) {
+        self.level = level
+        season = Library.season(for: level)
+        art = season.art(for: style)
+        phase = .playing
+        if renderer != nil { load(level: level) }
+    }
+
     func attach(renderer: WaterRenderer) {
         self.renderer = renderer
         renderer.style = style
+        garden.textureSize = { [weak renderer] name in renderer?.textures.size(name) ?? CGSize(width: 1, height: 1) }
         renderer.onFrame = { [weak self] dt in self?.frame(dt: dt) }
         renderer.onChargedRelease = { [weak self] charge in
             guard let self else { return }
@@ -461,7 +471,7 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     func next() {
-        let following = Library.level(after: level) ?? level
+        guard let following = Library.level(after: level) else { return }
         load(level: following)
     }
 }
