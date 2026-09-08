@@ -143,7 +143,7 @@ enum Tuning {
     static let breezeRadius: ClosedRange<Float> = 45...95
 
     static let refraction: Float = 0.090
-    static let causticGain: Float = 36.0
+    static let causticGain: Float = 18.0
     static let specGain: Float = 0.90
     static let crestGain: Float = 0.30
     static let sparkleGain: Float = 0.55
@@ -735,6 +735,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(silt, index: 2)
                 encoder.setFragmentTexture(depthTexture, index: 3)
                 encoder.setFragmentTexture(bedTexture ?? blankMosaic, index: 4)
+                encoder.setFragmentTexture(read, index: 5)
                 encoder.setFragmentBytes(&fp, length: MemoryLayout<FloorParams>.stride, index: 0)
                 encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)

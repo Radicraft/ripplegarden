@@ -377,6 +377,7 @@ fragment float4 floor_compose_fragment(VertexOut in                             
                                        texture2d<float, access::sample> silt    [[texture(2)]],
                                        texture2d<float, access::sample> depth   [[texture(3)]],
                                        texture2d<float, access::sample> bed     [[texture(4)]],
+                                       texture2d<float, access::sample> field   [[texture(5)]],
                                        constant FloorParams &p                  [[buffer(0)]],
                                        constant CameraParams &cam               [[buffer(1)]])
 {
@@ -412,17 +413,38 @@ fragment float4 floor_compose_fragment(VertexOut in                             
     float3 abyss = p.deep.rgb * 0.75;
     col = mix(col, abyss, deepness * 0.7);
 
-    // Sunlight through a living surface: a net of caustic light dancing on
-    // the bed, bright on the shelves, fading into the deep; and shafts of
-    // light slanting down through the deep water, drifting slowly.
+    // Sunlight through the real surface. Light coming straight down is bent
+    // by the surface's slope and lands on the bed a little displaced, more
+    // so the deeper the bed; where neighbouring rays are bent together the
+    // bed brightens, where they are spread it dims. The convergence is the
+    // curvature of the surface (its laplacian) at the point the light came
+    // through, scaled by the depth it travelled. Calm water gives nothing,
+    // a passing ring gives a bright travelling line, two rings crossing
+    // give a knot of light: exactly what a pond does.
     float tm = p.bed.z;
-    float2 c1 = q * 9.0 + float2(tm * 0.11, -tm * 0.07);
-    float2 c2 = q * 7.3 + float2(-tm * 0.09, tm * 0.13);
-    float n1 = valueNoise(c1), n2 = valueNoise(c2 + 3.1);
-    float net = pow(1.0 - abs(sin((n1 + n2) * 6.28318)), 6.0);
-    float net2 = pow(1.0 - abs(sin((valueNoise(c1 * 1.7 + 8.0) + n2) * 6.28318)), 8.0);
-    float caustic = (net * 0.7 + net2 * 0.5) * mix(1.0, 0.35, deepness);
-    col += (p.shallow.rgb * 0.7 + 0.3) * caustic * 0.42;
+    {
+        float2 fieldTexel = 1.0 / float2(field.get_width(), field.get_height());
+        float2 above = in.uv;
+        float depthHere = 0.35 + 0.65 * d;
+        float2 tx = float2(fieldTexel.x * 2.0, 0.0), ty = float2(0.0, fieldTexel.y * 2.0);
+        float hL = field.sample(smp, above - tx).r, hR = field.sample(smp, above + tx).r;
+        float hD = field.sample(smp, above - ty).r, hU = field.sample(smp, above + ty).r;
+        float hC = field.sample(smp, above).r;
+        float2 slope = float2(hR - hL, hU - hD) * 0.5;
+        // The light through this surface point lands displaced downhill.
+        float2 landing = above - slope * depthHere * 1.6;
+        // Convergence at the landing point, from the curvature there.
+        float lL = field.sample(smp, landing - tx).r, lR = field.sample(smp, landing + tx).r;
+        float lD = field.sample(smp, landing - ty).r, lU = field.sample(smp, landing + ty).r;
+        float lC = field.sample(smp, landing).r;
+        float lap = (lL + lR + lD + lU - 4.0 * lC);
+        float focus = 1.0 / max(1.0 + lap * 55.0 * depthHere, 0.25);
+        float caustic = clamp(focus - 1.0, -0.6, 2.5);
+        float3 sun = p.shallow.rgb * 0.5 + 0.5;
+        col += sun * max(caustic, 0.0) * 0.55 * mix(1.0, 0.5, deepness);
+        col *= 1.0 + min(caustic, 0.0) * 0.45;
+        (void)hC;
+    }
 
     float shaftCoord = q.x * 2.2 + q.y * 0.8 + tm * 0.03;
     float shafts = pow(0.5 + 0.5 * sin(shaftCoord * 6.28318), 4.0) * (0.4 + 0.6 * fbm(float2(shaftCoord * 1.7, tm * 0.02), 2));
