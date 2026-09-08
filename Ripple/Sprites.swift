@@ -234,7 +234,7 @@ final class SpriteBatch {
     func beginFrame() { cursor = 0 }
 
     /// Uploads the sprites and draws them in order, in runs by texture.
-    func draw(_ sprites: [Sprite], encoder: MTLRenderCommandEncoder, params: SpriteParams, field: MTLTexture, spines: MTLBuffer) {
+    func draw(_ sprites: [Sprite], encoder: MTLRenderCommandEncoder, params: SpriteParams, field: MTLTexture, spines: MTLBuffer, camera: inout CameraParams) {
         guard !sprites.isEmpty else { return }
         let start = cursor
         let count = min(sprites.count, SpriteBatch.maxInstances - start)
@@ -252,6 +252,7 @@ final class SpriteBatch {
         encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 1)
         encoder.setVertexBytes(&p, length: MemoryLayout<SpriteParams>.stride, index: 2)
         encoder.setVertexBuffer(spines, offset: 0, index: 3)
+        encoder.setVertexBytes(&camera, length: MemoryLayout<CameraParams>.stride, index: 4)
         encoder.setVertexTexture(field, index: 0)
         encoder.setFragmentBytes(&p, length: MemoryLayout<SpriteParams>.stride, index: 0)
 

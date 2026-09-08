@@ -96,10 +96,12 @@ final class Garden {
                 let root = CGPoint(x: size.width / 2 + CGFloat(cos(angle) * rx), y: size.height / 2 + CGFloat(sin(angle) * ry))
                 for k in 0..<Int.random(in: 2...4, using: &rng) {
                     let name = art.weeds[(c + k) % art.weeds.count]
+                    let rootPoint = CGPoint(x: root.x + CGFloat.random(in: -16...16, using: &rng),
+                                            y: root.y + CGFloat.random(in: -10...10, using: &rng))
                     weeds.append(Weed(texture: name,
-                                      root: CGPoint(x: root.x + CGFloat.random(in: -16...16, using: &rng),
-                                                    y: root.y + CGFloat.random(in: -10...10, using: &rng)),
-                                      height: CGFloat.random(in: 120...200, using: &rng),
+                                      root: rootPoint,
+                                      bedDepth: depthAt(rootPoint),
+                                      height: CGFloat.random(in: 110...190, using: &rng),
                                       lean: angle + .pi + Float.random(in: -0.7...0.7, using: &rng),
                                       phase: Float.random(in: 0...(2 * .pi), using: &rng),
                                       depth: Float.random(in: 0.2...0.45, using: &rng)))
@@ -340,11 +342,9 @@ final class Garden {
         for w in weeds {
             let tw = textureSize(w.texture)
             let width = w.height * tw.width / max(1, tw.height)
-            // Rooted at the bottom of the image: the centre sits half a height up.
-            let centre = CGPoint(x: w.root.x - CGFloat(sin(w.lean)) * w.height * 0.5,
-                                 y: w.root.y - CGFloat(cos(w.lean)) * w.height * 0.5)
-            out.append(Sprite(w.texture, at: centre, size: CGSize(width: width, height: w.height),
-                              rotation: w.lean, mode: .submerged, alpha: 1, depth: w.depth,
+            // The strand stands on its root; the shader raises it toward the surface.
+            out.append(Sprite(w.texture, at: w.root, size: CGSize(width: width, height: w.height),
+                              rotation: w.lean, mode: .submerged, alpha: 1, depth: w.bedDepth,
                               wave: w.phase + Float(time) * 0.7, waveAmp: w.bend, weed: true))
         }
         for c in critters where c.under {
@@ -364,7 +364,7 @@ final class Garden {
                               alpha: 0.7 * (1 - d * 0.6), wave: k.phase, waveAmp: k.waveAmp, spine: index, z: -1.0))
             out.append(Sprite(k.texture, at: .zero, size: CGSize(width: w, height: h),
                               mode: .submerged, alpha: 1, depth: d,
-                              wave: k.phase, waveAmp: k.waveAmp, spine: index, z: z))
+                              wave: k.phase, waveAmp: k.waveAmp, tint: [1, 1, 1, k.roll], spine: index, z: z))
         }
         return (out, spines)
     }
@@ -372,9 +372,22 @@ final class Garden {
     /// Where each strand's tip is on the surface plane, for the water probes.
     func weedTips() -> [CGPoint] {
         weeds.map { w in
-            let tipX = w.root.x - CGFloat(sin(w.lean)) * w.height + CGFloat(cos(w.lean)) * CGFloat(w.bend) * w.height * 0.5
-            let tipY = w.root.y - CGFloat(cos(w.lean)) * w.height + CGFloat(sin(w.lean)) * CGFloat(w.bend) * w.height * 0.5
-            return CGPoint(x: tipX, y: tipY)
+            CGPoint(x: w.root.x + CGFloat(cos(w.lean) * w.bend) * w.height * 0.8,
+                    y: w.root.y + CGFloat(sin(w.lean) * w.bend) * w.height * 0.8)
+        }
+    }
+
+    /// The branches seen again in the water: a faint mirror image below the
+    /// surface, hazed, where the camera's line of sight to the mirror point falls.
+    func reflectionSprites() -> [Sprite] {
+        floraSprites().compactMap { s in
+            guard s.gpu.pad.y > 0.5 else { return nil }
+            var r = s
+            r.gpu.pad.y = -s.gpu.pad.y
+            r.gpu.mode = SpriteInstance.Mode.submerged.rawValue | (s.gpu.mode & SpriteInstance.flipX)
+            r.gpu.alpha = s.gpu.alpha * 0.32
+            r.gpu.depth = 0.55
+            return r
         }
     }
 
@@ -412,7 +425,7 @@ final class Garden {
     func skySprites() -> [Sprite] {
         var out: [Sprite] = clouds.map { c in
             Sprite(c.texture, at: c.position, size: CGSize(width: c.width, height: c.width * c.aspect),
-                   alpha: 0.30, tint: [0.92, 0.97, 1.0, 1], z: 2.2)
+                   alpha: 0.22, tint: [0.92, 0.97, 1.0, 1], z: 2.2)
         }
         if let f = dragonfly { out += f.sprites(textureSize) }
         if let h = heron {
@@ -477,6 +490,8 @@ final class Koi {
     private(set) var heading: Float
     private(set) var depth: Float = 1
     private(set) var phase: Float = 0
+    /// How far the fish is banked into its turn, -1...1, eased.
+    private(set) var roll: Float = 0
     private var target = CGPoint.zero
     private var speed: CGFloat = 34
     private var stateUntil: TimeInterval
@@ -556,6 +571,8 @@ final class Koi {
         let wantRate = min(maxRate, abs(diff) * 0.8)
         let turn = max(-wantRate * dt, min(wantRate * dt, diff))
         heading += turn
+        let rollTarget = max(-1, min(1, (dt > 0 ? turn / dt : 0) / 0.9))
+        roll += (rollTarget - roll) * min(1, dt * 3)
         let tightness = min(1, abs(diff) / 1.2)
         position.x += CGFloat(cos(heading) * s * dt)
         position.y += CGFloat(sin(heading) * s * dt)
@@ -777,6 +794,7 @@ final class FallingPetal {
 final class Weed {
     let texture: String
     let root: CGPoint
+    let bedDepth: Float
     let height: CGFloat
     let lean: Float
     let phase: Float
@@ -784,9 +802,10 @@ final class Weed {
     var bend: Float = 0
     var bendVel: Float = 0
 
-    init(texture: String, root: CGPoint, height: CGFloat, lean: Float, phase: Float, depth: Float) {
+    init(texture: String, root: CGPoint, bedDepth: Float, height: CGFloat, lean: Float, phase: Float, depth: Float) {
         self.texture = texture
         self.root = root
+        self.bedDepth = bedDepth
         self.height = height
         self.lean = lean
         self.phase = phase

@@ -28,7 +28,7 @@ final class GameController: ObservableObject, TouchInput {
     private var viewSize = CGSize.zero
     private var screenSize = CGSize.zero
     // The view: zoom and centre, eased toward their targets so it flows.
-    private var zoomTarget: Float = 0.8
+    private var zoomTarget: Float = 0.9
     private var centreTarget = SIMD2<Float>(0, 0)
     private struct Pinch {
         var ids: [Int]
@@ -328,6 +328,7 @@ final class GameController: ObservableObject, TouchInput {
         let submerged = garden.submergedSprites()
         renderer.spines = submerged.spines
         var under = submerged.sprites
+        under += garden.reflectionSprites()
         for d in debris where !d.cleared {
             let s = spriteSize(d)
             under.append(Sprite(d.sprite, at: CGPoint(x: d.position.x + 7, y: d.position.y + 10), size: s,
@@ -360,6 +361,9 @@ final class GameController: ObservableObject, TouchInput {
         }
         for r in rocks {
             let side = r.radius * 2.3
+            // A wet dark ring where the stone meets the water.
+            over.append(Sprite(art.rock, at: CGPoint(x: r.centre.x, y: r.centre.y + 3),
+                               size: CGSize(width: side * 1.12, height: side * rockAspect * 1.12), mode: .shadow, alpha: 0.35, z: 0))
             paper(Sprite(art.rock, at: r.centre, size: CGSize(width: side, height: side * rockAspect), z: 0.15))
         }
         for d in debris where !d.cleared {
@@ -433,17 +437,12 @@ final class GameController: ObservableObject, TouchInput {
 
     /// Screen point to world point through the current view.
     func worldPoint(_ p: CGPoint) -> CGPoint {
-        guard let r = renderer, screenSize != .zero else { return p }
-        let cx = Float(p.x - screenSize.width / 2) / r.zoom + r.viewCentre.x
-        let cy = Float(p.y - screenSize.height / 2) / r.zoom + r.viewCentre.y
-        return CGPoint(x: CGFloat(cx), y: CGFloat(cy))
+        renderer?.worldPoint(screen: p) ?? p
     }
 
     /// World point to screen point.
     func screenPoint(_ w: CGPoint) -> CGPoint {
-        guard let r = renderer, screenSize != .zero else { return w }
-        return CGPoint(x: CGFloat((Float(w.x) - r.viewCentre.x) * r.zoom) + screenSize.width / 2,
-                       y: CGFloat((Float(w.y) - r.viewCentre.y) * r.zoom) + screenSize.height / 2)
+        renderer?.screenPoint(world: w) ?? w
     }
 
     var currentZoom: Float { renderer?.zoom ?? 1 }
@@ -465,7 +464,7 @@ final class GameController: ObservableObject, TouchInput {
             r.cancelAll()
             for pid in p.ids { pondTouches.removeValue(forKey: pid); if holdSounding.remove(pid) != nil { sound.holdEnd(id: pid) } }
         }
-        let z = max(1 / Float(WaterRenderer.worldScale), min(1.8, p.startZoom * Float(dist / max(1, p.startDistance))))
+        let z = max(0.8, min(1.8, p.startZoom * Float(dist / max(1, p.startDistance))))
         zoomTarget = z
         // Keep the world point that was under the fingers under them.
         let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)

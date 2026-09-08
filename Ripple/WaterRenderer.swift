@@ -90,6 +90,16 @@ struct FloorLook {
                                  mosaicCentre: [0.5, 0.5], mosaicRadius: 0, mosaicImage: "")
 }
 
+/// Mirrors `CameraParams` in Shaders.metal.
+struct CameraParams {
+    var position: SIMD4<Float>
+    var right: SIMD4<Float>
+    var down: SIMD4<Float>
+    var forward: SIMD4<Float>
+    var focal: SIMD4<Float>
+    var world: SIMD4<Float>
+}
+
 struct FieldSample {
     var height: Float
     var slope: SIMD2<Float>
@@ -207,7 +217,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         viewSizePoints.map { CGSize(width: $0.width * WaterRenderer.worldScale, height: $0.height * WaterRenderer.worldScale) }
     }
     /// Screen points per world point, and the world point at the screen centre.
-    var zoom: Float = 0.8
+    var zoom: Float = 0.9
     var viewCentre = SIMD2<Float>(0, 0)
     private var viewCentreSet = false
     private var viewportSize = SIMD2<Float>(0, 0)
@@ -269,6 +279,49 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// Camera height above the surface, in units where surface to bed is 1.
     static let cameraHeight: Float = 4.5
     static let cameraShiftGain: Float = 3.0
+    /// The pitched camera: how far off vertical it looks, how far away it
+    /// sits, and how many points a pond unit of depth is.
+    static let cameraPitch: Float = 0.32
+    static let cameraDistance: Float = 1500
+    static let depthScale: Float = 260
+
+    /// The camera for this frame, from the view centre, the zoom and the
+    /// small orbit the breath and the phone's tilt give it.
+    func cameraParams(screenPoints: SIMD2<Float>, worldPoints: SIMD2<Float>) -> CameraParams {
+        let pitch = WaterRenderer.cameraPitch + camera.y * 0.0012
+        let yaw = camera.x * 0.0018
+        let dist = WaterRenderer.cameraDistance
+        let V = SIMD3(viewCentre.x, viewCentre.y, 0)
+        let C = V + dist * SIMD3(sin(pitch) * sin(yaw), sin(pitch) * cos(yaw), cos(pitch))
+        let f = simd_normalize(V - C)
+        let r = simd_normalize(simd_cross(SIMD3<Float>(0, 0, 1), f))
+        let d = simd_normalize(simd_cross(r, f))
+        return CameraParams(position: SIMD4(C, 0), right: SIMD4(r, 0), down: SIMD4(d, 0), forward: SIMD4(f, 0),
+                            focal: SIMD4(zoom * dist, WaterRenderer.depthScale, screenPoints.x, screenPoints.y),
+                            world: SIMD4(worldPoints.x, worldPoints.y, 0, 0))
+    }
+
+    /// Screen point to the surface point under it.
+    func worldPoint(screen: CGPoint) -> CGPoint {
+        guard let sp = viewSizePoints, let wp = worldSizePoints else { return screen }
+        let c = cameraParams(screenPoints: SIMD2(Float(sp.width), Float(sp.height)), worldPoints: SIMD2(Float(wp.width), Float(wp.height)))
+        let o = (SIMD2(Float(screen.x), Float(screen.y)) - SIMD2(Float(sp.width), Float(sp.height)) * 0.5) / c.focal.x
+        let dir = SIMD3(c.forward.x, c.forward.y, c.forward.z) + SIMD3(c.right.x, c.right.y, c.right.z) * o.x + SIMD3(c.down.x, c.down.y, c.down.z) * o.y
+        let t = -c.position.z / min(dir.z, -0.05)
+        let P = SIMD3(c.position.x, c.position.y, c.position.z) + dir * t
+        return CGPoint(x: CGFloat(P.x), y: CGFloat(P.y))
+    }
+
+    /// Surface point to screen point.
+    func screenPoint(world: CGPoint) -> CGPoint {
+        guard let sp = viewSizePoints, let wp = worldSizePoints else { return world }
+        let c = cameraParams(screenPoints: SIMD2(Float(sp.width), Float(sp.height)), worldPoints: SIMD2(Float(wp.width), Float(wp.height)))
+        let d = SIMD3(Float(world.x), Float(world.y), 0) - SIMD3(c.position.x, c.position.y, c.position.z)
+        let depth = max(simd_dot(d, SIMD3(c.forward.x, c.forward.y, c.forward.z)), 1)
+        let sx = simd_dot(d, SIMD3(c.right.x, c.right.y, c.right.z)) * c.focal.x / depth + Float(sp.width) / 2
+        let sy = simd_dot(d, SIMD3(c.down.x, c.down.y, c.down.z)) * c.focal.x / depth + Float(sp.height) / 2
+        return CGPoint(x: CGFloat(sx), y: CGFloat(sy))
+    }
 
     /// Heavy floaters and rocks that waves should bounce off, in points.
     var walls: [(centre: CGPoint, radius: CGFloat)] = []
@@ -497,6 +550,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         let pointsViewport = viewportSize / pointScale                    // world size in points
         let screenPoints = screenPixels / pointScale
         if !viewCentreSet { viewCentre = pointsViewport * 0.5; viewCentreSet = true }
+        var cam = cameraParams(screenPoints: screenPoints, worldPoints: pointsViewport)
 
         // --- floor base, once ---------------------------------------------------
 
@@ -682,10 +736,11 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(depthTexture, index: 3)
                 encoder.setFragmentTexture(bedTexture ?? blankMosaic, index: 4)
                 encoder.setFragmentBytes(&fp, length: MemoryLayout<FloorParams>.stride, index: 0)
+                encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
                 floorBatch.beginFrame()
-                floorBatch.draw(submergedSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer)
+                floorBatch.draw(submergedSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam)
                 encoder.endEncoding()
             }
         }
@@ -707,12 +762,14 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.setRenderPipelineState(drawPipeline)
             encoder.setFragmentTexture(read, index: 0)
             encoder.setFragmentTexture(floorTexture, index: 1)
+            encoder.setFragmentTexture(depthTexture, index: 2)
             encoder.setFragmentBytes(&rp, length: MemoryLayout<RenderParams>.stride, index: 0)
+            encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
             spriteParams.screen.w = 0
             surfaceBatch.beginFrame()
-            surfaceBatch.draw(surfaceSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer)
+            surfaceBatch.draw(surfaceSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam)
             encoder.endEncoding()
         }
 
@@ -728,7 +785,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                            mosaic: SIMD4(look.mosaicCentre.x, look.mosaicCentre.y, look.mosaicRadius, 1),
                            siltColour: SIMD4(look.siltColour, 1),
                            camera: SIMD4(camera.x * scale, camera.y * scale, WaterRenderer.cameraHeight, WaterRenderer.cameraShiftGain),
-                           bed: SIMD4(bedTexture == nil ? 0 : 0.9, 1.0, 0, 0),
+                           bed: SIMD4(bedTexture == nil ? 0 : 0.9, 1.0, Float(CACurrentMediaTime() - startTime), 0),
                            view: SIMD4(viewCentre.x * scale, viewCentre.y * scale, 0, 0))
     }
 
