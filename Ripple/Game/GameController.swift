@@ -201,35 +201,15 @@ final class GameController: ObservableObject, TouchInput {
         return true
     }
 
-    /// Fractures as line segments lying on the sheet: a soft frosty halo
-    /// under a crisp white core, thick at the blow and a hairline at the
-    /// tip. A segment over open water is gone with the ice it split.
+    /// Each pending strike shows as one painted fracture, scaled to the
+    /// piece it will take out and turned at random; when the piece goes,
+    /// the fracture goes with it.
     private func rebuildCrackSprites(_ field: IceField) {
-        var halos: [Sprite] = []
-        var cores: [Sprite] = []
-        for (index, line) in field.crackLines.enumerated() {
-            let pts = line.points
-            guard pts.count > 1 else { continue }
-            let n = pts.count - 1
-            for i in 0..<n {
-                let a = pts[i], b = pts[i + 1]
-                let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
-                guard field.ice(at: mid) > 0.5 else { continue }
-                let len = hypot(b.x - a.x, b.y - a.y)
-                let t = CGFloat(i) / CGFloat(max(1, n))
-                let w = max(1.1, line.width * (1 - t * 0.75))
-                let rot = Float(atan2(b.y - a.y, b.x - a.x))
-                let tex = (index + i) % 2 == 0 ? "crack_line" : "crack_line2"
-                if w > 2 {
-                    halos.append(Sprite("crack_halo", at: mid, size: CGSize(width: len + 4, height: w * 3.2),
-                                        rotation: rot, alpha: 0.55, z: 0.01))
-                }
-                cores.append(Sprite(tex, at: mid, size: CGSize(width: len + 2, height: w),
-                                    rotation: rot, alpha: 0.95, z: 0.012))
-                if cores.count > 2600 { break }
-            }
+        crackSprites = field.strikes.map { strike in
+            let side = strike.ring * 1.9
+            return Sprite("fracture_\(strike.pattern + 1)", at: strike.centre, size: CGSize(width: side, height: side),
+                          rotation: strike.turn, alpha: 0.92, z: 0.012)
         }
-        crackSprites = halos + cores
     }
 
     private func breakThrough(at point: CGPoint, limit: CGFloat, crossing: Bool) {

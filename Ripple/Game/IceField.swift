@@ -15,8 +15,9 @@ final class IceField {
     private(set) var cracks: [Float]
     /// Every fracture as the path it took, in points, with its width at the start, for drawing.
     private(set) var crackLines: [(points: [CGPoint], width: CGFloat)] = []
-    /// Where the sheet has been struck and how far its ring of fractures reaches.
-    private(set) var strikes: [(centre: CGPoint, ring: CGFloat)] = []
+    /// Where the sheet has been struck, how far its ring of fractures
+    /// reaches, and which painted fracture shows it, at what turn.
+    private(set) var strikes: [(centre: CGPoint, ring: CGFloat, pattern: Int, turn: Float)] = []
     private(set) var dirty = true
     private var seed: UInt32 = 11
 
@@ -106,8 +107,9 @@ final class IceField {
         let ring = CGFloat(120 + noise() * 80)
         for k in 0..<n {
             let angle = base + Float(k) / Float(n) * 2 * .pi + (noise() - 0.5) * 0.7
-            fracture(from: p, angle: angle, length: CGFloat(200 + noise() * 380), kind: 1, lineWidth: 4.5)
+            // The radials stop at the ring: nothing of a strike outlives its piece.
             let r = ring * CGFloat(0.55 + noise() * 0.8)
+            fracture(from: p, angle: angle, length: r * 1.02, kind: 1, lineWidth: 4.5)
             tips.append(CGPoint(x: p.x + CGFloat(cos(angle)) * r, y: p.y + CGFloat(sin(angle)) * r))
         }
         // Straight chords between neighbouring radial fractures: the polygon
@@ -115,7 +117,7 @@ final class IceField {
         for k in 0..<n {
             straightFracture(from: tips[k], to: tips[(k + 1) % n], kind: 2, lineWidth: 2.6)
         }
-        strikes.append((p, ring * 1.4))
+        strikes.append((p, ring * 1.4, Int(noise() * 4), noise() * 2 * .pi))
         dirty = true
     }
 
@@ -136,7 +138,7 @@ final class IceField {
     }
 
     /// The strike whose ring this point lies inside, if any.
-    func strike(containing p: CGPoint) -> (centre: CGPoint, ring: CGFloat)? {
+    func strike(containing p: CGPoint) -> (centre: CGPoint, ring: CGFloat, pattern: Int, turn: Float)? {
         strikes.first { hypot($0.centre.x - p.x, $0.centre.y - p.y) < $0.ring }
     }
 
@@ -199,11 +201,6 @@ final class IceField {
     func bite(nearestTo p: CGPoint, range: CGFloat) -> CGPoint? {
         guard let edge = nearestIce(to: p, range: range) else { return nil }
         let away = atan2(Float(edge.y - p.y), Float(edge.x - p.x))
-        // Only fracture fresh ice, and not every time; a spot already split
-        // just gives way along what is there.
-        if !isCracked(near: edge, within: 60), noise() < 0.4 {
-            fracture(from: edge, angle: away + (noise() - 0.5) * 0.8, length: CGFloat(120 + noise() * 200))
-        }
         let inward = CGPoint(x: edge.x + CGFloat(cos(away)) * 8, y: edge.y + CGFloat(sin(away)) * 8)
         breakThrough(at: inward, limit: CGFloat(40 + noise() * 40), crossing: true)
         dirty = true
