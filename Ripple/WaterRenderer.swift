@@ -204,6 +204,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private var siltA: MTLTexture?
     private var siltB: MTLTexture?
     private var mosaicTexture: MTLTexture?
+    private var iceTexture: MTLTexture?
+    private var blankIce: MTLTexture?
     private var blankMosaic: MTLTexture?
     private var needsFloorBake = true
     private var needsSiltReset = true
@@ -414,6 +416,11 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         blankMosaic = device.makeTexture(descriptor: d)
         var zero: UInt32 = 0
         blankMosaic?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zero, bytesPerRow: 4)
+        let iceDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg8Unorm, width: 1, height: 1, mipmapped: false)
+        iceDesc.usage = .shaderRead
+        blankIce = device.makeTexture(descriptor: iceDesc)
+        var zeroBytes: UInt16 = 0
+        blankIce?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zeroBytes, bytesPerRow: 2)
     }
 
     // MARK: - Coordinates
@@ -621,6 +628,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.setTexture(read, index: 0)
             encoder.setTexture(write, index: 1)
             encoder.setTexture(depthTexture, index: 2)
+            encoder.setTexture(iceTexture ?? blankIce, index: 3)
             encoder.setBytes(&params, length: MemoryLayout<SimParams>.stride, index: 0)
             encoder.setBuffer(splatBuffer, offset: 0, index: 1)
             encoder.setBuffer(wallBuffer, offset: 0, index: 2)
@@ -764,6 +772,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(read, index: 0)
             encoder.setFragmentTexture(floorTexture, index: 1)
             encoder.setFragmentTexture(depthTexture, index: 2)
+            encoder.setFragmentTexture(iceTexture ?? blankIce, index: 3)
+            encoder.setFragmentTexture(iceTexture == nil ? blankMosaic : (textures.texture("ice_surface") ?? blankMosaic), index: 4)
             encoder.setFragmentBytes(&rp, length: MemoryLayout<RenderParams>.stride, index: 0)
             encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -924,6 +934,25 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         needsFloorBake = true
 
         reset()
+    }
+
+    /// Uploads the ice (red) and fracture (green) masks over the world; nil clears them.
+    func setIce(_ cells: [Float]?, cracks: [Float]? = nil, width: Int, height: Int) {
+        guard let cells, width > 0, height > 0 else { iceTexture = nil; return }
+        if iceTexture == nil || iceTexture!.width != width || iceTexture!.height != height {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg8Unorm, width: width, height: height, mipmapped: false)
+            d.usage = .shaderRead
+            d.storageMode = .shared
+            iceTexture = device.makeTexture(descriptor: d)
+        }
+        var bytes = [UInt8](repeating: 0, count: width * height * 2)
+        for i in 0..<(width * height) {
+            bytes[i * 2] = UInt8(max(0, min(255, cells[i] * 255)))
+            if let c = cracks { bytes[i * 2 + 1] = UInt8(max(0, min(255, c[i] * 255))) }
+        }
+        bytes.withUnsafeBytes { raw in
+            iceTexture?.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: raw.baseAddress!, bytesPerRow: width * 2)
+        }
     }
 
     /// Recomputes the silt normaliser after the look changes.

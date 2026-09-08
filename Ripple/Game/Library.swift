@@ -39,6 +39,10 @@ struct ArtSet {
     var frog: (frog: String, pad: String)? = nil
     var newt: String? = nil
     var heron: String? = nil
+    /// Chunks of broken ice, for the frozen season.
+    var iceFragments: [String] = []
+    /// Something falling all the time (snow), as a sprite name.
+    var ambientFall: String? = nil
 }
 
 struct Season: Identifiable {
@@ -74,11 +78,12 @@ struct Shape {
 }
 
 enum Hint: String {
-    case tap, hold, swell, current, bounce
+    case tap, hold, swell, current, bounce, ice
 
     var text: String {
         switch self {
         case .tap: return "Tap the water. Ripples carry things to the bank."
+        case .ice: return "Tap the ice. Tap again to break it."
         case .hold: return "Hold a finger down. A bigger swell can shift heavy things."
         case .swell: return "Two fingers together sweep a whole cluster."
         case .current: return "Drag along the bank to set a slow current."
@@ -100,6 +105,8 @@ struct LevelSpec: Identifiable {
     var hint: Hint? = nil
     /// Bloom stage (0...3, fractional) the garden reaches when this level is done.
     var bloomTarget: Float
+    /// The pond starts frozen over as one sheet.
+    var frozen: Bool = false
 }
 
 /// A small deterministic generator so a level lays out the same every time.
@@ -136,7 +143,9 @@ enum Library {
                              mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_winter", bedImage: "bed_winter"),
             weeds: ["weed_w_1", "weed_w_2", "weed_w_3", "weed_w_4", "weed_w_5"],
             under: [], skaters: [], flyers: [],
-            clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
+            clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
+            iceFragments: ["ice_1", "ice_2", "ice_3"],
+            ambientFall: "snow_2"),
         photographic: nil, rootNote: 440,
         tagline: "The pond sleeps under ice. Wake it gently.")
 
@@ -316,10 +325,14 @@ enum Library {
                                 variant: i, scale: rng.range(0.85...1.15), rotation: Float(rng.range(0...(2 * .pi))))
             }
         }
+        // Winter: the pond is frozen over. Level one is the sheet alone, to
+        // teach the tap; the next two keep it over whatever is on the water.
+        let frozen = season.id == "winter" && index <= 3
+        if frozen && index == 1 { debris = []; hint = .ice }
         return LevelSpec(id: "\(season.id)-\(index)", seasonID: season.id, index: index, title: title,
                          mosaicCentre: centre, mosaicRadius: 0, debris: debris,
                          rocks: rocks, shallows: shallows, hint: hint,
-                         bloomTarget: Float(index) * 0.5)
+                         bloomTarget: Float(index) * 0.5, frozen: frozen)
     }
 
     static func season(for level: LevelSpec) -> Season {

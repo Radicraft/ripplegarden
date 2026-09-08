@@ -143,14 +143,20 @@ struct SpriteParams {
 kernel void wave_step(texture2d<float, access::read>  src   [[texture(0)]],
                       texture2d<float, access::write> dst   [[texture(1)]],
                       texture2d<float, access::read>  depth [[texture(2)]],
+                      texture2d<float, access::sample> ice  [[texture(3)]],
                       constant SimParams &p                 [[buffer(0)]],
                       constant Splat *splats                [[buffer(1)]],
                       constant float4 *walls                [[buffer(2)]],
                       uint2 gid                             [[thread_position_in_grid]])
 {
     if (gid.x >= p.size.x || gid.y >= p.size.y) { return; }
+    constexpr sampler iceSmp(filter::linear, address::clamp_to_edge);
 
     float d = depth.read(gid).r;
+    // Under the ice the water is held still; at the sheet's edge a wave
+    // meets something nearly solid and turns back.
+    float frozen = ice.sample(iceSmp, (float2(gid) + 0.5) / float2(p.size)).r;
+    d = mix(d, 0.06, smoothstep(0.35, 0.8, frozen));
     // Heavy floaters are shallows, not walls: a wave slows and partly
     // reflects under a log, but the water there still rises, which is what
     // lifts the log when a big enough swell arrives.
@@ -179,7 +185,7 @@ kernel void wave_step(texture2d<float, access::read>  src   [[texture(0)]],
     float c2 = clamp(p.c2 * (1.0 + h * p.nonlinearity) * speed, 0.02, 0.46);
 
     v += lap * c2;
-    v *= p.damping;
+    v *= p.damping * (1.0 - frozen * 0.6);
 
     uint edgeDist = min(min(gid.x, maxc.x - gid.x), min(gid.y, maxc.y - gid.y));
     if (edgeDist < p.edgeBand) {
@@ -702,6 +708,8 @@ fragment float4 water_fragment(VertexOut in                              [[stage
                                texture2d<float, access::sample> field     [[texture(0)]],
                                texture2d<float, access::sample> floorTex  [[texture(1)]],
                                texture2d<float, access::sample> depthTex  [[texture(2)]],
+                               texture2d<float, access::sample> iceTex    [[texture(3)]],
+                               texture2d<float, access::sample> iceLook   [[texture(4)]],
                                constant RenderParams &p                   [[buffer(0)]],
                                constant CameraParams &cam                 [[buffer(1)]])
 {
@@ -821,5 +829,47 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // Paper grain over everything.
     float paper = fbm(in.uv * p.viewport / 6.0, 2);
     col *= 0.92 + 0.14 * paper;
+
+    // The frozen sheet. Where the mask says ice, the water is under a slab:
+    // frosted white, the dark water only ghosting through, feathered frost
+    // and a few trapped bubbles; at a hole's edge the sheet thins to a pale
+    // rim with the black water showing beneath it.
+    float2 iceSample = iceTex.sample(smp, wuv).rg;
+    float frozen = iceSample.r;
+    if (frozen > 0.02) {
+        float2 iceTexel = 1.0 / float2(iceTex.get_width(), iceTex.get_height());
+        float fL = iceTex.sample(smp, wuv - float2(iceTexel.x, 0)).r, fR = iceTex.sample(smp, wuv + float2(iceTexel.x, 0)).r;
+        float fD = iceTex.sample(smp, wuv - float2(0, iceTexel.y)).r, fU = iceTex.sample(smp, wuv + float2(0, iceTexel.y)).r;
+        float edge = length(float2(fR - fL, fU - fD)) * 1.4;
+        float2 q = wuv * float2(cam.world.x / cam.world.y, 1.0);
+
+        // Black ice: the dark water shows through a glassy sheet. Frost lies
+        // on it in patches, fine crystals from a tiled painting, sitting where
+        // a slow large-scale field says frost formed; snow dust on top.
+        constexpr sampler mir(filter::linear, address::mirrored_repeat);
+        float aspectW = cam.world.x / cam.world.y;
+        float2 tileUV = float2(wuv.x * aspectW, wuv.y) * 5.5;
+        float3 crystals = iceLook.sample(mir, tileUV).rgb;
+        float crystalBright = dot(crystals, float3(0.3, 0.59, 0.11));
+        float patch = smoothstep(0.42, 0.68, fbm(q * 3.2 + 7.0, 4));
+        float wisp = smoothstep(0.55, 0.85, fbm(q * 11.0 + 3.0, 3));
+        float frostHere = max(patch, wisp * 0.6);
+        float3 clearIce = col * 0.62 + float3(0.05, 0.08, 0.11);
+        float3 frosted = mix(clearIce, crystals * float3(0.96, 0.98, 1.0), smoothstep(0.2, 0.7, crystalBright));
+        float3 slab = mix(clearIce, frosted, frostHere);
+        float dust = smoothstep(0.66, 0.9, fbm(q * 40.0 + 9.0, 3)) * patch;
+        slab = mix(slab, float3(0.95, 0.97, 1.0), dust * 0.5);
+        // A glassy sheet reflects the winter sky: a pale, even lift.
+        slab = mix(slab, float3(0.58, 0.66, 0.74), 0.30);
+
+        // Fractures are drawn as lines over the sheet, not from this mask.
+        (void)iceSample;
+
+        // The broken edge: a pale lip of thickness over black water.
+        float rim = smoothstep(0.10, 0.5, edge);
+        slab = mix(slab, float3(0.06, 0.09, 0.12), rim * 0.55 * (1.0 - smoothstep(0.75, 1.0, frozen)));
+        slab = mix(slab, float3(0.96, 0.97, 0.99), smoothstep(0.5, 0.95, frozen) * rim * 0.6);
+        col = mix(col, slab, smoothstep(0.3, 0.55, frozen));
+    }
     return float4(col, 1.0);
 }

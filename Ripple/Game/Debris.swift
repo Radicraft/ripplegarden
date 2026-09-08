@@ -63,6 +63,9 @@ final class Debris: Identifiable {
     var cleared = false
     /// Drawn alpha, for pieces on their way out.
     var fade: Float = 1
+    /// Seconds of life left for something that melts; nil for things that do not.
+    var meltsIn: Float? = nil
+    var meltTotal: Float = 1
     /// Last known water height under the piece, for the bob.
     var height: Float = 0
 

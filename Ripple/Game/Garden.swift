@@ -49,6 +49,9 @@ final class Garden {
     private var motes: [Mote] = []
     /// The bowl depth at a point, 0...1 (1 deep), set by the controller.
     var depthAt: (CGPoint) -> Float = { _ in 1 }
+    /// How much of the pond is still under ice, 0...1. The koi stay deep
+    /// until the water opens.
+    var iceCover: Float = 0
 
     init(art: ArtSet) {
         self.art = art
@@ -273,8 +276,19 @@ final class Garden {
         }
 
         for k in koi {
+            k.iceOver = iceCover
             let event = k.update(dt: dt, now: now, in: size, rocks: rocks)
             if let e = event { splashes.append(e) }
+        }
+        // Snow, or whatever the season lets fall, drifting down all the time.
+        if let flake = art.ambientFall {
+            petalAccumulator += 1.2 * dt
+            while petalAccumulator >= 1, petals.count < 90 {
+                petalAccumulator -= 1
+                let p = FallingPetal(x: CGFloat.random(in: 0...size.width), y: -20, texture: flake)
+                p.scale *= 0.55
+                petals.append(p)
+            }
         }
 
         if petalRate > 0 {
@@ -489,6 +503,8 @@ final class Koi {
     private(set) var phase: Float = 0
     /// How far the fish is banked into its turn, -1...1, eased.
     private(set) var roll: Float = 0
+    /// Ice cover over the pond; above a half the fish will not surface.
+    var iceOver: Float = 0
     private var target = CGPoint.zero
     private var speed: CGFloat = 34
     private var stateUntil: TimeInterval
@@ -528,9 +544,12 @@ final class Koi {
         if now > stateUntil {
             if depth < 0.5 {
                 dive(now: now, quick: false)
-            } else {
+            } else if iceOver < 0.5 {
                 surface(now: now, in: size)
                 splash = (position, 9, -0.12)
+            } else {
+                // Under ice: keep cruising deep, try again later.
+                stateUntil = now + 4
             }
         }
         depth += (depthTarget - depth) * min(1, dt * depthRate)

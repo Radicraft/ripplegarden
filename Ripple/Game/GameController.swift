@@ -42,6 +42,10 @@ final class GameController: ObservableObject, TouchInput {
     private var art: ArtSet
 
     private(set) var debris: [Debris] = []
+    /// The frozen sheet on winter levels, nil elsewhere.
+    private(set) var iceField: IceField?
+    private var crackSprites: [Sprite] = []
+
     private var probeOrder: [(debris: Debris, probes: Int)] = []
     private var lastDebrisProbeCount = 0
     private var current = SIMD2<Float>(0, 0)
@@ -172,6 +176,84 @@ final class GameController: ObservableObject, TouchInput {
             if p.cls == .heavy { d.angle = CGFloat(p.rotation) }
             return d
         }
+        iceField = level.frozen ? IceField(world: viewSize) : nil
+        garden.iceCover = level.frozen ? 1 : 0
+        if let f = iceField { renderer?.setIce(f.cells, cracks: f.cracks, width: f.width, height: f.height); f.markClean() } else { renderer?.setIce(nil, width: 0, height: 0) }
+    }
+
+    /// A tap on the sheet. Solid ice takes the blow as fractures running
+    /// out across the sheet; ice already fractured, or thin at an edge,
+    /// gives way, and the shard between the fractures opens into water.
+    /// Returns true if the tap was on ice.
+    private func tapIce(at point: CGPoint) -> Bool {
+        guard let field = iceField, field.ice(at: point) > 0.5 else { return false }
+        haptics.tap(weight: 0.9)
+        renderer?.addSplat(at: point, in: viewSize, radius: 6, amplitude: -0.04)
+        if field.isCracked(near: point, within: 22) || field.isEdge(at: point, within: 40) {
+            breakThrough(at: point)
+        } else {
+            field.strike(at: point)
+        }
+        return true
+    }
+
+    /// Fractures as thin line segments lying on the sheet; a segment over
+    /// open water is gone with the ice it split.
+    private func rebuildCrackSprites(_ field: IceField) {
+        var out: [Sprite] = []
+        for line in field.crackLines {
+            guard line.count > 1 else { continue }
+            for i in 0..<(line.count - 1) {
+                let a = line[i], b = line[i + 1]
+                let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+                guard field.ice(at: mid) > 0.5 else { continue }
+                let len = hypot(b.x - a.x, b.y - a.y)
+                out.append(Sprite("crack_line", at: mid, size: CGSize(width: len + 2, height: 3.6),
+                                  rotation: Float(atan2(b.y - a.y, b.x - a.x)), alpha: 0.95, z: 0.01))
+                if out.count > 3000 { break }
+            }
+        }
+        crackSprites = out
+    }
+
+    private func breakThrough(at point: CGPoint) {
+        guard let field = iceField else { return }
+        let opened = field.breakThrough(at: point, limit: 120)
+        guard opened > 0 else { field.strike(at: point); return }
+        haptics.holdRelease(charge: 0.9)
+        renderer?.addSplat(at: point, in: viewSize, radius: 22, amplitude: -0.45)
+        // Chunks in proportion to the shard, drifting off to melt or beach.
+        let pieces = max(1, min(6, Int(opened / 2600)))
+        for k in 0..<pieces {
+            let a = Float(k) / Float(pieces) * 2 * .pi + Float.random(in: -0.5...0.5)
+            let r = CGFloat.random(in: 10...45)
+            let p = CGPoint(x: point.x + CGFloat(cos(a)) * r, y: point.y + CGFloat(sin(a)) * r)
+            let d = Debris(id: 3000 + Int.random(in: 0...99999), cls: .light,
+                           sprite: art.iceFragments[k % max(1, art.iceFragments.count)],
+                           position: p, radius: CGFloat.random(in: 16...30), scale: 1)
+            d.velocity = SIMD2(cos(a), sin(a)) * Float.random(in: 15...40)
+            let life = Float.random(in: 22...36)
+            d.meltsIn = life
+            d.meltTotal = life
+            debris.append(d)
+        }
+        garden.iceCover = field.fraction
+    }
+
+    /// A tap in open water near the sheet: the ring reaches the edge, runs
+    /// a fracture into it and breaks a piece off.
+    private func waveBitesIce(from point: CGPoint) {
+        guard let field = iceField, let edge = field.bite(nearestTo: point, range: 220) else { return }
+        if Int.random(in: 0...2) == 0 {
+            let d = Debris(id: 4000 + Int.random(in: 0...99999), cls: .light,
+                           sprite: art.iceFragments[Int.random(in: 0..<max(1, art.iceFragments.count))],
+                           position: edge, radius: CGFloat.random(in: 14...24), scale: 1)
+            d.velocity = SIMD2(Float(point.x - edge.x), Float(point.y - edge.y)) * -0.25
+            d.meltsIn = 24
+            d.meltTotal = 24
+            debris.append(d)
+        }
+        garden.iceCover = field.fraction
     }
 
     // MARK: - Per frame
@@ -220,10 +302,20 @@ final class GameController: ObservableObject, TouchInput {
             cursor += n
         }
 
+        if let f = iceField, f.dirty {
+            renderer.setIce(f.cells, cracks: f.cracks, width: f.width, height: f.height)
+            f.markClean()
+            rebuildCrackSprites(f)
+        }
         if phase == .playing {
             for d in debris where !d.cleared {
                 DebrisPhysics.integrate(d, sample: byID[d.id], current: current, dt: dt)
                 keepOffRocks(d)
+                if let m = d.meltsIn {
+                    d.meltsIn = m - dt
+                    d.fade = min(1, max(0, m / max(1, d.meltTotal)) * 1.6)
+                    if m <= 0 { d.cleared = true }
+                }
             }
             DebrisPhysics.separate(debris, dt: dt)
             for d in debris where !d.cleared && DebrisPhysics.hasReachedShore(d, in: viewSize) {
@@ -242,10 +334,10 @@ final class GameController: ObservableObject, TouchInput {
             lastCleaned = cleaned
             lastProgressAt = elapsed
         }
-        // Done when the pond is tidy: nothing left floating on it. (Levels
-        // with a roundel also want it washed and clear of heavy pieces.)
+        // Done when the pond is tidy: nothing left floating on it, no ice.
+        // (Levels with a roundel also want it washed and clear of heavy pieces.)
         if phase == .playing {
-            let tidy = debris.allSatisfy(\.cleared)
+            let tidy = debris.allSatisfy(\.cleared) && (iceField.map { $0.fraction < 0.06 } ?? true)
             if level.mosaicRadius <= 0 ? tidy : (cleaned >= 0.94 && heavyOverTile().isEmpty) { finish() }
         }
 
@@ -313,7 +405,8 @@ final class GameController: ObservableObject, TouchInput {
     private func feedRenderer(_ renderer: WaterRenderer) {
         let w = Float(viewSize.width), h = Float(viewSize.height)
 
-        // Walls: rocks are in the static depth map; heavy floaters move.
+        // Walls: rocks are in the static depth map; heavy floaters move; ice
+        // plates damp the water under them and turn ripples at their edges.
         renderer.walls = debris.filter { !$0.cleared && $0.cls == .heavy }.map { ($0.position, $0.radius * 0.8) }
 
         // Silt covers: anything sitting over the tile shades it.
@@ -367,9 +460,12 @@ final class GameController: ObservableObject, TouchInput {
             paper(Sprite(art.rock, at: r.centre, size: CGSize(width: side, height: side * rockAspect), z: 0.15))
         }
         for d in debris where !d.cleared {
-            paper(Sprite(d.sprite, at: d.position, size: spriteSize(d), rotation: Float(d.angle),
-                         mode: .floater, alpha: d.fade))
+            let s = spriteSize(d)
+            let melt = d.meltsIn.map { CGFloat(max(0.35, $0 / max(1, d.meltTotal))) } ?? 1
+            paper(Sprite(d.sprite, at: d.position, size: CGSize(width: s.width * melt, height: s.height * melt),
+                         rotation: Float(d.angle), mode: .floater, alpha: d.fade))
         }
+        over += crackSprites
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
@@ -421,6 +517,7 @@ final class GameController: ObservableObject, TouchInput {
     private func updateHints() {
         guard phase == .playing else { return }
         if let h = level.hint, !touchedYet, elapsed > 4.0 { show(h) }
+        if level.hint == .ice, touchedYet, let f = iceField, f.fraction > 0.97, elapsed > 12 { show(.ice) }
         // The tile is mostly clean but a heavy piece still shades it, and the
         // player has stalled: they need the hold.
         if cleaned > 0.45, !heavyOverTile().isEmpty, elapsed - lastProgressAt > 7 { show(.hold) }
@@ -493,6 +590,11 @@ final class GameController: ObservableObject, TouchInput {
             pinch = Pinch(ids: [other, id], startDistance: hypot(op.x - screen.x, op.y - screen.y),
                           startZoom: r.zoom, anchorWorld: SIMD2(Float(anchor.x), Float(anchor.y)))
         }
+        if tapIce(at: point) {
+            pondTouches[id] = 0
+            return
+        }
+        waveBitesIce(from: point)
         garden.startle(at: point, in: size)
         if let k = garden.koiHit(at: point) {
             garden.dive(k)

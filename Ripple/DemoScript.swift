@@ -43,6 +43,23 @@ enum DemoScript {
         let r = controller.level.mosaicRadius * size.height
         let live = controller.debris.filter { !$0.cleared }
 
+        // Ice first: tap a spot twice to break through, then work outward
+        // from the holes with taps in the open water beside the edge.
+        if let field = controller.iceField, field.fraction > 0.06 {
+            let centre = CGPoint(x: size.width / 2, y: size.height * 0.48)
+            if field.ice(at: centre) > 0.5 {
+                tap(controller, at: centre, size: size)     // strike, then break through
+            } else if let edge = field.nearestIce(to: centre, range: 2000) {
+                // Alternate: a tap on the fractured ice just inside the edge,
+                // and a tap in the open water beside it to send a wave at it.
+                let dx = centre.x - edge.x, dy = centre.y - edge.y
+                let len = max(1, hypot(dx, dy))
+                let onIce = CGPoint(x: edge.x - dx / len * 14, y: edge.y - dy / len * 14)
+                let open = CGPoint(x: edge.x + dx / len * 60, y: edge.y + dy / len * 60)
+                tap(controller, at: beats % 2 == 0 ? onIce : open, size: size)
+            }
+            return
+        }
         // A tidying level: push each piece toward its nearest bank.
         if controller.level.mosaicRadius <= 0 {
             guard let piece = live.min(by: { edgeDistance($0.position, size) < edgeDistance($1.position, size) }) else { return }
