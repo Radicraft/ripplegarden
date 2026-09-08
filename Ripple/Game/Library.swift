@@ -32,6 +32,13 @@ struct ArtSet {
     var skaters: [String] = []
     var flyers: [String] = []
     var clouds: [String] = []
+    var stones: [String] = []
+    var gravel: [String] = []
+    var sand: [String] = []
+    var reeds: [String] = []
+    var frog: (frog: String, pad: String)? = nil
+    var newt: String? = nil
+    var heron: String? = nil
 }
 
 struct Season: Identifiable {
@@ -151,7 +158,14 @@ enum Library {
         under: ["tadpole_1", "tadpole_2", "tadpole_3", "boatman_1"],
         skaters: ["skater_1", "skater_2"],
         flyers: ["dragonfly_body"],
-        clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"])
+        clouds: ["cloud_s_1", "cloud_s_2", "cloud_s_3", "cloud_s_4"],
+        stones: ["stone_a_1", "stone_a_2", "stone_a_3", "stone_a_4", "stone_a_5", "stone_a_6", "stone_a_7", "stone_a_8"],
+        gravel: ["gravel_1", "gravel_2", "gravel_3", "gravel_4"],
+        sand: ["sand_1", "sand_2", "sand_3"],
+        reeds: ["reed_1", "reed_2", "reed_3", "reed_4", "reed_5"],
+        frog: ("frog_top", "lilypad_frog"),
+        newt: "newt_1",
+        heron: "heron_shadow")
 
     static let springPhoto = ArtSet(
         branch: ["p_branch_1", "p_branch_2", "p_branch_3", "p_branch_4"],

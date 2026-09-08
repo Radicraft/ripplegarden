@@ -35,7 +35,7 @@ enum DemoScript {
 
     private static func beat(controller: GameController) {
         guard controller.phase == .playing, !holding else { return }
-        guard let size = sizeOf(controller), size.width > 0 else { return }
+        guard let size = controller.worldSize, size.width > 0 else { return }
         beats += 1
         if beats < 3 { return }   // let the title breathe
 
@@ -89,24 +89,36 @@ enum DemoScript {
         tap(controller, at: at, size: size)
     }
 
-    private static func tap(_ controller: GameController, at p: CGPoint, size: CGSize) {
+    /// Points here are world points; the controller wants screen points.
+    private static func tap(_ controller: GameController, at world: CGPoint, size: CGSize) {
         syntheticID += 1
         let id = syntheticID
-        controller.touchBegan(id: id, at: p, in: size, weight: 0.4)
+        let p = controller.screenPoint(world)
+        let screen = screenSizeOf(controller) ?? size
+        controller.touchBegan(id: id, at: p, in: screen, weight: 0.4)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            controller.touchEnded(id: id, at: p, in: size)
+            controller.touchEnded(id: id, at: p, in: screen)
         }
     }
 
-    private static func hold(_ controller: GameController, at p: CGPoint, size: CGSize, for seconds: Double) {
+    private static func hold(_ controller: GameController, at world: CGPoint, size: CGSize, for seconds: Double) {
         syntheticID += 1
         let id = syntheticID
         holding = true
-        controller.touchBegan(id: id, at: p, in: size, weight: 0.5)
+        let p = controller.screenPoint(world)
+        let screen = screenSizeOf(controller) ?? size
+        controller.touchBegan(id: id, at: p, in: screen, weight: 0.5)
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-            controller.touchEnded(id: id, at: p, in: size)
+            controller.touchEnded(id: id, at: p, in: screen)
             holding = false
         }
+    }
+
+    private static func screenSizeOf(_ controller: GameController) -> CGSize? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?.bounds.size
     }
 
     private static func edgeDistance(_ p: CGPoint, _ size: CGSize) -> CGFloat {

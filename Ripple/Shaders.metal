@@ -39,6 +39,8 @@ struct RenderParams {
     float4 waterTint;      // rgb cast, a = strength
     float4 style;          // x = 0 photographic, 1 woodblock
     float4 inkColour;      // woodblock line colour
+    float4 view;           // x zoom, yz view centre in world pixels
+    float4 world;          // xy world size in pixels
 };
 
 struct FloorParams {
@@ -50,6 +52,7 @@ struct FloorParams {
     float4 siltColour;     // rgb of the silt film
     float4 camera;         // xy lateral camera offset in points, z height, w shift gain
     float4 bed;            // x bed strength, y bed depth (positive, below the surface)
+    float4 view;           // xy view centre in world pixels (the perspective centre)
 };
 
 struct SiltParams {
@@ -82,6 +85,8 @@ struct SpriteParams {
     float4 relief;         // x diffuse, y specular, z edge darkening, w ink alpha
     float4 camera;         // xy lateral camera offset in points, z camera height above the surface (surface-to-bed = 1), w shift gain
     float4 haze;           // rgb colour the water swallows deep things into
+    float4 screen;         // xy screen size in points, z zoom, w 1 = drawing into the world-sized floor texture
+    float4 view;           // xy view centre in world points
 };
 
 // ---------------------------------------------------------------------------
@@ -337,7 +342,7 @@ fragment float4 floor_compose_fragment(VertexOut in                             
     // little smaller than the surface and slides with the camera's offset.
     float H = p.camera.z;
     float sb = H / (H + p.bed.y);
-    float2 centre = p.viewport.xy * 0.5;
+    float2 centre = p.view.xy;
     float2 screen = in.uv * p.viewport.xy;
     // Invert the projection: which bed point lands on this pixel?
     float2 bedPoint = centre + (screen - p.camera.xy * (1.0 - sb) * p.camera.w - centre) / sb;
@@ -410,11 +415,10 @@ struct SpriteVertexIn {
 /// depth z (negative below the surface, positive above) shrinks toward the
 /// centre when deep and grows when high, and slides with the camera's
 /// lateral offset in proportion to how far it is from the surface.
-static float2 project(float2 pointOnSurfacePlane, float z, float4 camera, float2 viewport)
+static float2 project(float2 pointOnSurfacePlane, float z, float4 camera, float2 centre)
 {
     float H = camera.z;
     float s = H / max(H - z, 0.1);
-    float2 centre = viewport * 0.5;
     return centre + (pointOnSurfacePlane - centre) * s + camera.xy * (1.0 - s) * camera.w;
 }
 
@@ -479,7 +483,7 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
         // A strand bends as a curve from its root: the lean (in waveAmp) and
         // the idle sway (in wave) both grow with the square of the distance
         // up the stem, which is how grass bends in moving water.
-        float bend = s.waveAmp + sin(s.wave) * 0.06;
+        float bend = s.waveAmp + sin(s.wave + tailness * 2.4) * 0.07;
         float2 up = float2(sin(s.rotation), -cos(s.rotation));
         float2 lateral = float2(cos(s.rotation), sin(s.rotation));
         float along = tailness * s.size.y;
@@ -505,15 +509,25 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
         }
     }
 
-    float2 world = project(onSurface, z, p.camera, p.viewport.xy);
+    // Perspective about the view centre, in world points; then the view.
+    float2 world = project(onSurface, z, p.camera, p.view.xy);
+    float2 clip;
+    if (p.screen.w > 0.5) {
+        clip = world / p.viewport.xy;                       // into the world-sized floor texture
+    } else {
+        float2 screenCentre = p.screen.xy * 0.5;
+        float2 onScreen = screenCentre + (world - p.view.xy) * p.screen.z;
+        clip = onScreen / p.screen.xy;
+    }
 
     SpriteOut out;
-    out.position = float4(world.x / p.viewport.x * 2.0 - 1.0, 1.0 - world.y / p.viewport.y * 2.0, 0.0, 1.0);
+    out.position = float4(clip.x * 2.0 - 1.0, 1.0 - clip.y * 2.0, 0.0, 1.0);
     out.uv = uv;
     out.tint = s.tint;
     out.alpha = s.alpha;
     out.wet = wet;
-    out.depth = s.depth;
+    // A weed's root is hazed like the bed; its tip is nearly clear.
+    out.depth = weed ? mix(0.85, 0.15, tailness) : s.depth;
     out.mode = mode;
     out.flags = s.mode;
     out.rot = float2(cos(rotation), sin(rotation)) * float2(flip ? -1.0 : 1.0, 1.0);
@@ -594,13 +608,18 @@ fragment float4 water_fragment(VertexOut in                              [[stage
 {
     constexpr sampler smp(filter::linear, address::clamp_to_edge);
 
+    // Which world point is under this pixel, given the zoom and the view.
+    float2 screenPx = in.uv * p.viewport;
+    float2 worldPx = p.view.yz + (screenPx - p.viewport * 0.5) / p.view.x;
+    float2 wuv = worldPx / p.world.xy;
+
     float2 texel = 1.0 / float2(p.size);
 
-    float hL = field.sample(smp, in.uv - float2(texel.x, 0)).r;
-    float hR = field.sample(smp, in.uv + float2(texel.x, 0)).r;
-    float hD = field.sample(smp, in.uv - float2(0, texel.y)).r;
-    float hU = field.sample(smp, in.uv + float2(0, texel.y)).r;
-    float hC = field.sample(smp, in.uv).r;
+    float hL = field.sample(smp, wuv - float2(texel.x, 0)).r;
+    float hR = field.sample(smp, wuv + float2(texel.x, 0)).r;
+    float hD = field.sample(smp, wuv - float2(0, texel.y)).r;
+    float hU = field.sample(smp, wuv + float2(0, texel.y)).r;
+    float hC = field.sample(smp, wuv).r;
 
     float2 grad = float2(hR - hL, hU - hD) * 0.5;
     float  lap  = (hL + hR + hD + hU - 4.0 * hC);
@@ -609,7 +628,7 @@ fragment float4 water_fragment(VertexOut in                              [[stage
 
     float activity = saturate(abs(hC) * 5.0 + abs(lap) * 26.0);
     float2 dp = float2(0.004, 0.0);
-    float2 sc = in.uv * 34.0 + float2(p.time * 0.55, -p.time * 0.42);
+    float2 sc = wuv * 34.0 + float2(p.time * 0.55, -p.time * 0.42);
     float  n0 = valueNoise(sc);
     float2 fineGrad = float2(valueNoise(sc + dp.xy) - n0,
                              valueNoise(sc + dp.yx) - n0);
@@ -619,9 +638,9 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     float2 offset = grad * p.refraction * (woodblock ? 0.6 : 1.0);
     float  spread = woodblock ? 0.0 : p.dispersion;
     float3 col;
-    col.r = floorTex.sample(smp, in.uv + offset * (1.0 + spread)).r;
-    col.g = floorTex.sample(smp, in.uv + offset).g;
-    col.b = floorTex.sample(smp, in.uv + offset * (1.0 - spread)).b;
+    col.r = floorTex.sample(smp, wuv + offset * (1.0 + spread)).r;
+    col.g = floorTex.sample(smp, wuv + offset).g;
+    col.b = floorTex.sample(smp, wuv + offset * (1.0 - spread)).b;
 
     col = mix(col, col * p.waterTint.rgb, p.waterTint.a);
 

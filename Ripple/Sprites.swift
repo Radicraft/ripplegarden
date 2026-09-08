@@ -35,6 +35,8 @@ struct SpriteParams {
     var relief: SIMD4<Float>
     var camera: SIMD4<Float>
     var haze: SIMD4<Float>
+    var screen: SIMD4<Float>
+    var view: SIMD4<Float>
 }
 
 /// A sprite the game wants drawn this frame.

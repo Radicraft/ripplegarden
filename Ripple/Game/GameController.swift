@@ -24,7 +24,21 @@ final class GameController: ObservableObject, TouchInput {
     private var garden: Garden
 
     private weak var renderer: WaterRenderer?
+    /// The world (the whole pond) in points. Bigger than the screen.
     private var viewSize = CGSize.zero
+    private var screenSize = CGSize.zero
+    // The view: zoom and centre, eased toward their targets so it flows.
+    private var zoomTarget: Float = 0.8
+    private var centreTarget = SIMD2<Float>(0, 0)
+    private struct Pinch {
+        var ids: [Int]
+        var startDistance: CGFloat
+        var startZoom: Float
+        var anchorWorld: SIMD2<Float>
+        var active = false
+    }
+    private var pinch: Pinch?
+    private var screenTouches: [Int: CGPoint] = [:]
     private var art: ArtSet
 
     private(set) var debris: [Debris] = []
@@ -63,6 +77,7 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     var siltRemaining: Float { renderer?.siltRemaining ?? 1 }
+    var worldSize: CGSize? { viewSize == .zero ? nil : viewSize }
 
     // MARK: - Wiring
 
@@ -131,6 +146,11 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     private func place() {
+        let spec = level
+        let size = viewSize
+        garden.depthAt = { p in
+            DepthPainter.depth(at: CGPoint(x: p.x / size.width, y: p.y / size.height), level: spec, aspect: Float(size.width / size.height))
+        }
         garden.configure(art: art, size: viewSize, bloomStage: progress.bloomStage(for: season.id))
         rocks = level.rocks.map { (CGPoint(x: $0.centre.x * viewSize.width, y: $0.centre.y * viewSize.height),
                                    $0.radius * viewSize.height) }
@@ -161,11 +181,21 @@ final class GameController: ObservableObject, TouchInput {
         elapsed += dt
         let now = CACurrentMediaTime()
 
-        if viewSize == .zero, let size = renderer.viewSizePoints, size.width > 0 {
-            viewSize = size
+        if viewSize == .zero, let world = renderer.worldSizePoints, let screen = renderer.viewSizePoints, world.width > 0 {
+            viewSize = world
+            screenSize = screen
+            centreTarget = SIMD2(Float(world.width) / 2, Float(world.height) / 2)
+            renderer.viewCentre = centreTarget
             place()
         }
         guard viewSize != .zero else { return }
+
+        // Ease the view toward where the fingers want it, and keep it on the pond.
+        renderer.zoom += (zoomTarget - renderer.zoom) * min(1, dt * 8)
+        let halfW = Float(screenSize.width) / renderer.zoom / 2, halfH = Float(screenSize.height) / renderer.zoom / 2
+        centreTarget.x = max(halfW, min(Float(viewSize.width) - halfW, centreTarget.x))
+        centreTarget.y = max(halfH, min(Float(viewSize.height) - halfH, centreTarget.y))
+        renderer.viewCentre += (centreTarget - renderer.viewCentre) * min(1, dt * 8)
 
         if simd_length(current) > 0.01 {
             current *= exp(-dt * log(2) / GameTuning.currentHalfLife)
@@ -401,20 +431,68 @@ final class GameController: ObservableObject, TouchInput {
 
     // MARK: - Touches
 
+    /// Screen point to world point through the current view.
+    func worldPoint(_ p: CGPoint) -> CGPoint {
+        guard let r = renderer, screenSize != .zero else { return p }
+        let cx = Float(p.x - screenSize.width / 2) / r.zoom + r.viewCentre.x
+        let cy = Float(p.y - screenSize.height / 2) / r.zoom + r.viewCentre.y
+        return CGPoint(x: CGFloat(cx), y: CGFloat(cy))
+    }
+
+    /// World point to screen point.
+    func screenPoint(_ w: CGPoint) -> CGPoint {
+        guard let r = renderer, screenSize != .zero else { return w }
+        return CGPoint(x: CGFloat((Float(w.x) - r.viewCentre.x) * r.zoom) + screenSize.width / 2,
+                       y: CGFloat((Float(w.y) - r.viewCentre.y) * r.zoom) + screenSize.height / 2)
+    }
+
+    var currentZoom: Float { renderer?.zoom ?? 1 }
+
     private func isOnEdge(_ p: CGPoint, in size: CGSize) -> Bool {
         let b = GameTuning.edgeBand
         return p.x < b || p.y < b || p.x > size.width - b || p.y > size.height - b
     }
 
-    func touchBegan(id: Int, at point: CGPoint, in size: CGSize, weight: Float) {
-        viewSize = size
+    /// Two fingers: a swell if they move together, a pinch if they spread or
+    /// close. Once a pinch is decided the water stops hearing those fingers.
+    private func updatePinch(moved id: Int) {
+        guard var p = pinch, p.ids.contains(id),
+              let a = screenTouches[p.ids[0]], let b = screenTouches[p.ids[1]], let r = renderer else { return }
+        let dist = hypot(a.x - b.x, a.y - b.y)
+        if !p.active {
+            guard abs(dist - p.startDistance) > 18 else { return }
+            p.active = true
+            r.cancelAll()
+            for pid in p.ids { pondTouches.removeValue(forKey: pid); if holdSounding.remove(pid) != nil { sound.holdEnd(id: pid) } }
+        }
+        let z = max(1 / Float(WaterRenderer.worldScale), min(1.8, p.startZoom * Float(dist / max(1, p.startDistance))))
+        zoomTarget = z
+        // Keep the world point that was under the fingers under them.
+        let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        centreTarget = p.anchorWorld - SIMD2(Float(mid.x - screenSize.width / 2), Float(mid.y - screenSize.height / 2)) / z
+        pinch = p
+    }
+
+    func touchBegan(id: Int, at screen: CGPoint, in screenBounds: CGSize, weight: Float) {
+        screenSize = screenBounds
         touchedYet = true
         dismissHint()
-        guard phase == .playing || phase == .celebrating else { return }
+        guard phase == .playing || phase == .celebrating, viewSize != .zero else { return }
+        screenTouches[id] = screen
+        let point = worldPoint(screen)
+        let size = viewSize
 
-        if isOnEdge(point, in: size) {
-            edgeStrokes[id] = EdgeStroke(last: point)
+        if isOnEdge(screen, in: screenBounds) {
+            edgeStrokes[id] = EdgeStroke(last: screen)
             return
+        }
+        // A second finger on the pond may be the start of a pinch.
+        let pondIDs = pondTouches.keys.filter { screenTouches[$0] != nil }
+        if pinch == nil, let other = pondIDs.first, let op = screenTouches[other], let r = renderer {
+            let mid = CGPoint(x: (op.x + screen.x) / 2, y: (op.y + screen.y) / 2)
+            let anchor = worldPoint(mid)
+            pinch = Pinch(ids: [other, id], startDistance: hypot(op.x - screen.x, op.y - screen.y),
+                          startZoom: r.zoom, anchorWorld: SIMD2(Float(anchor.x), Float(anchor.y)))
         }
         garden.startle(at: point, in: size)
         if let k = garden.koiHit(at: point) {
@@ -428,9 +506,13 @@ final class GameController: ObservableObject, TouchInput {
         haptics.tap(weight: weight)
     }
 
-    func touchMoved(id: Int, to point: CGPoint, in size: CGSize) {
+    func touchMoved(id: Int, to screen: CGPoint, in screenBounds: CGSize) {
+        screenTouches[id] = screen
+        if pinch != nil { updatePinch(moved: id); if pinch?.active == true { return } }
+        let point = worldPoint(screen)
+        let size = viewSize
         if var stroke = edgeStrokes[id] {
-            let dx = point.x - stroke.last.x, dy = point.y - stroke.last.y
+            let dx = screen.x - stroke.last.x, dy = screen.y - stroke.last.y
             let dist = hypot(dx, dy)
             stroke.travelled += dist
             stroke.sinceHaptic += dist
@@ -450,14 +532,21 @@ final class GameController: ObservableObject, TouchInput {
                     haptics.currentTick()
                 }
             }
-            stroke.last = point
+            stroke.last = screen
             edgeStrokes[id] = stroke
             return
         }
         renderer?.touchMoved(id: id, to: point, in: size)
     }
 
-    func touchEnded(id: Int, at point: CGPoint, in size: CGSize) {
+    func touchEnded(id: Int, at screen: CGPoint, in screenBounds: CGSize) {
+        screenTouches.removeValue(forKey: id)
+        if let p = pinch, p.ids.contains(id) {
+            pinch = nil
+            if p.active { renderer?.touchUp(id: id); pondTouches.removeValue(forKey: id); return }
+        }
+        let point = worldPoint(screen)
+        let size = viewSize
         if let stroke = edgeStrokes.removeValue(forKey: id) {
             if stroke.isStroke {
                 sound.currentEnd(id: id)
@@ -514,6 +603,27 @@ enum DepthPainter {
     private static func smoothstep(_ a: Float, _ b: Float, _ x: Float) -> Float {
         let t = max(0, min(1, (x - a) / (b - a)))
         return t * t * (3 - 2 * t)
+    }
+
+    /// Depth at a unit point: the bowl, then the level's shallows and rocks.
+    static func depth(at p: CGPoint, level: LevelSpec, aspect: Float) -> Float {
+        let px = Float(p.x), py = Float(p.y)
+        let bx = (px - 0.5) * aspect, by = py - 0.5
+        let rim = max(abs(bx) / (0.5 * aspect), abs(by) / 0.5)
+        var d: Float = 1 - 0.62 * smoothstep(0.55, 1.0, rim)
+        for s in level.shallows {
+            let r = Float(s.radius)
+            let dx = (px - Float(s.centre.x)) * aspect, dy = py - Float(s.centre.y)
+            let dist = (dx * dx + dy * dy).squareRoot() / r
+            if dist < 1 { d = min(d, 0.25 + 0.75 * dist * dist) }
+        }
+        for o in level.rocks {
+            let r = Float(o.radius) * 0.9
+            let dx = (px - Float(o.centre.x)) * aspect, dy = py - Float(o.centre.y)
+            let dist = (dx * dx + dy * dy).squareRoot() / r
+            if dist < 1 { d = 0 } else if dist < 1.3 { d = min(d, (dist - 1) / 0.3) }
+        }
+        return d
     }
 
     static func paint(level: LevelSpec, width: Int, height: Int) -> [Float] {

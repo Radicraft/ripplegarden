@@ -39,6 +39,8 @@ struct RenderParams {
     var waterTint: SIMD4<Float>
     var style: SIMD4<Float>
     var inkColour: SIMD4<Float>
+    var view: SIMD4<Float>
+    var world: SIMD4<Float>
 }
 
 struct FloorParams {
@@ -50,6 +52,7 @@ struct FloorParams {
     var siltColour: SIMD4<Float>
     var camera: SIMD4<Float>
     var bed: SIMD4<Float>
+    var view: SIMD4<Float>
 }
 
 struct SiltParams {
@@ -198,7 +201,17 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private(set) var gridSize = SIMD2<UInt32>(0, 0)
     /// The view's bounds in points, known once the first frame draws.
     private(set) var viewSizePoints: CGSize?
+    /// The pond is bigger than the screen; the view looks at part of it.
+    static let worldScale: CGFloat = 1.4
+    var worldSizePoints: CGSize? {
+        viewSizePoints.map { CGSize(width: $0.width * WaterRenderer.worldScale, height: $0.height * WaterRenderer.worldScale) }
+    }
+    /// Screen points per world point, and the world point at the screen centre.
+    var zoom: Float = 0.8
+    var viewCentre = SIMD2<Float>(0, 0)
+    private var viewCentreSet = false
     private var viewportSize = SIMD2<Float>(0, 0)
+    private var screenPixels = SIMD2<Float>(0, 0)
     private var siltSize = SIMD2<Int>(0, 0)
 
     private var splatBuffer: MTLBuffer
@@ -480,8 +493,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         releaseScheduledSplats(now: now)
         maybeBreeze(now: now)
 
-        let pointScale = viewportSize.x / Float(max(view.bounds.width, 1))
-        let pointsViewport = viewportSize / pointScale
+        let pointScale = screenPixels.x / Float(max(view.bounds.width, 1))
+        let pointsViewport = viewportSize / pointScale                    // world size in points
+        let screenPoints = screenPixels / pointScale
+        if !viewCentreSet { viewCentre = pointsViewport * 0.5; viewCentreSet = true }
 
         // --- floor base, once ---------------------------------------------------
 
@@ -635,14 +650,16 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
         // --- floor compose: base + mosaic under silt, then submerged sprites ----
 
-        let spriteParams = SpriteParams(
+        var spriteParams = SpriteParams(
             viewport: SIMD4(pointsViewport.x, pointsViewport.y, 0, 0),
             gains: SIMD4(Tuning.floaterLift, Tuning.floaterTilt, Tuning.floaterWetThreshold, Tuning.floaterBob),
             floorTint: SIMD4(floorLook.mid * 2.2, 1),
             light: SIMD4(-0.40, -0.56, 0.72, 0),
             relief: style == .woodblock ? SIMD4(0.55, 0.16, 0.28, 0.55) : SIMD4(0.35, 0.10, 0.15, 0.35),
             camera: SIMD4(camera.x, camera.y, WaterRenderer.cameraHeight, WaterRenderer.cameraShiftGain),
-            haze: SIMD4(floorLook.deep * 0.9, 1))
+            haze: SIMD4(floorLook.deep * 0.9, 1),
+            screen: SIMD4(screenPoints.x, screenPoints.y, zoom, 1),
+            view: SIMD4(viewCentre.x, viewCentre.y, 0, 0))
 
         let spineCount = min(spines.count, 13 * Tuning.maxSpines)
         if spineCount > 0 {
@@ -675,14 +692,16 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
         // --- water, then whatever floats on it ----------------------------------
 
-        var rp = RenderParams(size: gridSize, viewport: viewportSize,
+        var rp = RenderParams(size: gridSize, viewport: screenPixels,
                               refraction: Tuning.refraction, causticGain: Tuning.causticGain,
                               specGain: Tuning.specGain, time: Float(now - startTime),
                               crestGain: Tuning.crestGain, sparkleGain: Tuning.sparkleGain,
                               detailGain: Tuning.detailGain, dispersion: Tuning.dispersion,
                               waterTint: SIMD4(floorLook.waterTint, floorLook.waterTintStrength),
                               style: SIMD4(style == .woodblock ? 1 : 0, 0, 0, 0),
-                              inkColour: SIMD4(0.106, 0.106, 0.106, 1))
+                              inkColour: SIMD4(0.106, 0.106, 0.106, 1),
+                              view: SIMD4(zoom, viewCentre.x * pointScale, viewCentre.y * pointScale, 0),
+                              world: SIMD4(viewportSize.x, viewportSize.y, 0, 0))
 
         if let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) {
             encoder.setRenderPipelineState(drawPipeline)
@@ -691,6 +710,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentBytes(&rp, length: MemoryLayout<RenderParams>.stride, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
+            spriteParams.screen.w = 0
             surfaceBatch.beginFrame()
             surfaceBatch.draw(surfaceSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer)
             encoder.endEncoding()
@@ -702,13 +722,14 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
     private func floorParams() -> FloorParams {
         let look = floorLook
-        let scale = viewportSize.x / Float(max(1, viewSizePoints?.width ?? 1))
+        let scale = screenPixels.x / Float(max(1, viewSizePoints?.width ?? 1))
         return FloorParams(viewport: SIMD4(viewportSize.x, viewportSize.y, 0, 0),
                            deep: SIMD4(look.deep, 1), mid: SIMD4(look.mid, 1), shallow: SIMD4(look.shallow, 1),
                            mosaic: SIMD4(look.mosaicCentre.x, look.mosaicCentre.y, look.mosaicRadius, 1),
                            siltColour: SIMD4(look.siltColour, 1),
                            camera: SIMD4(camera.x * scale, camera.y * scale, WaterRenderer.cameraHeight, WaterRenderer.cameraShiftGain),
-                           bed: SIMD4(bedTexture == nil ? 0 : 0.9, 1.0, 0, 0))
+                           bed: SIMD4(bedTexture == nil ? 0 : 0.9, 1.0, 0, 0),
+                           view: SIMD4(viewCentre.x * scale, viewCentre.y * scale, 0, 0))
     }
 
     private func siltParams(dt: Float) -> SiltParams {
@@ -795,8 +816,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
     // MARK: - Resources
 
-    private func allocate(for size: CGSize) {
-        guard size.width > 0, size.height > 0 else { return }
+    private func allocate(for screenSize: CGSize) {
+        guard screenSize.width > 0, screenSize.height > 0 else { return }
+        // Everything simulated and baked covers the world, not the screen.
+        let size = CGSize(width: screenSize.width * WaterRenderer.worldScale, height: screenSize.height * WaterRenderer.worldScale)
         let aspect = size.width / size.height
 
         func dims(long: Int) -> (Int, Int) {
@@ -805,7 +828,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         }
         let (w, h) = dims(long: Tuning.gridLongSide)
         gridSize = SIMD2<UInt32>(UInt32(w), UInt32(h))
-        viewportSize = SIMD2<Float>(Float(size.width), Float(size.height))
+        viewportSize = SIMD2<Float>(Float(size.width), Float(size.height))     // world, in pixels
+        screenPixels = SIMD2<Float>(Float(screenSize.width), Float(screenSize.height))
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg32Float, width: w, height: h, mipmapped: false)
         desc.usage = [.shaderRead, .shaderWrite]
