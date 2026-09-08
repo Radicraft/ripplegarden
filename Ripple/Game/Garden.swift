@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreMotion
 import Foundation
 import simd
 
@@ -25,9 +26,16 @@ final class Garden {
     /// Rocks in the pond, in points, so the koi go round them.
     var rocks: [(centre: CGPoint, radius: CGFloat)] = []
 
-    /// The camera's slow breath, in points. Read by the controller each frame.
-    private(set) var drift = SIMD2<Float>(0, 0)
+    /// Where the camera is, laterally, in points. A slow breath, the phone's
+    /// tilt if it has a gyroscope, and a small lean toward the last touch.
+    private(set) var camera = SIMD2<Float>(0, 0)
+    private var cameraTarget = SIMD2<Float>(0, 0)
+    private var leanToward = SIMD2<Float>(0, 0)
+    private let motion = CMMotionManager()
+    private var tiltRest: SIMD2<Float>?
     private var weeds: [Weed] = []
+    /// Water slope under each weed tip, set by the controller from the probes.
+    var weedSamples: [Int: FieldSample] = [:]
     private var critters: [Critter] = []
     private var clouds: [Cloud] = []
     private var flyer: Critter?
@@ -35,6 +43,18 @@ final class Garden {
 
     init(art: ArtSet) {
         self.art = art
+        if motion.isDeviceMotionAvailable {
+            motion.deviceMotionUpdateInterval = 1.0 / 60.0
+            motion.startDeviceMotionUpdates()
+        }
+    }
+
+    /// A tap lands: the camera leans toward it a little, and anything close
+    /// startles away from it.
+    func startle(at point: CGPoint, in size: CGSize) {
+        leanToward = SIMD2(Float(point.x - size.width / 2), Float(point.y - size.height / 2)) * 0.05
+        for c in critters { c.startle(from: point) }
+        for k in koi { k.startle(from: point, now: time) }
     }
 
     /// Pixel size of a named texture, for keeping aspect; set by the controller.
@@ -76,7 +96,8 @@ final class Garden {
             }
         }
         critters = art.under.enumerated().map { i, name in
-            Critter(texture: name, forward: [-.pi / 2, .pi, .pi][i % 3], size: 22, seed: i, under: true)
+            let forward: Float = name.hasPrefix("tadpole_1") ? -.pi / 2 : (name.hasPrefix("boatman") ? -.pi / 2 : .pi)
+            return Critter(texture: name, forward: forward, size: name.hasPrefix("boatman") ? 26 : 22, seed: i, under: true)
         } + art.skaters.enumerated().map { i, name in
             Critter(texture: name, forward: -.pi / 2, size: 30, seed: i + 10, under: false)
         }
@@ -119,9 +140,31 @@ final class Garden {
         time = now
         guard size.width > 0 else { return }
 
-        // The breath: a slow figure of eight a few points across.
+        // The camera: a slow breath, plus the phone's tilt, plus a lean toward
+        // the last touch that eases off. Everything is smoothed so it flows.
         let t = Float(now)
-        drift = SIMD2(sin(t * 0.11) * 5.0, cos(t * 0.083) * 4.0)
+        var target = SIMD2(sin(t * 0.11) * 4.0, cos(t * 0.083) * 3.0)
+        if let g = motion.deviceMotion?.gravity {
+            let tilt = SIMD2(Float(g.x), Float(-g.y))
+            if tiltRest == nil { tiltRest = tilt }
+            target += (tilt - (tiltRest ?? tilt)) * 90.0
+        }
+        target += leanToward
+        leanToward *= exp(-dt * 1.2)
+        cameraTarget = target
+        camera += (cameraTarget - camera) * min(1, dt * 2.5)
+
+        // Weeds: each strand is a spring. The water's slope at its tip pushes
+        // it over, the stem pulls it back, and damping keeps it from twanging.
+        for (i, w) in weeds.enumerated() {
+            let sample = weedSamples[i]
+            let lateral = SIMD2(cos(w.lean), sin(w.lean))
+            let push = sample.map { simd_dot($0.slope, lateral) } ?? 0
+            let force = push * 380.0 - w.bend * 3.2 - w.bendVel * 1.6
+            w.bendVel += force * dt
+            w.bend += w.bendVel * dt
+            w.bend = max(-0.9, min(0.9, w.bend))
+        }
 
         for c in critters { c.update(dt: dt, now: now, in: size) }
         for c in clouds { c.update(dt: dt, in: size) }
@@ -174,7 +217,7 @@ final class Garden {
         for c in clouds {
             out.append(Sprite(c.texture, at: CGPoint(x: c.position.x + 30, y: c.position.y + 90),
                               size: CGSize(width: c.width * 1.3, height: c.width * 1.3 * c.aspect),
-                              mode: .shadow, alpha: 0.45, parallax: 0.35))
+                              mode: .shadow, alpha: 0.45, z: -1.0))
         }
         for w in weeds {
             let tw = textureSize(w.texture)
@@ -184,11 +227,11 @@ final class Garden {
                                  y: w.root.y - CGFloat(cos(w.lean)) * w.height * 0.5)
             out.append(Sprite(w.texture, at: centre, size: CGSize(width: width, height: w.height),
                               rotation: w.lean, mode: .submerged, alpha: 1, depth: w.depth,
-                              wave: w.phase + Float(time) * 0.9, waveAmp: 0.10, parallax: 0.5, weed: true))
+                              wave: w.phase + Float(time) * 0.7, waveAmp: w.bend, weed: true))
         }
         for c in critters where c.under {
             out.append(Sprite(c.texture, at: c.position, size: c.spriteSize(textureSize), rotation: c.rotation,
-                              mode: .submerged, alpha: 1, depth: 0.55, parallax: 0.55))
+                              mode: .submerged, alpha: 1, depth: 0.5, z: -0.55))
         }
         for k in koi where k.depth < 0.98 {
             let d = k.depth
@@ -197,21 +240,31 @@ final class Garden {
             let index = spines.count / 13
             spines += k.spine(length: h)
             let offset = CGFloat(10 + 26 * d)
+            let z = -0.2 - 0.7 * d
             out.append(Sprite(k.texture, at: CGPoint(x: offset * 0.6, y: offset),
                               size: CGSize(width: w, height: h), mode: .shadow,
-                              alpha: 0.7 * (1 - d * 0.6), wave: k.phase, waveAmp: k.waveAmp, spine: index))
+                              alpha: 0.7 * (1 - d * 0.6), wave: k.phase, waveAmp: k.waveAmp, spine: index, z: -1.0))
             out.append(Sprite(k.texture, at: .zero, size: CGSize(width: w, height: h),
                               mode: .submerged, alpha: 1, depth: d,
-                              wave: k.phase, waveAmp: k.waveAmp, spine: index, parallax: 0.6))
+                              wave: k.phase, waveAmp: k.waveAmp, spine: index, z: z))
         }
         return (out, spines)
+    }
+
+    /// Where each strand's tip is on the surface plane, for the water probes.
+    func weedTips() -> [CGPoint] {
+        weeds.map { w in
+            let tipX = w.root.x - CGFloat(sin(w.lean)) * w.height + CGFloat(cos(w.lean)) * CGFloat(w.bend) * w.height * 0.5
+            let tipY = w.root.y - CGFloat(cos(w.lean)) * w.height + CGFloat(sin(w.lean)) * CGFloat(w.bend) * w.height * 0.5
+            return CGPoint(x: tipX, y: tipY)
+        }
     }
 
     /// On the surface: pond skaters.
     func skaterSprites() -> [Sprite] {
         critters.filter { !$0.under }.map { c in
             Sprite(c.texture, at: c.position, size: c.spriteSize(textureSize), rotation: c.rotation,
-                   mode: .floater, alpha: 0.95, parallax: 1)
+                   mode: .floater, alpha: 0.95, z: 0)
         }
     }
 
@@ -219,13 +272,13 @@ final class Garden {
     func skySprites() -> [Sprite] {
         var out: [Sprite] = clouds.map { c in
             Sprite(c.texture, at: c.position, size: CGSize(width: c.width, height: c.width * c.aspect),
-                   alpha: 0.30, tint: [0.92, 0.97, 1.0, 1], parallax: 2.2)
+                   alpha: 0.30, tint: [0.92, 0.97, 1.0, 1], z: 2.2)
         }
         if let f = flyer {
             let s = f.spriteSize(textureSize)
             out.append(Sprite(f.texture, at: CGPoint(x: f.position.x + 14, y: f.position.y + 40), size: s,
-                              rotation: f.rotation, mode: .shadow, alpha: 0.5, parallax: 1.0))
-            out.append(Sprite(f.texture, at: f.position, size: s, rotation: f.rotation, alpha: 1, parallax: 1.5))
+                              rotation: f.rotation, mode: .shadow, alpha: 0.5, z: 0))
+            out.append(Sprite(f.texture, at: f.position, size: s, rotation: f.rotation, alpha: 1, z: 0.6))
         }
         return out
     }
@@ -235,7 +288,7 @@ final class Garden {
         petals.map { p in
             Sprite(p.texture, at: CGPoint(x: p.x, y: p.y), size: CGSize(width: 14 * p.scale, height: 14 * p.scale),
                    rotation: p.rotation, mode: p.landed ? .floater : .plain, alpha: p.alpha,
-                   parallax: p.landed ? 1 : 1.4)
+                   z: p.landed ? 0 : 0.5)
         }
     }
 
@@ -253,10 +306,10 @@ final class Garden {
             let name = art.branch[index]
             let side = w * art.branchScale
             let left = CGPoint(x: side * 0.5 - art.branchInset, y: side * 0.5 - art.branchInset)
-            out.append(Sprite(name, at: left, size: CGSize(width: side, height: side), alpha: alpha, parallax: 1.6))
+            out.append(Sprite(name, at: left, size: CGSize(width: side, height: side), alpha: alpha, z: 0.9))
             let small = side * art.branchRightScale
             let right = CGPoint(x: w - small * 0.5 + art.branchInset, y: small * 0.5 + art.branchRightDrop)
-            out.append(Sprite(name, at: right, size: CGSize(width: small, height: small), alpha: alpha, flipX: true, parallax: 1.6))
+            out.append(Sprite(name, at: right, size: CGSize(width: small, height: small), alpha: alpha, flipX: true, z: 0.9))
         }
         branch(lo, alpha: 1)
         if hi != lo { branch(hi, alpha: t) }
@@ -266,7 +319,7 @@ final class Garden {
             let ts = textureSize(bank)
             let bh = bw * ts.height / max(1, ts.width)
             out.append(Sprite(bank, at: CGPoint(x: w / 2, y: size.height - bh * 0.5 + art.bankSink),
-                              size: CGSize(width: bw, height: bh), parallax: 1.3))
+                              size: CGSize(width: bw, height: bh), z: 0.12))
         }
         return out
     }
@@ -347,12 +400,14 @@ final class Koi {
         // Real koi turn in wide arcs. The rate is capped so the path the body
         // is laid along never bends tighter than about a body length, and the
         // turn eases in and out rather than snapping to full rate.
-        let want_rate = min(0.55, abs(diff) * 0.9)
-        let turn = max(-want_rate * dt, min(want_rate * dt, diff))
+        // The path can never bend tighter than the body can follow: the turn
+        // radius stays above the fish's width, so the mesh never folds.
+        let s = Float(speed) * (depth > 0.9 ? 0.5 : 1) * (1 - 0.15 * min(1, abs(diff)))
+        let maxRate = min(0.5, s / (Float(width) * 1.1))
+        let wantRate = min(maxRate, abs(diff) * 0.8)
+        let turn = max(-wantRate * dt, min(wantRate * dt, diff))
         heading += turn
-        // A fish slows a little into a turn and beats its tail harder.
         let tightness = min(1, abs(diff) / 1.2)
-        let s = Float(speed) * (depth > 0.9 ? 0.5 : 1) * (1 - 0.2 * tightness)
         position.x += CGFloat(cos(heading) * s * dt)
         position.y += CGFloat(sin(heading) * s * dt)
         phase += dt * (3.0 + s * 0.09 + tightness * 2.5)
@@ -426,22 +481,32 @@ final class Koi {
             tangent = len > 0.001 ? tangent / len : SIMD2(cos(heading), sin(heading))
             rows.append(SIMD4(pos.x, pos.y, tangent.x, tangent.y))
         }
-        // Rows were built tail-first; the rigid front was appended straight.
-        // Smooth the joint: blend the last flexible rows toward the rigid line
-        // so there is no kink where the two meet.
-        let joint = rows[9]
+        // Blend the last flexible rows toward the rigid line so there is no
+        // kink, then smooth the whole spine twice and take the tangents from
+        // neighbouring rows, so the body is one continuous curve.
         for row in stride(from: 8, through: 6, by: -1) {
-            let t = Float(9 - row) / 4      // 0.25, 0.5, 0.75
+            let t = Float(9 - row) / 4
             let back = total * (1 - Float(row) / 12)
             let rigid = head - headTangent * back
-            var r = rows[row]
-            r.x = r.x * t + rigid.x * (1 - t)
-            r.y = r.y * t + rigid.y * (1 - t)
-            let tan = simd_normalize(SIMD2(r.z, r.w) * t + headTangent * (1 - t))
-            r.z = tan.x; r.w = tan.y
-            rows[row] = r
+            rows[row].x = rows[row].x * t + rigid.x * (1 - t)
+            rows[row].y = rows[row].y * t + rigid.y * (1 - t)
         }
-        _ = joint
+        for _ in 0..<2 {
+            var smoothed = rows
+            for row in 1...11 {
+                smoothed[row].x = (rows[row - 1].x + 2 * rows[row].x + rows[row + 1].x) * 0.25
+                smoothed[row].y = (rows[row - 1].y + 2 * rows[row].y + rows[row + 1].y) * 0.25
+            }
+            rows = smoothed
+        }
+        for row in 0...12 {
+            let a = rows[max(0, row - 1)], b = rows[min(12, row + 1)]
+            var tan = SIMD2(b.x - a.x, b.y - a.y)
+            let len = simd_length(tan)
+            tan = len > 0.001 ? tan / len : headTangent
+            rows[row].z = tan.x
+            rows[row].w = tan.y
+        }
         return rows
     }
 
@@ -462,6 +527,7 @@ final class Koi {
     }
 
     private func surface(now: TimeInterval, in size: CGSize) {
+        depthRate = 0.55
         // Reappear somewhere new only if the fish is fully hidden.
         if depth > 0.95 {
             position = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)),
@@ -471,15 +537,24 @@ final class Koi {
             straightTrail()
         }
         depthTarget = 0.12
-        depthRate = 0.9
-        stateUntil = now + Double.random(in: 8...14)
+        stateUntil = now + Double.random(in: 10...18)
     }
 
     func dive(now: TimeInterval, quick: Bool) {
         depthTarget = 1
-        depthRate = quick ? 3.5 : 0.8
-        if quick { speed = 95 }
+        depthRate = quick ? 1.4 : 0.45
+        if quick { speed = 70 }
         stateUntil = now + Double.random(in: quick ? 6...11 : 4...9)
+    }
+
+    /// A tap nearby: veer away and put on a little speed, without diving.
+    func startle(from point: CGPoint, now: TimeInterval) {
+        let dx = Float(position.x - point.x), dy = Float(position.y - point.y)
+        let dist = hypot(dx, dy)
+        guard dist < 170, dist > 0.5 else { return }
+        let away = atan2(dy, dx)
+        target = CGPoint(x: position.x + CGFloat(cos(away)) * 260, y: position.y + CGFloat(sin(away)) * 260)
+        speed = min(60, speed + 22)
     }
 }
 
@@ -534,14 +609,25 @@ final class FallingPetal {
 }
 
 
-/// A strand of pondweed rooted in the bed.
-struct Weed {
+/// A strand of pondweed rooted in the bed, bending as a spring.
+final class Weed {
     let texture: String
     let root: CGPoint
     let height: CGFloat
     let lean: Float
     let phase: Float
     let depth: Float
+    var bend: Float = 0
+    var bendVel: Float = 0
+
+    init(texture: String, root: CGPoint, height: CGFloat, lean: Float, phase: Float, depth: Float) {
+        self.texture = texture
+        self.root = root
+        self.height = height
+        self.lean = lean
+        self.phase = phase
+        self.depth = depth
+    }
 }
 
 /// A small creature: a tadpole under the surface or a skater on it. It rests,
@@ -575,6 +661,17 @@ final class Critter {
         return CGSize(width: size * t.width / long, height: size * t.height / long)
     }
 
+    /// Something landed nearby: dart away from it.
+    func startle(from point: CGPoint) {
+        guard !crossing else { return }
+        let dx = Float(position.x - point.x), dy = Float(position.y - point.y)
+        let dist = hypot(dx, dy)
+        guard dist < 150, dist > 0.5 else { return }
+        heading = atan2(dy, dx) + Float.random(in: -0.5...0.5)
+        speed = (under ? 70 : 150) * (1.2 - dist / 150)
+        restUntil = 0
+    }
+
     func beginCrossing(in bounds: CGSize) {
         crossing = true
         started = true
@@ -604,6 +701,7 @@ final class Critter {
             if speed > 1 {
                 speed = 0
                 restUntil = now + Double.random(in: 1.2...4.0)
+                if restUntil < 1 { restUntil = now + 1.5 }
             } else {
                 heading += Float.random(in: -1.4...1.4)
                 speed = under ? Float.random(in: 40...70) : Float.random(in: 90...150)

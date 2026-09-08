@@ -33,7 +33,8 @@ struct SpriteParams {
     var floorTint: SIMD4<Float>
     var light: SIMD4<Float>
     var relief: SIMD4<Float>
-    var drift: SIMD4<Float>
+    var camera: SIMD4<Float>
+    var haze: SIMD4<Float>
 }
 
 /// A sprite the game wants drawn this frame.
@@ -44,14 +45,14 @@ struct Sprite {
     init(_ texture: String, at center: CGPoint, size: CGSize, rotation: Float = 0,
          mode: SpriteInstance.Mode = .plain, alpha: Float = 1, flipX: Bool = false,
          depth: Float = 0, wave: Float = 0, waveAmp: Float = 0, tint: SIMD4<Float> = [1, 1, 1, 1],
-         spine: Int? = nil, parallax: Float = 1, weed: Bool = false) {
+         spine: Int? = nil, z: Float = 0, weed: Bool = false) {
         self.texture = texture
         gpu = SpriteInstance(center: SIMD2(Float(center.x), Float(center.y)),
                              size: SIMD2(Float(size.width), Float(size.height)),
                              rotation: rotation, alpha: alpha, depth: depth,
                              wave: wave, waveAmp: waveAmp,
                              mode: mode.rawValue | (flipX ? SpriteInstance.flipX : 0) | (weed ? SpriteInstance.weed : 0),
-                             pad: SIMD2(Float((spine ?? -1) + 1), parallax),
+                             pad: SIMD2(Float((spine ?? -1) + 1), z),
                              tint: tint)
     }
 }
@@ -169,7 +170,7 @@ final class TextureCache {
 /// Draws lists of sprites with one mesh and one draw call per texture run.
 final class SpriteBatch {
     static let maxInstances = 768
-    static let segments = 12
+    static let segments = 24
 
     let pipeline: MTLRenderPipelineState
     let vertexBuffer: MTLBuffer

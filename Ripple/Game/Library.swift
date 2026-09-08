@@ -126,8 +126,10 @@ enum Library {
             floor: FloorLook(deep: [0.05, 0.08, 0.19], mid: [0.10, 0.16, 0.32], shallow: [0.28, 0.34, 0.52],
                              waterTint: [0.86, 0.92, 1.00], waterTintStrength: 0.3,
                              siltColour: [0.58, 0.60, 0.64],
-                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_winter", bedImage: "bed_spring"),
-            weeds: ["weed_1", "weed_2", "weed_3"], clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
+                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_winter", bedImage: "bed_winter"),
+            weeds: ["weed_w_1", "weed_w_2", "weed_w_3", "weed_w_4", "weed_w_5"],
+            under: [], skaters: [], flyers: [],
+            clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
         photographic: nil, rootNote: 440,
         tagline: "The pond sleeps under ice. Wake it gently.")
 
@@ -140,13 +142,13 @@ enum Library {
         rock: "mossstone_1",
         koi: ["n_koi_1", "n_koi_5", "n_koi_3"], koiForward: koiForward, koiWaveAmp: 0.075,
         mosaic: "mosaic_spring", petalParticle: "petal_2",
-        floor: FloorLook(deep: [0.07, 0.17, 0.21], mid: [0.13, 0.31, 0.33], shallow: [0.26, 0.49, 0.47],
-                         waterTint: [0.88, 1.00, 0.97], waterTintStrength: 0.3,
+        floor: FloorLook(deep: [0.09, 0.22, 0.26], mid: [0.17, 0.38, 0.39], shallow: [0.32, 0.56, 0.52],
+                         waterTint: [0.90, 1.00, 0.96], waterTintStrength: 0.3,
                          siltColour: [0.36, 0.38, 0.33],
                          mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_spring",
                          bedImage: "bed_spring"),
         weeds: ["weed_1", "weed_2", "weed_3", "weed_4", "weed_5"],
-        under: ["tadpole_1", "tadpole_2", "tadpole_3"],
+        under: ["tadpole_1", "tadpole_2", "tadpole_3", "boatman_1"],
         skaters: ["skater_1", "skater_2"],
         flyers: ["dragonfly_1"],
         clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"])
@@ -183,8 +185,10 @@ enum Library {
             floor: FloorLook(deep: [0.03, 0.19, 0.21], mid: [0.07, 0.34, 0.36], shallow: [0.36, 0.55, 0.44],
                              waterTint: [0.92, 1.00, 0.90], waterTintStrength: 0.3,
                              siltColour: [0.40, 0.42, 0.30],
-                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_summer", bedImage: "bed_spring"),
-            weeds: ["weed_1", "weed_2", "weed_3"], clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
+                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_summer", bedImage: "bed_summer"),
+            weeds: ["weed_s_1", "weed_s_2", "weed_s_3", "weed_s_4", "weed_s_5"],
+            under: ["tadpole_2", "boatman_1", "tadpole_3"], skaters: ["skater_1", "skater_2"], flyers: ["dragonfly_1"],
+            clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
         photographic: nil, rootNote: 587.33,
         tagline: "Lotus and long light. The koi are bold now.")
 
@@ -202,8 +206,10 @@ enum Library {
             floor: FloorLook(deep: [0.04, 0.13, 0.15], mid: [0.09, 0.26, 0.28], shallow: [0.38, 0.44, 0.30],
                              waterTint: [1.00, 0.94, 0.80], waterTintStrength: 0.35,
                              siltColour: [0.46, 0.38, 0.24],
-                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_autumn", bedImage: "bed_spring"),
-            weeds: ["weed_1", "weed_2", "weed_3"], clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
+                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_autumn", bedImage: "bed_autumn"),
+            weeds: ["weed_a_1", "weed_a_2", "weed_a_3", "weed_a_4", "weed_a_5"],
+            under: ["boatman_1"], skaters: ["skater_2"], flyers: [],
+            clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
         photographic: nil, rootNote: 392,
         tagline: "Maple on the pond. The year settles.")
 

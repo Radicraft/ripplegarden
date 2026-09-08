@@ -48,7 +48,8 @@ struct FloorParams {
     float4 shallow;
     float4 mosaic;         // xy centre (uv), z radius (fraction of height), w silt tint strength
     float4 siltColour;     // rgb of the silt film
-    float4 drift;          // xy camera breath in points for the bed layer; z bed strength
+    float4 camera;         // xy lateral camera offset in points, z height, w shift gain
+    float4 bed;            // x bed strength, y bed depth (positive, below the surface)
 };
 
 struct SiltParams {
@@ -79,7 +80,8 @@ struct SpriteParams {
     float4 floorTint;      // rgb cast for submerged things at full depth
     float4 light;          // xyz direction toward the light, screen space
     float4 relief;         // x diffuse, y specular, z edge darkening, w ink alpha
-    float4 drift;          // xy camera breath in points, scaled per instance by _pad.y
+    float4 camera;         // xy lateral camera offset in points, z camera height above the surface (surface-to-bed = 1), w shift gain
+    float4 haze;           // rgb colour the water swallows deep things into
 };
 
 // ---------------------------------------------------------------------------
@@ -331,16 +333,25 @@ fragment float4 floor_compose_fragment(VertexOut in                             
                                        constant FloorParams &p                  [[buffer(0)]])
 {
     constexpr sampler smp(filter::linear, address::clamp_to_edge);
-    // The bed is the deepest layer, so it breathes least with the camera.
-    float2 buv = in.uv + p.drift.xy / p.viewport.xy;
+    // The bed lies at the bottom of the bowl. Seen through the camera it is a
+    // little smaller than the surface and slides with the camera's offset.
+    float H = p.camera.z;
+    float sb = H / (H + p.bed.y);
+    float2 centre = p.viewport.xy * 0.5;
+    float2 screen = in.uv * p.viewport.xy;
+    // Invert the projection: which bed point lands on this pixel?
+    float2 bedPoint = centre + (screen - p.camera.xy * (1.0 - sb) * p.camera.w - centre) / sb;
+    // The painting is a little larger than the screen so its edges never
+    // show, whatever the camera does.
+    float2 buv = 0.5 + (bedPoint / p.viewport.xy - 0.5) * 0.80;
     float3 col = base.sample(smp, in.uv).rgb;
     float3 painted = bed.sample(smp, buv).rgb;
     // Quieten the painting: less contrast, tinted toward the season, so it
     // reads as a bed a metre down and not a print laid on the surface.
     float lum = dot(painted, float3(0.3, 0.59, 0.11));
     painted = mix(float3(lum), painted, 0.7);
-    painted = mix(painted, painted * (p.mid.rgb * 2.4 + 0.1), 0.6) * 0.62;
-    col = mix(col, painted, p.drift.z);
+    painted = mix(painted, painted * (p.mid.rgb * 2.4 + 0.1), 0.6) * 0.74;
+    col = mix(col, painted, p.bed.x);
 
     // Depth: the pond is a bowl. The middle is deep, and the water column
     // above it swallows the bed into a dark blue haze; toward the banks the
@@ -349,8 +360,8 @@ fragment float4 floor_compose_fragment(VertexOut in                             
     float aspect = p.viewport.x / p.viewport.y;
     float2 q = float2(in.uv.x * aspect, in.uv.y);
     float deepness = smoothstep(0.35, 1.0, d);
-    float3 abyss = p.deep.rgb * 0.7;
-    col = mix(col, abyss, deepness * 0.72);
+    float3 abyss = p.deep.rgb * 0.8;
+    col = mix(col, abyss, deepness * 0.6);
     if (d < 0.98) {
         float grain = 0.85 + 0.30 * fbm(q * 30.0, 3);
         float3 sand = mix(p.shallow.rgb, float3(0.70, 0.62, 0.42), 0.6) * grain;
@@ -359,8 +370,8 @@ fragment float4 floor_compose_fragment(VertexOut in                             
         col *= 1.0 - smoothstep(0.15, 0.0, d) * 0.55;
     }
 
-    float2 centre = float2(p.mosaic.x * aspect, p.mosaic.y);
-    float2 rel = (q - centre) / p.mosaic.z;
+    float2 mcentre = float2(p.mosaic.x * aspect, p.mosaic.y);
+    float2 rel = (q - mcentre) / p.mosaic.z;
     float r = length(rel);
     if (r < 1.02) {
         float2 muv = rel * 0.5 + 0.5;
@@ -392,6 +403,19 @@ struct SpriteVertexIn {
     float2 uv [[attribute(0)]];
 };
 
+/// A camera looking straight down from height H above the surface. The
+/// surface itself is the reference plane and stays put on screen; a point at
+/// depth z (negative below the surface, positive above) shrinks toward the
+/// centre when deep and grows when high, and slides with the camera's
+/// lateral offset in proportion to how far it is from the surface.
+static float2 project(float2 pointOnSurfacePlane, float z, float4 camera, float2 viewport)
+{
+    float H = camera.z;
+    float s = H / max(H - z, 0.1);
+    float2 centre = viewport * 0.5;
+    return centre + (pointOnSurfacePlane - centre) * s + camera.xy * (1.0 - s) * camera.w;
+}
+
 struct SpriteOut {
     float4 position [[position]];
     float2 uv;
@@ -415,80 +439,71 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
     SpriteInstance s = instances[iid];
     uint mode = s.mode & 3u;
     bool flip = (s.mode & 8u) != 0;
+    bool weed = (s.mode & 32u) != 0;
 
     float2 uv = vin.uv;
     float2 local = (uv - 0.5) * s.size;          // v grows downward in the image
     if (flip) { local.x = -local.x; }
+    float tailness = 1.0 - uv.y;                 // 0 at the image bottom (root / head), 1 at the top (tip / tail)
 
-    // Spine wag: image "up" is the tail. Bigger toward the tail.
-    float tailness = 1.0 - uv.y;
-    local.x += sin(s.wave + uv.y * 4.2) * s.waveAmp * s.size.x * tailness * tailness;
-
-    // Camera breath: each layer drifts by its own share.
-    float2 breath = p.drift.xy * s._pad.y;
+    // Depth of this vertex. Most sprites are flat at their layer's depth; a
+    // weed rises from the bed at its root to near the surface at its tip.
+    float z = s._pad.y;
+    if (weed) { z = mix(-0.92, -0.22, tailness); }
 
     float wet = 0.0;
-    float2 centre = s.center + breath;
-
-    // Pondweed: rooted at the bottom of the image, the strand leans with the
-    // water moving over it, most at the tip.
-    if ((s.mode & 32u) != 0u) {
-        float2 cuv = s.center / p.viewport.xy;
-        float2 texel = 1.0 / float2(field.get_width(), field.get_height());
-        float gx = field.sample(smp, cuv + float2(texel.x * 3.0, 0)).r - field.sample(smp, cuv - float2(texel.x * 3.0, 0)).r;
-        float gy = field.sample(smp, cuv + float2(0, texel.y * 3.0)).r - field.sample(smp, cuv - float2(0, texel.y * 3.0)).r;
-        float2 lateral = float2(cos(s.rotation), sin(s.rotation));
-        float lean = dot(float2(gx, gy), lateral) * 900.0;
-        local.x += clamp(lean, -0.6, 0.6) * s.size.x * tailness * tailness;
-    }
-    float2 world;
     float rotation = s.rotation;
+    float2 onSurface;                            // position as if on the surface plane, before projection
 
-    // A spined sprite (a fish) does not rotate as a card: each row of the
-    // mesh sits on the path its head actually swam, so the body bends
-    // through a turn and the tail swings wide. `center` is then an offset.
     int spine = int(s._pad.x) - 1;
     if (spine >= 0) {
-        uint row = uint(round(uv.y * 12.0));
-        float4 sp = spines[spine * 13 + row];
-        float2 t = sp.zw;                      // unit tangent, head-ward
-        float2 n = float2(-t.y, t.x);
-        world = sp.xy + n * local.x + s.center + breath;
+        // A fish: rows sit along the recorded path of the head. Thirteen
+        // samples, interpolated so a finer mesh bends without facets.
+        float f = uv.y * 12.0;
+        int i0 = int(floor(f));
+        int i1 = min(i0 + 1, 12);
+        float t = f - float(i0);
+        float4 a = spines[spine * 13 + i0];
+        float4 b = spines[spine * 13 + i1];
+        float2 pos = mix(a.xy, b.xy, t);
+        float2 tan = normalize(mix(a.zw, b.zw, t));
+        float2 n = float2(-tan.y, tan.x);
+        // The wag rides on the spine, largest at the tail.
+        float wag = sin(s.wave + uv.y * 4.2) * s.waveAmp * s.size.x * tailness * tailness;
+        onSurface = pos + n * (local.x + wag) + s.center;
         float4 head = spines[spine * 13 + 12];
         rotation = atan2(head.w, head.z) - M_PI_F * 0.5;
-        SpriteOut out;
-        out.position = float4(world.x / p.viewport.x * 2.0 - 1.0, 1.0 - world.y / p.viewport.y * 2.0, 0.0, 1.0);
-        out.uv = uv;
-        out.tint = s.tint;
-        out.alpha = s.alpha;
-        out.wet = 0.0;
-        out.depth = s.depth;
-        out.mode = mode;
-        out.flags = s.mode;
-        out.rot = float2(cos(rotation), sin(rotation));
-        return out;
-    }
-
-    if (mode == 1u) {
-        float2 cuv = centre / p.viewport.xy;
-        float2 texel = 1.0 / float2(field.get_width(), field.get_height());
-        float hc = field.sample(smp, cuv).r;
-        float gx = field.sample(smp, cuv + float2(texel.x * 2.0, 0)).r - field.sample(smp, cuv - float2(texel.x * 2.0, 0)).r;
-        float gy = field.sample(smp, cuv + float2(0, texel.y * 2.0)).r - field.sample(smp, cuv - float2(0, texel.y * 2.0)).r;
-        float bob = 1.0 + clamp(hc * p.gains.w, -0.25, 0.25);
-        float cs = cos(s.rotation), sn = sin(s.rotation);
-        float2 rotated = float2(local.x * cs - local.y * sn, local.x * sn + local.y * cs) * bob;
-        world = centre + rotated;
-        float hv = field.sample(smp, world / p.viewport.xy).r;
-        // A higher surface lifts that part of the piece toward the eye; the
-        // whole piece slides a little toward downhill.
-        world.y -= (hv - hc) * p.gains.x;
-        world -= float2(gx, gy) * p.gains.y;
-        wet = smoothstep(0.0, p.gains.z, hv - hc);
+    } else if (weed) {
+        // A strand bends as a curve from its root: the lean (in waveAmp) and
+        // the idle sway (in wave) both grow with the square of the distance
+        // up the stem, which is how grass bends in moving water.
+        float bend = s.waveAmp + sin(s.wave) * 0.06;
+        float2 up = float2(sin(s.rotation), -cos(s.rotation));
+        float2 lateral = float2(cos(s.rotation), sin(s.rotation));
+        float along = tailness * s.size.y;
+        float2 root = s.center - up * (0.5 * s.size.y);
+        onSurface = root + up * along + lateral * (local.x + bend * along * tailness);
     } else {
         float cs = cos(s.rotation), sn = sin(s.rotation);
-        world = centre + float2(local.x * cs - local.y * sn, local.x * sn + local.y * cs);
+        float2 rotated = float2(local.x * cs - local.y * sn, local.x * sn + local.y * cs);
+        if (mode == 1u) {
+            float2 cuv = s.center / p.viewport.xy;
+            float2 texel = 1.0 / float2(field.get_width(), field.get_height());
+            float hc = field.sample(smp, cuv).r;
+            float gx = field.sample(smp, cuv + float2(texel.x * 2.0, 0)).r - field.sample(smp, cuv - float2(texel.x * 2.0, 0)).r;
+            float gy = field.sample(smp, cuv + float2(0, texel.y * 2.0)).r - field.sample(smp, cuv - float2(0, texel.y * 2.0)).r;
+            float bob = 1.0 + clamp(hc * p.gains.w, -0.25, 0.25);
+            onSurface = s.center + rotated * bob;
+            float hv = field.sample(smp, onSurface / p.viewport.xy).r;
+            onSurface.y -= (hv - hc) * p.gains.x;
+            onSurface -= float2(gx, gy) * p.gains.y;
+            wet = smoothstep(0.0, p.gains.z, hv - hc);
+        } else {
+            onSurface = s.center + rotated;
+        }
     }
+
+    float2 world = project(onSurface, z, p.camera, p.viewport.xy);
 
     SpriteOut out;
     out.position = float4(world.x / p.viewport.x * 2.0 - 1.0, 1.0 - world.y / p.viewport.y * 2.0, 0.0, 1.0);
@@ -499,7 +514,7 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
     out.depth = s.depth;
     out.mode = mode;
     out.flags = s.mode;
-    out.rot = float2(cos(s.rotation), sin(s.rotation)) * float2(flip ? -1.0 : 1.0, 1.0);
+    out.rot = float2(cos(rotation), sin(rotation)) * float2(flip ? -1.0 : 1.0, 1.0);
     return out;
 }
 
@@ -537,12 +552,13 @@ fragment float4 sprite_fragment(SpriteOut in                             [[stage
     shade *= mix(1.0 - p.relief.z, 1.0, body);
     rgb = rgb * shade + float3(1.0, 0.98, 0.92) * spec * p.relief.y * a;
     if (in.mode == 2u) {
-        // Deeper is dimmer, bluer and fainter.
+        // The water swallows deep things into its own colour: they go hazy
+        // and cool long before they go faint, and only vanish right at the
+        // bottom of the dive.
         float d = in.depth;
-        rgb = mix(rgb, rgb * p.floorTint.rgb, d * 0.8) * (1.0 - d * 0.35);
-        a *= 1.0 - d * 0.75;
-        rgb *= (1.0 - d * 0.75);
-        return float4(rgb, a);
+        float3 hazed = mix(rgb, p.haze.rgb * a, smoothstep(0.0, 1.0, d) * 0.85);
+        float keep = 1.0 - smoothstep(0.78, 1.0, d);
+        return float4(hazed * keep, a * keep);
     }
     if (in.mode == 1u) {
         // Where the water rides over it, the piece goes darker and cooler.

@@ -48,7 +48,8 @@ struct FloorParams {
     var shallow: SIMD4<Float>
     var mosaic: SIMD4<Float>
     var siltColour: SIMD4<Float>
-    var drift: SIMD4<Float>
+    var camera: SIMD4<Float>
+    var bed: SIMD4<Float>
 }
 
 struct SiltParams {
@@ -153,7 +154,7 @@ enum Tuning {
     static let floaterBob: Float = 0.9
 
     static let maxSplatsPerFrame = 96
-    static let maxProbes = 64
+    static let maxProbes = 96
     static let maxWalls = 16
     static let maxCovers = 64
     static let maxSpines = 8
@@ -249,8 +250,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     }
     private var bedTexture: MTLTexture?
 
-    /// The camera's slow breath, in points. Layers take their own share.
-    var drift = SIMD2<Float>(0, 0)
+    /// Lateral camera offset in points. The surface stays fixed on screen;
+    /// everything above or below it parallaxes against it.
+    var camera = SIMD2<Float>(0, 0)
+    /// Camera height above the surface, in units where surface to bed is 1.
+    static let cameraHeight: Float = 7.0
+    static let cameraShiftGain: Float = 4.0
 
     /// Heavy floaters and rocks that waves should bounce off, in points.
     var walls: [(centre: CGPoint, radius: CGFloat)] = []
@@ -636,7 +641,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             floorTint: SIMD4(floorLook.mid * 2.2, 1),
             light: SIMD4(-0.40, -0.56, 0.72, 0),
             relief: style == .woodblock ? SIMD4(0.55, 0.16, 0.28, 0.55) : SIMD4(0.35, 0.10, 0.15, 0.35),
-            drift: SIMD4(drift.x, drift.y, 0, 0))
+            camera: SIMD4(camera.x, camera.y, WaterRenderer.cameraHeight, WaterRenderer.cameraShiftGain),
+            haze: SIMD4(floorLook.deep * 0.9, 1))
 
         let spineCount = min(spines.count, 13 * Tuning.maxSpines)
         if spineCount > 0 {
@@ -701,7 +707,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                            deep: SIMD4(look.deep, 1), mid: SIMD4(look.mid, 1), shallow: SIMD4(look.shallow, 1),
                            mosaic: SIMD4(look.mosaicCentre.x, look.mosaicCentre.y, look.mosaicRadius, 1),
                            siltColour: SIMD4(look.siltColour, 1),
-                           drift: SIMD4(drift.x * 0.35 * scale, drift.y * 0.35 * scale, bedTexture == nil ? 0 : 0.9, 0))
+                           camera: SIMD4(camera.x * scale, camera.y * scale, WaterRenderer.cameraHeight, WaterRenderer.cameraShiftGain),
+                           bed: SIMD4(bedTexture == nil ? 0 : 0.9, 1.0, 0, 0))
     }
 
     private func siltParams(dt: Float) -> SiltParams {

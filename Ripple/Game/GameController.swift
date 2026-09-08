@@ -29,6 +29,7 @@ final class GameController: ObservableObject, TouchInput {
 
     private(set) var debris: [Debris] = []
     private var probeOrder: [(debris: Debris, probes: Int)] = []
+    private var lastDebrisProbeCount = 0
     private var current = SIMD2<Float>(0, 0)
     private(set) var cleaned: Float = 0
     private var rocks: [(centre: CGPoint, radius: CGFloat)] = []
@@ -221,6 +222,16 @@ final class GameController: ObservableObject, TouchInput {
         // Feed the renderer.
         feedRenderer(renderer)
 
+        // Weed tips read the water too; their samples ride at the end of the
+        // probe list, after the debris.
+        let weedTips = garden.weedTips()
+        let debrisProbeCount = lastDebrisProbeCount
+        var weedSamples: [Int: FieldSample] = [:]
+        for (i, _) in weedTips.enumerated() where debrisProbeCount + i < samples.count {
+            weedSamples[i] = samples[debrisProbeCount + i]
+        }
+        garden.weedSamples = weedSamples
+
         probeOrder = debris.filter { !$0.cleared }.map { ($0, $0.cls == .heavy ? 3 : 1) }
         var cells: [SIMD2<Float>] = []
         for entry in probeOrder {
@@ -234,6 +245,10 @@ final class GameController: ObservableObject, TouchInput {
                     if let c = renderer.cell(for: p, in: viewSize) { cells.append(c) }
                 }
             }
+        }
+        lastDebrisProbeCount = cells.count
+        for tip in weedTips {
+            if let c = renderer.cell(for: tip, in: viewSize) { cells.append(c) }
         }
         renderer.setProbes(cells)
 
@@ -276,7 +291,7 @@ final class GameController: ObservableObject, TouchInput {
             SIMD4(Float($0.position.x) / w, Float($0.position.y) / h, Float($0.radius) / h * ($0.cls == .heavy ? 0.95 : 0.8), 0)
         }
 
-        renderer.drift = garden.drift
+        renderer.camera = garden.camera
 
         // Sprites. Under the water: weeds, cloud shadows, tadpoles, koi, plus
         // every floater's shadow on the floor.
@@ -286,12 +301,12 @@ final class GameController: ObservableObject, TouchInput {
         for d in debris where !d.cleared {
             let s = spriteSize(d)
             under.append(Sprite(d.sprite, at: CGPoint(x: d.position.x + 7, y: d.position.y + 10), size: s,
-                                rotation: Float(d.angle), mode: .shadow, alpha: d.cls == .heavy ? 0.9 : 0.6))
+                                rotation: Float(d.angle), mode: .shadow, alpha: d.cls == .heavy ? 0.9 : 0.6, z: -1.0))
         }
         for r in rocks {
             let side = r.radius * 2.3
             under.append(Sprite(art.rock, at: CGPoint(x: r.centre.x + 6, y: r.centre.y + 9),
-                                size: CGSize(width: side, height: side * rockAspect), mode: .shadow, alpha: 1))
+                                size: CGSize(width: side, height: side * rockAspect), mode: .shadow, alpha: 1, z: -1.0))
         }
         renderer.submergedSprites = under
 
@@ -315,7 +330,7 @@ final class GameController: ObservableObject, TouchInput {
         }
         for r in rocks {
             let side = r.radius * 2.3
-            paper(Sprite(art.rock, at: r.centre, size: CGSize(width: side, height: side * rockAspect)))
+            paper(Sprite(art.rock, at: r.centre, size: CGSize(width: side, height: side * rockAspect), z: 0.15))
         }
         for d in debris where !d.cleared {
             paper(Sprite(d.sprite, at: d.position, size: spriteSize(d), rotation: Float(d.angle),
@@ -401,6 +416,7 @@ final class GameController: ObservableObject, TouchInput {
             edgeStrokes[id] = EdgeStroke(last: point)
             return
         }
+        garden.startle(at: point, in: size)
         if let k = garden.koiHit(at: point) {
             garden.dive(k)
             sound.plop()
