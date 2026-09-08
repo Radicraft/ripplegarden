@@ -275,17 +275,33 @@ final class GameController: ObservableObject, TouchInput {
         renderer.submergedSprites = under
 
         // On the water: rocks, debris, blossom, then the flora frame on top.
+        // Every piece is cut paper: a dark thickness edge sits just under it,
+        // and things held above the water throw a soft shadow down onto it.
         var over: [Sprite] = []
+        func paper(_ s: Sprite, cast: CGFloat = 0) {
+            if cast > 0 {
+                var sh = s
+                sh.gpu.center += SIMD2(Float(cast * 0.7), Float(cast))
+                sh.gpu.mode = SpriteInstance.Mode.shadow.rawValue | (s.gpu.mode & SpriteInstance.flipX)
+                sh.gpu.alpha = s.gpu.alpha * 0.8
+                over.append(sh)
+            }
+            var edge = s
+            edge.gpu.center += SIMD2(2.2, 3.0)
+            edge.gpu.mode = s.gpu.mode | SpriteInstance.ink
+            over.append(edge)
+            over.append(s)
+        }
         for r in rocks {
             let side = r.radius * 2.3
-            over.append(Sprite(art.rock, at: r.centre, size: CGSize(width: side, height: side * rockAspect)))
+            paper(Sprite(art.rock, at: r.centre, size: CGSize(width: side, height: side * rockAspect)))
         }
         for d in debris where !d.cleared {
-            over.append(Sprite(d.sprite, at: d.position, size: spriteSize(d), rotation: Float(d.angle),
-                               mode: .floater, alpha: d.fade))
+            paper(Sprite(d.sprite, at: d.position, size: spriteSize(d), rotation: Float(d.angle),
+                         mode: .floater, alpha: d.fade))
         }
-        over += garden.petalSprites()
-        over += garden.floraSprites()
+        for s in garden.petalSprites() { paper(s) }
+        for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
         renderer.surfaceSprites = over
     }
 

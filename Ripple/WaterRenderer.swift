@@ -618,7 +618,9 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         let spriteParams = SpriteParams(
             viewport: SIMD4(pointsViewport.x, pointsViewport.y, 0, 0),
             gains: SIMD4(Tuning.floaterLift, Tuning.floaterTilt, Tuning.floaterWetThreshold, Tuning.floaterBob),
-            floorTint: SIMD4(floorLook.mid * 2.2, 1))
+            floorTint: SIMD4(floorLook.mid * 2.2, 1),
+            light: SIMD4(-0.40, -0.56, 0.72, 0),
+            relief: style == .woodblock ? SIMD4(0.55, 0.16, 0.28, 0.55) : SIMD4(0.35, 0.10, 0.15, 0.35))
 
         do {
             let pass = MTLRenderPassDescriptor()

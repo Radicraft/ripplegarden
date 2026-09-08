@@ -1,6 +1,8 @@
 import Metal
 import MetalKit
 import simd
+import ImageIO
+import CoreGraphics
 
 /// Layout mirrors `SpriteInstance` in Shaders.metal.
 struct SpriteInstance {
@@ -19,12 +21,16 @@ struct SpriteInstance {
         case plain = 0, floater = 1, submerged = 2, shadow = 3
     }
     static let flipX: UInt32 = 8
+    /// Draw the silhouette ink-dark: the paper's cut edge, laid just under.
+    static let ink: UInt32 = 16
 }
 
 struct SpriteParams {
     var viewport: SIMD4<Float>
     var gains: SIMD4<Float>
     var floorTint: SIMD4<Float>
+    var light: SIMD4<Float>
+    var relief: SIMD4<Float>
 }
 
 /// A sprite the game wants drawn this frame.
@@ -53,7 +59,87 @@ final class TextureCache {
     private var sizes: [String: CGSize] = [:]
 
     init(device: MTLDevice) {
+        self.device = device
         loader = MTKTextureLoader(device: device)
+    }
+
+    private var normals: [String: MTLTexture] = [:]
+    private let device: MTLDevice
+
+    /// A normal map cut from the sprite's own silhouette: the alpha is
+    /// blurred into a rounded height field, so every piece gets a bevelled
+    /// edge and a little body without anyone having to paint one.
+    func normal(_ name: String) -> MTLTexture? {
+        if let t = normals[name] { return t }
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let w = cg.width, h = cg.height
+        var alpha = [UInt8](repeating: 0, count: w * h)
+        alpha.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                      bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue) else { return }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        var field = alpha.map { Float($0) / 255 }
+        let radius = max(2, Int(Double(max(w, h)) * 0.045))
+        field = TextureCache.boxBlur(field, w: w, h: h, r: radius)
+        field = TextureCache.boxBlur(field, w: w, h: h, r: radius)
+        // Only the inside counts as body; outside the silhouette stays flat.
+        for i in 0..<(w * h) where alpha[i] == 0 { field[i] *= 0.6 }
+
+        let strength = Float(radius) * 1.1
+        var out = [UInt8](repeating: 0, count: w * h * 4)
+        for y in 0..<h {
+            for x in 0..<w {
+                let l = field[y * w + max(0, x - 1)], r = field[y * w + min(w - 1, x + 1)]
+                let u = field[max(0, y - 1) * w + x], d = field[min(h - 1, y + 1) * w + x]
+                let dx = (r - l) * 0.5 * strength, dy = (d - u) * 0.5 * strength
+                let len = (dx * dx + dy * dy + 1).squareRoot()
+                let nx = -dx / len, ny = -dy / len, nz = 1 / len
+                let i = (y * w + x) * 4
+                out[i] = UInt8(max(0, min(255, (nx * 0.5 + 0.5) * 255)))
+                out[i + 1] = UInt8(max(0, min(255, (ny * 0.5 + 0.5) * 255)))
+                out[i + 2] = UInt8(max(0, min(255, (nz * 0.5 + 0.5) * 255)))
+                out[i + 3] = UInt8(max(0, min(255, field[y * w + x] * 255)))
+            }
+        }
+        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: w, height: h, mipmapped: false)
+        desc.usage = .shaderRead
+        guard let tex = device.makeTexture(descriptor: desc) else { return nil }
+        out.withUnsafeBytes { raw in
+            tex.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: raw.baseAddress!, bytesPerRow: w * 4)
+        }
+        normals[name] = tex
+        return tex
+    }
+
+    /// Separable box blur with running sums, so a big radius costs the same
+    /// as a small one.
+    private static func boxBlur(_ src: [Float], w: Int, h: Int, r: Int) -> [Float] {
+        var tmp = [Float](repeating: 0, count: w * h)
+        var dst = [Float](repeating: 0, count: w * h)
+        let span = Float(2 * r + 1)
+        for y in 0..<h {
+            var sum: Float = 0
+            for x in -r...r { sum += src[y * w + max(0, min(w - 1, x))] }
+            for x in 0..<w {
+                tmp[y * w + x] = sum / span
+                let outX = max(0, min(w - 1, x - r)), inX = max(0, min(w - 1, x + r + 1))
+                sum += src[y * w + inX] - src[y * w + outX]
+            }
+        }
+        for x in 0..<w {
+            var sum: Float = 0
+            for y in -r...r { sum += tmp[max(0, min(h - 1, y)) * w + x] }
+            for y in 0..<h {
+                dst[y * w + x] = sum / span
+                let outY = max(0, min(h - 1, y - r)), inY = max(0, min(h - 1, y + r + 1))
+                sum += tmp[inY * w + x] - tmp[outY * w + x]
+            }
+        }
+        return dst
     }
 
     func texture(_ name: String) -> MTLTexture? {
@@ -167,6 +253,7 @@ final class SpriteBatch {
             while runEnd < count, sprites[runEnd].texture == name { runEnd += 1 }
             if let tex = textures.texture(name) {
                 encoder.setFragmentTexture(tex, index: 0)
+                encoder.setFragmentTexture(textures.normal(name) ?? tex, index: 1)
                 encoder.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint16,
                                               indexBuffer: indexBuffer, indexBufferOffset: 0,
                                               instanceCount: runEnd - runStart, baseVertex: 0,

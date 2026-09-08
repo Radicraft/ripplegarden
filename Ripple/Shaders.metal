@@ -76,6 +76,8 @@ struct SpriteParams {
     float4 viewport;       // xy drawable size in points
     float4 gains;          // x lift, y tilt, z wet threshold, w bob
     float4 floorTint;      // rgb cast for submerged things at full depth
+    float4 light;          // xyz direction toward the light, screen space
+    float4 relief;         // x diffuse, y specular, z edge darkening, w ink alpha
 };
 
 // ---------------------------------------------------------------------------
@@ -370,6 +372,8 @@ struct SpriteOut {
     float  wet;
     float  depth;
     uint   mode;
+    uint   flags;
+    float2 rot;            // cos, sin of the sprite rotation, for the normal
 };
 
 vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stage_in]],
@@ -423,11 +427,14 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
     out.wet = wet;
     out.depth = s.depth;
     out.mode = mode;
+    out.flags = s.mode;
+    out.rot = float2(cos(s.rotation), sin(s.rotation)) * float2(flip ? -1.0 : 1.0, 1.0);
     return out;
 }
 
 fragment float4 sprite_fragment(SpriteOut in                             [[stage_in]],
                                 texture2d<float, access::sample> tex     [[texture(0)]],
+                                texture2d<float, access::sample> relief  [[texture(1)]],
                                 constant SpriteParams &p                 [[buffer(0)]])
 {
     constexpr sampler smp(filter::linear, address::clamp_to_edge, mip_filter::linear);
@@ -439,6 +446,25 @@ fragment float4 sprite_fragment(SpriteOut in                             [[stage
     if (in.mode == 3u) {
         return float4(0.0, 0.0, 0.0, a * 0.42);
     }
+    if ((in.flags & 16u) != 0u) {
+        // Paper thickness: the same silhouette, ink dark, drawn just under.
+        return float4(0.0, 0.0, 0.0, a * p.relief.w);
+    }
+
+    // Relief: a normal map cut from the silhouette gives every piece a
+    // rounded edge and a little body, lit by the same light as the water.
+    float4 nm = relief.sample(smp, in.uv);
+    float3 n = normalize(nm.xyz * 2.0 - 1.0);
+    float2 rn = float2(n.x * in.rot.x - n.y * in.rot.y, n.x * in.rot.y + n.y * in.rot.x);
+    n = normalize(float3(rn, n.z));
+    float3 L = normalize(p.light.xyz);
+    float3 H = normalize(L + float3(0.0, 0.0, 1.0));
+    float diff = max(0.0, dot(n, L));
+    float spec = pow(max(0.0, dot(n, H)), 28.0);
+    float body = smoothstep(0.10, 0.70, nm.a);
+    float shade = (1.0 - p.relief.x * 0.55) + p.relief.x * diff;
+    shade *= mix(1.0 - p.relief.z, 1.0, body);
+    rgb = rgb * shade + float3(1.0, 0.98, 0.92) * spec * p.relief.y * a;
     if (in.mode == 2u) {
         // Deeper is dimmer, bluer and fainter.
         float d = in.depth;

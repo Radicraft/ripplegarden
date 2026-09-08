@@ -107,14 +107,14 @@ enum Library {
 
     static let springWoodblock = ArtSet(
         branch: ["spring_branch_1", "spring_branch_2", "spring_branch_3", "spring_branch_4"],
-        branchScale: 0.66,
+        branchScale: 0.72, branchInset: 14, branchRightScale: 0.62, branchRightDrop: 70,
         bank: "spring_bank", bankAspect: 628.0 / 1536.0, bankSink: 6,
         light: ["petal_1", "petal_2", "petal_3"],
         heavy: ["driftwood_1", "stone_1", "mossstone_1"],
         rock: "mossstone_1",
-        koi: ["koi_1", "koi_2"],
-        koiForward: [-3 * .pi / 4, -.pi / 4],
-        koiWaveAmp: 0.05,
+        koi: ["n_koi_1", "n_koi_5", "n_koi_3"],
+        koiForward: [.pi / 2],
+        koiWaveAmp: 0.14,
         mosaic: "mosaic_spring",
         petalParticle: "petal_2",
         floor: FloorLook(deep: [0.07, 0.17, 0.21], mid: [0.13, 0.31, 0.33], shallow: [0.26, 0.49, 0.47],
