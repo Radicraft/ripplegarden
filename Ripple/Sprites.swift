@@ -173,7 +173,7 @@ final class TextureCache {
 
 /// Draws lists of sprites with one mesh and one draw call per texture run.
 final class SpriteBatch {
-    static let maxInstances = 4096
+    static let maxInstances = 6144
     static let segments = 24
 
     let pipeline: MTLRenderPipelineState

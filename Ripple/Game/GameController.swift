@@ -182,51 +182,67 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     /// A tap on the sheet. Solid ice takes the blow as fractures running
-    /// out across the sheet; ice already fractured, or thin at an edge,
-    /// gives way, and the shard between the fractures opens into water.
-    /// Returns true if the tap was on ice.
+    /// out across it, ringed a little way out. A second tap anywhere in
+    /// that struck region breaks the whole of it out to the ring; a tap on
+    /// ice already thin at a hole's edge breaks a piece off. Returns true if
+    /// the tap was on ice.
     private func tapIce(at point: CGPoint) -> Bool {
         guard let field = iceField, field.ice(at: point) > 0.5 else { return false }
         haptics.tap(weight: 0.9)
         renderer?.addSplat(at: point, in: viewSize, radius: 6, amplitude: -0.04)
-        if field.isCracked(near: point, within: 22) || field.isEdge(at: point, within: 40) {
-            breakThrough(at: point)
+        if let strike = field.strike(containing: point), field.isCracked(near: point, within: 60) {
+            field.forgetStrike(at: strike.centre)
+            breakThrough(at: point, limit: strike.ring * 1.1, crossing: true)
+        } else if field.isEdge(at: point, within: 46) {
+            breakThrough(at: point, limit: 95, crossing: true)
         } else {
             field.strike(at: point)
         }
         return true
     }
 
-    /// Fractures as thin line segments lying on the sheet; a segment over
-    /// open water is gone with the ice it split.
+    /// Fractures as line segments lying on the sheet: a soft frosty halo
+    /// under a crisp white core, thick at the blow and a hairline at the
+    /// tip. A segment over open water is gone with the ice it split.
     private func rebuildCrackSprites(_ field: IceField) {
-        var out: [Sprite] = []
-        for line in field.crackLines {
-            guard line.count > 1 else { continue }
-            for i in 0..<(line.count - 1) {
-                let a = line[i], b = line[i + 1]
+        var halos: [Sprite] = []
+        var cores: [Sprite] = []
+        for (index, line) in field.crackLines.enumerated() {
+            let pts = line.points
+            guard pts.count > 1 else { continue }
+            let n = pts.count - 1
+            for i in 0..<n {
+                let a = pts[i], b = pts[i + 1]
                 let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
                 guard field.ice(at: mid) > 0.5 else { continue }
                 let len = hypot(b.x - a.x, b.y - a.y)
-                out.append(Sprite("crack_line", at: mid, size: CGSize(width: len + 2, height: 3.6),
-                                  rotation: Float(atan2(b.y - a.y, b.x - a.x)), alpha: 0.95, z: 0.01))
-                if out.count > 3000 { break }
+                let t = CGFloat(i) / CGFloat(max(1, n))
+                let w = max(1.1, line.width * (1 - t * 0.75))
+                let rot = Float(atan2(b.y - a.y, b.x - a.x))
+                let tex = (index + i) % 2 == 0 ? "crack_line" : "crack_line2"
+                if w > 2 {
+                    halos.append(Sprite("crack_halo", at: mid, size: CGSize(width: len + 4, height: w * 3.2),
+                                        rotation: rot, alpha: 0.55, z: 0.01))
+                }
+                cores.append(Sprite(tex, at: mid, size: CGSize(width: len + 2, height: w),
+                                    rotation: rot, alpha: 0.95, z: 0.012))
+                if cores.count > 2600 { break }
             }
         }
-        crackSprites = out
+        crackSprites = halos + cores
     }
 
-    private func breakThrough(at point: CGPoint) {
+    private func breakThrough(at point: CGPoint, limit: CGFloat, crossing: Bool) {
         guard let field = iceField else { return }
-        let opened = field.breakThrough(at: point, limit: 120)
+        let opened = field.breakThrough(at: point, limit: limit, crossing: crossing)
         guard opened > 0 else { field.strike(at: point); return }
         haptics.holdRelease(charge: 0.9)
         renderer?.addSplat(at: point, in: viewSize, radius: 22, amplitude: -0.45)
-        // Chunks in proportion to the shard, drifting off to melt or beach.
-        let pieces = max(1, min(6, Int(opened / 2600)))
+        // Chunks in proportion to what gave way, drifting off to melt or beach.
+        let pieces = max(2, min(9, Int(opened / 4000)))
         for k in 0..<pieces {
             let a = Float(k) / Float(pieces) * 2 * .pi + Float.random(in: -0.5...0.5)
-            let r = CGFloat.random(in: 10...45)
+            let r = CGFloat.random(in: 10...max(30, limit * 0.55))
             let p = CGPoint(x: point.x + CGFloat(cos(a)) * r, y: point.y + CGFloat(sin(a)) * r)
             let d = Debris(id: 3000 + Int.random(in: 0...99999), cls: .light,
                            sprite: art.iceFragments[k % max(1, art.iceFragments.count)],

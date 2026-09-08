@@ -54,9 +54,10 @@ enum DemoScript {
                 // and a tap in the open water beside it to send a wave at it.
                 let dx = centre.x - edge.x, dy = centre.y - edge.y
                 let len = max(1, hypot(dx, dy))
-                let onIce = CGPoint(x: edge.x - dx / len * 14, y: edge.y - dy / len * 14)
-                let open = CGPoint(x: edge.x + dx / len * 60, y: edge.y + dy / len * 60)
-                tap(controller, at: beats % 2 == 0 ? onIce : open, size: size)
+                // Strike well inside the sheet, then break it, then move on.
+                let deep = CGPoint(x: edge.x - dx / len * 150, y: edge.y - dy / len * 150)
+                let target = field.ice(at: deep) > 0.5 ? deep : CGPoint(x: edge.x - dx / len * 20, y: edge.y - dy / len * 20)
+                tap(controller, at: target, size: size)
             }
             return
         }
