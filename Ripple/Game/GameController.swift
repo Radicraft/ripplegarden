@@ -133,6 +133,7 @@ final class GameController: ObservableObject, TouchInput {
         garden.configure(art: art, size: viewSize, bloomStage: progress.bloomStage(for: season.id))
         rocks = level.rocks.map { (CGPoint(x: $0.centre.x * viewSize.width, y: $0.centre.y * viewSize.height),
                                    $0.radius * viewSize.height) }
+        garden.rocks = rocks
         debris = level.debris.enumerated().map { i, p in
             let name: String
             let radius: CGFloat
@@ -210,7 +211,8 @@ final class GameController: ObservableObject, TouchInput {
             lastCleaned = cleaned
             lastProgressAt = elapsed
         }
-        if phase == .playing, cleaned >= 0.955 { finish() }
+        // Done when the tile is washed and nothing heavy still lies on it.
+        if phase == .playing, cleaned >= 0.94, heavyOverTile().isEmpty { finish() }
 
         // Feed the renderer.
         feedRenderer(renderer)

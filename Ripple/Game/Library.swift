@@ -184,9 +184,9 @@ enum Library {
             rock: "mossstone_1",
             koi: ["n_koi_5", "n_koi_4", "n_koi_2"], koiForward: koiForward, koiWaveAmp: 0.075,
             mosaic: "mosaic_autumn", petalParticle: "leaf_2",
-            floor: FloorLook(deep: [0.10, 0.11, 0.09], mid: [0.24, 0.21, 0.12], shallow: [0.52, 0.40, 0.20],
-                             waterTint: [1.00, 0.92, 0.78], waterTintStrength: 0.3,
-                             siltColour: [0.44, 0.36, 0.24],
+            floor: FloorLook(deep: [0.04, 0.13, 0.15], mid: [0.09, 0.26, 0.28], shallow: [0.38, 0.44, 0.30],
+                             waterTint: [1.00, 0.94, 0.80], waterTintStrength: 0.35,
+                             siltColour: [0.46, 0.38, 0.24],
                              mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_autumn")),
         photographic: nil, rootNote: 392,
         tagline: "Maple on the pond. The year settles.")

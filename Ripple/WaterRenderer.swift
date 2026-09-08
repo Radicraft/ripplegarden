@@ -647,6 +647,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(floorBase, index: 0)
                 encoder.setFragmentTexture(mosaicTexture ?? blankMosaic, index: 1)
                 encoder.setFragmentTexture(silt, index: 2)
+                encoder.setFragmentTexture(depthTexture, index: 3)
                 encoder.setFragmentBytes(&fp, length: MemoryLayout<FloorParams>.stride, index: 0)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 

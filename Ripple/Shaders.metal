@@ -324,10 +324,24 @@ fragment float4 floor_compose_fragment(VertexOut in                             
                                        texture2d<float, access::sample> base    [[texture(0)]],
                                        texture2d<float, access::sample> mosaic  [[texture(1)]],
                                        texture2d<float, access::sample> silt    [[texture(2)]],
+                                       texture2d<float, access::sample> depth   [[texture(3)]],
                                        constant FloorParams &p                  [[buffer(0)]])
 {
     constexpr sampler smp(filter::linear, address::clamp_to_edge);
     float3 col = base.sample(smp, in.uv).rgb;
+
+    // Shallows: the bed rises toward the light and goes sandy, so the player
+    // can see where waves will slow and bend. Walls (rocks) stay dark.
+    float d = depth.sample(smp, in.uv).r;
+    if (d < 0.98) {
+        float aspect = p.viewport.x / p.viewport.y;
+        float2 q = float2(in.uv.x * aspect, in.uv.y);
+        float grain = 0.85 + 0.30 * fbm(q * 30.0, 3);
+        float3 sand = mix(p.shallow.rgb, float3(0.70, 0.62, 0.42), 0.7) * grain;
+        float shallowness = smoothstep(0.98, 0.15, d);
+        col = mix(col, sand, shallowness * 0.8);
+        col *= 1.0 - smoothstep(0.15, 0.0, d) * 0.55;
+    }
 
     float aspect = p.viewport.x / p.viewport.y;
     float2 q = float2(in.uv.x * aspect, in.uv.y);

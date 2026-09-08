@@ -22,6 +22,8 @@ final class Garden {
     /// Splats the garden wants made in the water this frame (a diving koi, a
     /// petal landing). Drained by the controller.
     var splashes: [(at: CGPoint, radius: Float, amplitude: Float)] = []
+    /// Rocks in the pond, in points, so the koi go round them.
+    var rocks: [(centre: CGPoint, radius: CGFloat)] = []
 
     init(art: ArtSet) {
         self.art = art
@@ -82,7 +84,7 @@ final class Garden {
         }
 
         for k in koi {
-            let event = k.update(dt: dt, now: now, in: size)
+            let event = k.update(dt: dt, now: now, in: size, rocks: rocks)
             if let e = event { splashes.append(e) }
         }
 
@@ -204,7 +206,8 @@ final class Koi {
     var rotation: Float { heading - forward }
 
     /// Returns a splash when the fish breaks the surface.
-    func update(dt: Float, now: TimeInterval, in size: CGSize) -> (at: CGPoint, radius: Float, amplitude: Float)? {
+    func update(dt: Float, now: TimeInterval, in size: CGSize,
+                rocks: [(centre: CGPoint, radius: CGFloat)] = []) -> (at: CGPoint, radius: Float, amplitude: Float)? {
         if !started {
             started = true
             position = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)),
@@ -224,7 +227,20 @@ final class Koi {
 
         let dx = Float(target.x - position.x), dy = Float(target.y - position.y)
         if hypot(dx, dy) < 30 { pickTarget(in: size) }
-        let want = atan2(dy, dx)
+        var want = atan2(dy, dx)
+        // A rock ahead bends the wish to one side, well before it is reached.
+        for r in rocks {
+            let rx = Float(r.centre.x - position.x), ry = Float(r.centre.y - position.y)
+            let dist = hypot(rx, ry)
+            let reach = Float(r.radius) + 90
+            guard dist < reach else { continue }
+            var ahead = atan2(ry, rx) - heading
+            while ahead > .pi { ahead -= 2 * .pi }
+            while ahead < -.pi { ahead += 2 * .pi }
+            guard abs(ahead) < 1.2 else { continue }
+            let push = (1 - dist / reach) * 1.4
+            want = heading + (ahead >= 0 ? -push : push)
+        }
         var diff = want - heading
         while diff > .pi { diff -= 2 * .pi }
         while diff < -.pi { diff += 2 * .pi }
