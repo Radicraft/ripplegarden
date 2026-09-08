@@ -25,6 +25,8 @@ struct SpriteInstance {
     static let ink: UInt32 = 16
     /// Rooted pondweed that leans with the water.
     static let weed: UInt32 = 32
+    /// Stands up from its root on the surface plane (reeds).
+    static let stands: UInt32 = 64
 }
 
 struct SpriteParams {
@@ -47,13 +49,13 @@ struct Sprite {
     init(_ texture: String, at center: CGPoint, size: CGSize, rotation: Float = 0,
          mode: SpriteInstance.Mode = .plain, alpha: Float = 1, flipX: Bool = false,
          depth: Float = 0, wave: Float = 0, waveAmp: Float = 0, tint: SIMD4<Float> = [1, 1, 1, 1],
-         spine: Int? = nil, z: Float = 0, weed: Bool = false) {
+         spine: Int? = nil, z: Float = 0, weed: Bool = false, stands: Bool = false) {
         self.texture = texture
         gpu = SpriteInstance(center: SIMD2(Float(center.x), Float(center.y)),
                              size: SIMD2(Float(size.width), Float(size.height)),
                              rotation: rotation, alpha: alpha, depth: depth,
                              wave: wave, waveAmp: waveAmp,
-                             mode: mode.rawValue | (flipX ? SpriteInstance.flipX : 0) | (weed ? SpriteInstance.weed : 0),
+                             mode: mode.rawValue | (flipX ? SpriteInstance.flipX : 0) | (weed ? SpriteInstance.weed : 0) | (stands ? SpriteInstance.stands : 0),
                              pad: SIMD2(Float((spine ?? -1) + 1), z),
                              tint: tint)
     }

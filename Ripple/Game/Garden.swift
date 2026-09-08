@@ -94,7 +94,7 @@ final class Garden {
                 let rx = Float(size.width) * Float.random(in: 0.30...0.46, using: &rng)
                 let ry = Float(size.height) * Float.random(in: 0.26...0.40, using: &rng)
                 let root = CGPoint(x: size.width / 2 + CGFloat(cos(angle) * rx), y: size.height / 2 + CGFloat(sin(angle) * ry))
-                for k in 0..<Int.random(in: 2...4, using: &rng) {
+                for k in 0..<Int.random(in: 1...2, using: &rng) {
                     let name = art.weeds[(c + k) % art.weeds.count]
                     let rootPoint = CGPoint(x: root.x + CGFloat.random(in: -16...16, using: &rng),
                                             y: root.y + CGFloat.random(in: -10...10, using: &rng))
@@ -168,20 +168,23 @@ final class Garden {
         var rng = SystemRandomNumberGenerator()
         let w = size.width, h = size.height
         let spots: [CGPoint] = [
-            CGPoint(x: 18, y: h * 0.62), CGPoint(x: 40, y: h * 0.86), CGPoint(x: w - 30, y: h * 0.74),
-            CGPoint(x: w - 16, y: h * 0.42), CGPoint(x: w * 0.3, y: h - 22), CGPoint(x: w * 0.72, y: h - 30),
+            CGPoint(x: 22, y: h * 0.58), CGPoint(x: 34, y: h * 0.84), CGPoint(x: w - 30, y: h * 0.70),
+            CGPoint(x: w - 20, y: h * 0.40), CGPoint(x: w * 0.28, y: h - 26), CGPoint(x: w * 0.70, y: h - 34),
+            CGPoint(x: w * 0.12, y: 40), CGPoint(x: w * 0.86, y: 52),
         ]
         for (i, spot) in spots.enumerated() {
-            let count = Int.random(in: 1...3, using: &rng)
+            let count = Int.random(in: 1...2, using: &rng)
             for k in 0..<count {
                 reeds.append(Reed(texture: art.reeds[(i + k) % art.reeds.count],
-                                  position: CGPoint(x: spot.x + CGFloat.random(in: -26...26, using: &rng),
-                                                    y: spot.y + CGFloat.random(in: -18...18, using: &rng)),
-                                  size: CGFloat.random(in: 54...96, using: &rng),
-                                  rotation: Float.random(in: 0...(2 * .pi), using: &rng),
+                                  position: CGPoint(x: spot.x + CGFloat.random(in: -30...30, using: &rng),
+                                                    y: spot.y + CGFloat.random(in: -14...14, using: &rng)),
+                                  size: CGFloat.random(in: 60...100, using: &rng),
+                                  rotation: Float.random(in: -0.4...0.4, using: &rng) - .pi / 2,
                                   phase: Float.random(in: 0...(2 * .pi), using: &rng)))
             }
         }
+        // Nearer tufts draw last so they overlap the farther ones.
+        reeds.sort { $0.position.y < $1.position.y }
     }
 
     func resize(_ newSize: CGSize) {
@@ -246,7 +249,7 @@ final class Garden {
         for c in clouds { c.update(dt: dt, in: size) }
         if let f = dragonfly {
             f.update(dt: dt, now: now, in: size)
-            if f.done { dragonfly = nil; nextFlyerAt = now + Double.random(in: 10...24) }
+            if f.done { dragonfly = nil; nextFlyerAt = now + Double.random(in: 25...50) }
         } else if now > nextFlyerAt, let name = art.flyers.first {
             dragonfly = Dragonfly(body: name, size: size, now: now)
         }
@@ -257,14 +260,8 @@ final class Garden {
             f.justJumped = false
         }
         newt?.update(dt: dt, now: now, in: size)
-        if let h = heron {
-            h.update(dt: dt, in: size)
-            if h.done { heron = nil; nextHeronAt = now + Double.random(in: 40...80) }
-        } else if now > nextHeronAt, art.heron != nil {
-            heron = Heron(size: size)
-            // A shadow passing over sends the koi down.
-            for k in koi where k.depth < 0.5 { k.dive(now: now, quick: false) }
-        }
+        // (The heron's shadow was cut: a flat silhouette sliding over the pond
+        // read as a decal, not a bird. It will come back only with wings that beat.)
         // A surfaced koi mouths at the surface now and then: a small ring.
         for k in koi where k.depth < 0.2 && Float.random(in: 0...1) < dt * 0.18 {
             splashes.append((k.headPoint, 7, -0.09))
@@ -321,8 +318,8 @@ final class Garden {
         }
         for c in clouds {
             out.append(Sprite(c.texture, at: CGPoint(x: c.position.x + 30, y: c.position.y + 90),
-                              size: CGSize(width: c.width * 1.3, height: c.width * 1.3 * c.aspect),
-                              mode: .shadow, alpha: 0.45, z: -1.0))
+                              size: CGSize(width: c.width * 1.05, height: c.width * 1.05 * c.aspect),
+                              mode: .shadow, alpha: 0.2, z: -1.0))
         }
         // Motes: specks of drifting matter at every depth, each catching a
         // little light. Nothing says "volume" like things floating in it.
@@ -330,11 +327,7 @@ final class Garden {
             out.append(Sprite("mote", at: m.position, size: CGSize(width: m.size, height: m.size),
                               mode: .submerged, alpha: m.alpha, depth: -m.z * 0.7, z: m.z))
         }
-        if let h = heron {
-            out.append(Sprite(h.texture, at: CGPoint(x: h.position.x + 40, y: h.position.y + 120),
-                              size: CGSize(width: h.width, height: h.width * h.aspect), rotation: h.rotation,
-                              mode: .shadow, alpha: 0.55, z: -1.0))
-        }
+
         if let n = newt {
             out.append(Sprite(n.texture, at: n.position, size: n.spriteSize(textureSize), rotation: n.rotation,
                               mode: .submerged, alpha: 1, depth: 0.7, wave: Float(time) * 5, waveAmp: n.moving ? 0.12 : 0.02, z: -0.95))
@@ -342,7 +335,11 @@ final class Garden {
         for w in weeds {
             let tw = textureSize(w.texture)
             let width = w.height * tw.width / max(1, tw.height)
-            // The strand stands on its root; the shader raises it toward the surface.
+            // Its shadow on the bed, then the clump standing on its root; the
+            // shader raises it toward the surface.
+            out.append(Sprite(w.texture, at: CGPoint(x: w.root.x + 8, y: w.root.y + 10),
+                              size: CGSize(width: width, height: w.height * 0.5), rotation: 0,
+                              mode: .shadow, alpha: 0.35, z: -1.0))
             out.append(Sprite(w.texture, at: w.root, size: CGSize(width: width, height: w.height),
                               rotation: w.lean, mode: .submerged, alpha: 1, depth: w.bedDepth,
                               wave: w.phase + Float(time) * 0.7, waveAmp: w.bend, weed: true))
@@ -411,12 +408,16 @@ final class Garden {
         }
         for r in reeds {
             let t = textureSize(r.texture)
-            let long = max(t.width, t.height)
-            let sz = CGSize(width: r.size * t.width / long, height: r.size * t.height / long)
-            let sway = r.rotation + sin(Float(time) * 0.8 + r.phase) * 0.04
-            out.append(Sprite(r.texture, at: CGPoint(x: r.position.x + 5, y: r.position.y + 12), size: sz,
-                              rotation: sway, mode: .shadow, alpha: 0.4, z: 0))
-            out.append(Sprite(r.texture, at: r.position, size: sz, rotation: sway, alpha: 1, z: 0.28))
+            let height = r.size * 1.6
+            let width = height * t.width / max(1, t.height)
+            let sz = CGSize(width: width, height: height)
+            // The shadow: the same tuft laid flat on the water, toward the light's
+            // far side, thin and dark.
+            out.append(Sprite(r.texture, at: CGPoint(x: r.position.x + 6, y: r.position.y + height * 0.35),
+                              size: CGSize(width: width, height: height * 0.55), rotation: 0,
+                              mode: .shadow, alpha: 0.3, z: 0))
+            out.append(Sprite(r.texture, at: r.position, size: sz, rotation: r.rotation, alpha: 1,
+                              wave: Float(time) * 0.9 + r.phase, z: 0, stands: true))
         }
         return out
     }
@@ -428,11 +429,7 @@ final class Garden {
                    alpha: 0.22, tint: [0.92, 0.97, 1.0, 1], z: 2.2)
         }
         if let f = dragonfly { out += f.sprites(textureSize) }
-        if let h = heron {
-            // The bird itself is far above; only its shadow crosses the water.
-            out.append(Sprite(h.texture, at: h.position, size: CGSize(width: h.width, height: h.width * h.aspect),
-                              rotation: h.rotation, mode: .shadow, alpha: 0.32, z: 0))
-        }
+
         return out
     }
 
@@ -541,6 +538,32 @@ final class Koi {
         let dx = Float(target.x - position.x), dy = Float(target.y - position.y)
         if hypot(dx, dy) < 30 { pickTarget(in: size) }
         var want = atan2(dy, dx)
+        if Koi.diagnostics, Int(now * 2) != Int((now - Double(dt)) * 2) {
+            var d0 = want - heading
+            while d0 > .pi { d0 -= 2 * .pi }
+            while d0 < -.pi { d0 += 2 * .pi }
+            NSLog("[koi %@] pos=(%.0f,%.0f) speed=%.1f diff=%.2f depth=%.2f dist=%.0f", texture, position.x, position.y, Float(speed), d0, depth, hypot(dx, dy))
+        }
+        // A bank ahead bends the wish away from it, well before it is reached,
+        // so the fish sweeps round in open water instead of nosing the edge.
+        do {
+            let margin: Float = 170
+            let px = Float(position.x), py = Float(position.y)
+            let w = Float(size.width), h = Float(size.height)
+            var push = SIMD2<Float>(0, 0)
+            if px < margin { push.x += (margin - px) / margin }
+            if px > w - margin { push.x -= (px - (w - margin)) / margin }
+            if py < margin { push.y += (margin - py) / margin }
+            if py > h - margin { push.y -= (py - (h - margin)) / margin }
+            if simd_length(push) > 0.01 {
+                let ahead = SIMD2(cos(heading), sin(heading))
+                // Only bend when actually heading toward the bank.
+                if simd_dot(ahead, push) < 0 {
+                    let wish = simd_normalize(ahead + push * 1.6)
+                    want = atan2(wish.y, wish.x)
+                }
+            }
+        }
         // A rock ahead bends the wish to one side, well before it is reached.
         for r in rocks {
             let rx = Float(r.centre.x - position.x), ry = Float(r.centre.y - position.y)
@@ -566,8 +589,11 @@ final class Koi {
         // decays back to a cruise; otherwise it turns lazily.
         let fleeing = now < fleeUntil
         if speed > 46 { speed -= CGFloat(dt) * (fleeing ? 20 : 45) }
+        // A fish that has to turn hard puts on a little speed to do it, so
+        // the turn is a tail-flick sweep rather than a crawl.
+        if abs(diff) > 1.0, speed < 40 { speed += CGFloat(dt) * 30 }
         let s = Float(speed) * (depth > 0.9 ? 0.5 : 1) * (1 - 0.15 * min(1, abs(diff)))
-        let maxRate = min(fleeing ? 1.6 : 0.5, s / (Float(width) * 1.1))
+        let maxRate = min(fleeing ? 1.6 : 0.55, max(0.32, s / (Float(width) * 1.1)))
         let wantRate = min(maxRate, abs(diff) * 0.8)
         let turn = max(-wantRate * dt, min(wantRate * dt, diff))
         heading += turn
@@ -688,17 +714,30 @@ final class Koi {
     static let diagnostics = ProcessInfo.processInfo.arguments.contains("-diag")
 
     private func pickTarget(in size: CGSize) {
-        // Somewhere ahead-ish and far: a fish cruises, it does not dither.
-        for _ in 0..<12 {
-            let candidate = CGPoint(x: CGFloat.random(in: 70...(size.width - 70)),
-                                    y: CGFloat.random(in: 130...(size.height - 150)))
+        // Somewhere ahead and far: a fish cruises in long arcs, it does not
+        // dither or double back. If nothing ahead is open water (it is up
+        // against a bank), it sweeps round in a wide arc to the side.
+        var best: CGPoint?
+        var bestScore: Float = -1
+        for _ in 0..<16 {
+            let candidate = CGPoint(x: CGFloat.random(in: 90...(size.width - 90)),
+                                    y: CGFloat.random(in: 150...(size.height - 170)))
             let dx = Float(candidate.x - position.x), dy = Float(candidate.y - position.y)
             let dist = hypot(dx, dy)
             var diff = atan2(dy, dx) - heading
             while diff > .pi { diff -= 2 * .pi }
             while diff < -.pi { diff += 2 * .pi }
-            if dist > 220, abs(diff) < 1.6 { target = candidate; break }
-            target = candidate
+            guard dist > 200, abs(diff) < 1.1 else { continue }
+            let score = dist * (1.2 - abs(diff))
+            if score > bestScore { bestScore = score; best = candidate }
+        }
+        if let b = best {
+            target = b
+        } else {
+            let side: Float = position.x < size.width / 2 ? 1 : -1
+            let arc = heading + side * 1.2
+            let raw = CGPoint(x: position.x + CGFloat(cos(arc)) * 260, y: position.y + CGFloat(sin(arc)) * 260)
+            target = CGPoint(x: min(max(raw.x, 90), size.width - 90), y: min(max(raw.y, 150), size.height - 170))
         }
         speed = CGFloat.random(in: 24...40)
     }
@@ -965,11 +1004,11 @@ final class Dragonfly {
         let dx = Float(target.x - position.x), dy = Float(target.y - position.y)
         let dist = hypot(dx, dy)
         if dist < 6 {
-            if hoverUntil == 0 { hoverUntil = now + Double.random(in: 2.0...4.5) }
+            if hoverUntil == 0 { hoverUntil = now + Double.random(in: 1.5...3.0) }
             if now > hoverUntil {
                 hops += 1
                 hoverUntil = 0
-                if hops >= 3 {
+                if hops >= 2 {
                     target = CGPoint(x: position.x < size.width / 2 ? -80 : size.width + 80, y: position.y + CGFloat.random(in: -80...80))
                 } else {
                     target = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)), y: CGFloat.random(in: 140...(size.height * 0.6)))
@@ -989,7 +1028,7 @@ final class Dragonfly {
             position.x += CGFloat(cos(heading) * speed * dt)
             position.y += CGFloat(sin(heading) * speed * dt)
         }
-        if hops >= 3, position.x < -60 || position.x > size.width + 60 { done = true }
+        if hops >= 2, position.x < -60 || position.x > size.width + 60 { done = true }
     }
 
     func sprites(_ textureSize: (String) -> CGSize) -> [Sprite] {

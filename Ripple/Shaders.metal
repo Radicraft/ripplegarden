@@ -528,6 +528,7 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
     uint mode = s.mode & 3u;
     bool flip = (s.mode & 8u) != 0;
     bool weed = (s.mode & 32u) != 0;
+    bool stands = (s.mode & 64u) != 0;
 
     float2 uv = vin.uv;
     float2 local = (uv - 0.5) * s.size;          // v grows downward in the image
@@ -578,6 +579,14 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
         float tip = bend * tailness * tailness;
         onSurface = s.center + leanDir * (tip * height * 0.8) + lateral * local.x;
         z = min(rootZ + rise * (1.0 - abs(tip) * 0.5), -12.0);
+    } else if (stands) {
+        // A tuft standing on the bank: its root sits on the surface plane and
+        // it rises straight up, swaying a little at the tips.
+        float sway = sin(s.wave + tailness * 1.5) * 0.05 * tailness * tailness;
+        float2 leanDir = float2(cos(s.rotation), sin(s.rotation));
+        float2 lateral = float2(-leanDir.y, leanDir.x);
+        onSurface = s.center + lateral * local.x + leanDir * (sway * s.size.y);
+        z = s._pad.y * depthScale + tailness * s.size.y;
     } else {
         float cs = cos(s.rotation), sn = sin(s.rotation);
         float2 rotated = float2(local.x * cs - local.y * sn, local.x * sn + local.y * cs);

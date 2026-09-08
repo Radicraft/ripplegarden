@@ -154,7 +154,7 @@ enum Library {
                          siltColour: [0.36, 0.38, 0.33],
                          mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_spring",
                          bedImage: "bed_spring"),
-        weeds: ["weed_1", "weed_2", "weed_3", "weed_4", "weed_5"],
+        weeds: ["weed_c_1", "weed_c_2", "weed_c_3", "weed_c_4"],
         under: ["tadpole_1", "tadpole_2", "tadpole_3", "boatman_1"],
         skaters: ["skater_1", "skater_2"],
         flyers: ["dragonfly_body"],
@@ -162,7 +162,7 @@ enum Library {
         stones: ["stone_a_1", "stone_a_2", "stone_a_3", "stone_a_4", "stone_a_5", "stone_a_6", "stone_a_7", "stone_a_8"],
         gravel: ["gravel_1", "gravel_2", "gravel_3", "gravel_4"],
         sand: ["sand_1", "sand_2", "sand_3"],
-        reeds: ["reed_1", "reed_2", "reed_3", "reed_4", "reed_5"],
+        reeds: ["reed_s_1", "reed_s_2", "reed_s_3", "reed_s_4"],
         frog: ("frog_top", "lilypad_frog"),
         newt: "newt_1",
         heron: "heron_shadow")
