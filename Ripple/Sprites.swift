@@ -23,6 +23,8 @@ struct SpriteInstance {
     static let flipX: UInt32 = 8
     /// Draw the silhouette ink-dark: the paper's cut edge, laid just under.
     static let ink: UInt32 = 16
+    /// Rooted pondweed that leans with the water.
+    static let weed: UInt32 = 32
 }
 
 struct SpriteParams {
@@ -31,6 +33,7 @@ struct SpriteParams {
     var floorTint: SIMD4<Float>
     var light: SIMD4<Float>
     var relief: SIMD4<Float>
+    var drift: SIMD4<Float>
 }
 
 /// A sprite the game wants drawn this frame.
@@ -41,14 +44,14 @@ struct Sprite {
     init(_ texture: String, at center: CGPoint, size: CGSize, rotation: Float = 0,
          mode: SpriteInstance.Mode = .plain, alpha: Float = 1, flipX: Bool = false,
          depth: Float = 0, wave: Float = 0, waveAmp: Float = 0, tint: SIMD4<Float> = [1, 1, 1, 1],
-         spine: Int? = nil) {
+         spine: Int? = nil, parallax: Float = 1, weed: Bool = false) {
         self.texture = texture
         gpu = SpriteInstance(center: SIMD2(Float(center.x), Float(center.y)),
                              size: SIMD2(Float(size.width), Float(size.height)),
                              rotation: rotation, alpha: alpha, depth: depth,
                              wave: wave, waveAmp: waveAmp,
-                             mode: mode.rawValue | (flipX ? SpriteInstance.flipX : 0),
-                             pad: SIMD2(Float((spine ?? -1) + 1), 0),
+                             mode: mode.rawValue | (flipX ? SpriteInstance.flipX : 0) | (weed ? SpriteInstance.weed : 0),
+                             pad: SIMD2(Float((spine ?? -1) + 1), parallax),
                              tint: tint)
     }
 }

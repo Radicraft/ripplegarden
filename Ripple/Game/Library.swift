@@ -25,6 +25,13 @@ struct ArtSet {
     var mosaic: String
     var petalParticle: String
     var floor: FloorLook
+    /// Life in and over the pond: rooted weed strands, things under the
+    /// surface, things on it, things in the air, and the clouds.
+    var weeds: [String] = []
+    var under: [String] = []
+    var skaters: [String] = []
+    var flyers: [String] = []
+    var clouds: [String] = []
 }
 
 struct Season: Identifiable {
@@ -64,7 +71,7 @@ enum Hint: String {
 
     var text: String {
         switch self {
-        case .tap: return "Tap the water. Ripples wash the silt away."
+        case .tap: return "Tap the water. Ripples carry things to the bank."
         case .hold: return "Hold a finger down. A bigger swell can shift heavy things."
         case .swell: return "Two fingers together sweep a whole cluster."
         case .current: return "Drag along the bank to set a slow current."
@@ -119,7 +126,8 @@ enum Library {
             floor: FloorLook(deep: [0.05, 0.08, 0.19], mid: [0.10, 0.16, 0.32], shallow: [0.28, 0.34, 0.52],
                              waterTint: [0.86, 0.92, 1.00], waterTintStrength: 0.3,
                              siltColour: [0.58, 0.60, 0.64],
-                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_winter")),
+                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_winter", bedImage: "bed_spring"),
+            weeds: ["weed_1", "weed_2", "weed_3"], clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
         photographic: nil, rootNote: 440,
         tagline: "The pond sleeps under ice. Wake it gently.")
 
@@ -135,7 +143,13 @@ enum Library {
         floor: FloorLook(deep: [0.07, 0.17, 0.21], mid: [0.13, 0.31, 0.33], shallow: [0.26, 0.49, 0.47],
                          waterTint: [0.88, 1.00, 0.97], waterTintStrength: 0.3,
                          siltColour: [0.36, 0.38, 0.33],
-                         mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_spring"))
+                         mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_spring",
+                         bedImage: "bed_spring"),
+        weeds: ["weed_1", "weed_2", "weed_3", "weed_4", "weed_5"],
+        under: ["tadpole_1", "tadpole_2", "tadpole_3"],
+        skaters: ["skater_1", "skater_2"],
+        flyers: ["dragonfly_1"],
+        clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"])
 
     static let springPhoto = ArtSet(
         branch: ["p_branch_1", "p_branch_2", "p_branch_3", "p_branch_4"],
@@ -169,7 +183,8 @@ enum Library {
             floor: FloorLook(deep: [0.03, 0.19, 0.21], mid: [0.07, 0.34, 0.36], shallow: [0.36, 0.55, 0.44],
                              waterTint: [0.92, 1.00, 0.90], waterTintStrength: 0.3,
                              siltColour: [0.40, 0.42, 0.30],
-                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_summer")),
+                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_summer", bedImage: "bed_spring"),
+            weeds: ["weed_1", "weed_2", "weed_3"], clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
         photographic: nil, rootNote: 587.33,
         tagline: "Lotus and long light. The koi are bold now.")
 
@@ -187,7 +202,8 @@ enum Library {
             floor: FloorLook(deep: [0.04, 0.13, 0.15], mid: [0.09, 0.26, 0.28], shallow: [0.38, 0.44, 0.30],
                              waterTint: [1.00, 0.94, 0.80], waterTintStrength: 0.35,
                              siltColour: [0.46, 0.38, 0.24],
-                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_autumn")),
+                             mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_autumn", bedImage: "bed_spring"),
+            weeds: ["weed_1", "weed_2", "weed_3"], clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
         photographic: nil, rootNote: 392,
         tagline: "Maple on the pond. The year settles.")
 
@@ -271,8 +287,17 @@ enum Library {
             hint = nil
         }
 
+        // Tidying, not uncovering: the roundel is gone. Pieces are strewn over
+        // the pond and the level is done when the water is clear of them.
+        if index == 1 {
+            debris = (0..<8).map { i in
+                DebrisPlacement(cls: .light,
+                                at: CGPoint(x: rng.range(0.16...0.84), y: rng.range(0.24...0.72)),
+                                variant: i, scale: rng.range(0.85...1.15), rotation: Float(rng.range(0...(2 * .pi))))
+            }
+        }
         return LevelSpec(id: "\(season.id)-\(index)", seasonID: season.id, index: index, title: title,
-                         mosaicCentre: centre, mosaicRadius: radius, debris: debris,
+                         mosaicCentre: centre, mosaicRadius: 0, debris: debris,
                          rocks: rocks, shallows: shallows, hint: hint,
                          bloomTarget: Float(index) * 0.5)
     }

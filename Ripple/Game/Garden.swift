@@ -25,6 +25,14 @@ final class Garden {
     /// Rocks in the pond, in points, so the koi go round them.
     var rocks: [(centre: CGPoint, radius: CGFloat)] = []
 
+    /// The camera's slow breath, in points. Read by the controller each frame.
+    private(set) var drift = SIMD2<Float>(0, 0)
+    private var weeds: [Weed] = []
+    private var critters: [Critter] = []
+    private var clouds: [Cloud] = []
+    private var flyer: Critter?
+    private var nextFlyerAt: TimeInterval = 0
+
     init(art: ArtSet) {
         self.art = art
     }
@@ -44,6 +52,39 @@ final class Garden {
             Koi(texture: art.koi[i], forward: art.koiForward[i % art.koiForward.count], seed: i,
                 waveAmp: art.koiWaveAmp)
         }
+        // Weed clumps rooted in the bed, mostly toward the banks where it is
+        // shallow, each a few strands of different heights.
+        weeds = []
+        if !art.weeds.isEmpty {
+            var rng = SystemRandomNumberGenerator()
+            let clumps = 8
+            for c in 0..<clumps {
+                let angle = Float(c) / Float(clumps) * 2 * .pi + Float.random(in: -0.3...0.3, using: &rng)
+                let rx = Float(size.width) * Float.random(in: 0.30...0.46, using: &rng)
+                let ry = Float(size.height) * Float.random(in: 0.26...0.40, using: &rng)
+                let root = CGPoint(x: size.width / 2 + CGFloat(cos(angle) * rx), y: size.height / 2 + CGFloat(sin(angle) * ry))
+                for k in 0..<Int.random(in: 2...4, using: &rng) {
+                    let name = art.weeds[(c + k) % art.weeds.count]
+                    weeds.append(Weed(texture: name,
+                                      root: CGPoint(x: root.x + CGFloat.random(in: -16...16, using: &rng),
+                                                    y: root.y + CGFloat.random(in: -10...10, using: &rng)),
+                                      height: CGFloat.random(in: 120...200, using: &rng),
+                                      lean: Float.random(in: -0.35...0.35, using: &rng),
+                                      phase: Float.random(in: 0...(2 * .pi), using: &rng),
+                                      depth: Float.random(in: 0.2...0.45, using: &rng)))
+                }
+            }
+        }
+        critters = art.under.enumerated().map { i, name in
+            Critter(texture: name, forward: [-.pi / 2, .pi, .pi][i % 3], size: 22, seed: i, under: true)
+        } + art.skaters.enumerated().map { i, name in
+            Critter(texture: name, forward: -.pi / 2, size: 30, seed: i + 10, under: false)
+        }
+        clouds = art.clouds.enumerated().map { i, name in
+            Cloud(texture: name, seed: i, size: size)
+        }
+        flyer = nil
+        nextFlyerAt = time + 12
     }
 
     func resize(_ newSize: CGSize) {
@@ -78,6 +119,21 @@ final class Garden {
         time = now
         guard size.width > 0 else { return }
 
+        // The breath: a slow figure of eight a few points across.
+        let t = Float(now)
+        drift = SIMD2(sin(t * 0.11) * 5.0, cos(t * 0.083) * 4.0)
+
+        for c in critters { c.update(dt: dt, now: now, in: size) }
+        for c in clouds { c.update(dt: dt, in: size) }
+        if let f = flyer {
+            f.update(dt: dt, now: now, in: size)
+            if f.gone(in: size) { flyer = nil; nextFlyerAt = now + Double.random(in: 14...30) }
+        } else if now > nextFlyerAt, let name = art.flyers.first {
+            let f = Critter(texture: name, forward: .pi, size: 46, seed: Int(now) % 7, under: false)
+            f.beginCrossing(in: size)
+            flyer = f
+        }
+
         if bloomRate > 0 {
             bloomStage = min(bloomTarget, bloomStage + bloomRate * dt)
             if bloomStage >= bloomTarget { bloomRate = 0 }
@@ -109,11 +165,31 @@ final class Garden {
 
     // MARK: - Sprites
 
-    /// Under the surface: koi and their shadows. Each fish carries a spine
-    /// laid along the path its head swam; the mesh rows sit on it.
+    /// Under the surface, bottom up: cloud shadows on the bed, weeds, tadpoles,
+    /// then koi and their shadows. Each fish carries a spine laid along the
+    /// path its head swam; the mesh rows sit on it.
     func submergedSprites() -> (sprites: [Sprite], spines: [SIMD4<Float>]) {
         var out: [Sprite] = []
         var spines: [SIMD4<Float>] = []
+        for c in clouds {
+            out.append(Sprite(c.texture, at: CGPoint(x: c.position.x + 30, y: c.position.y + 90),
+                              size: CGSize(width: c.width * 1.3, height: c.width * 1.3 * c.aspect),
+                              mode: .shadow, alpha: 0.45, parallax: 0.35))
+        }
+        for w in weeds {
+            let tw = textureSize(w.texture)
+            let width = w.height * tw.width / max(1, tw.height)
+            // Rooted at the bottom of the image: the centre sits half a height up.
+            let centre = CGPoint(x: w.root.x - CGFloat(sin(w.lean)) * w.height * 0.5,
+                                 y: w.root.y - CGFloat(cos(w.lean)) * w.height * 0.5)
+            out.append(Sprite(w.texture, at: centre, size: CGSize(width: width, height: w.height),
+                              rotation: w.lean, mode: .submerged, alpha: 1, depth: w.depth,
+                              wave: w.phase + Float(time) * 0.9, waveAmp: 0.10, parallax: 0.5, weed: true))
+        }
+        for c in critters where c.under {
+            out.append(Sprite(c.texture, at: c.position, size: c.spriteSize(textureSize), rotation: c.rotation,
+                              mode: .submerged, alpha: 1, depth: 0.55, parallax: 0.55))
+        }
         for k in koi where k.depth < 0.98 {
             let d = k.depth
             let w = k.width
@@ -126,16 +202,40 @@ final class Garden {
                               alpha: 0.7 * (1 - d * 0.6), wave: k.phase, waveAmp: k.waveAmp, spine: index))
             out.append(Sprite(k.texture, at: .zero, size: CGSize(width: w, height: h),
                               mode: .submerged, alpha: 1, depth: d,
-                              wave: k.phase, waveAmp: k.waveAmp, spine: index))
+                              wave: k.phase, waveAmp: k.waveAmp, spine: index, parallax: 0.6))
         }
         return (out, spines)
+    }
+
+    /// On the surface: pond skaters.
+    func skaterSprites() -> [Sprite] {
+        critters.filter { !$0.under }.map { c in
+            Sprite(c.texture, at: c.position, size: c.spriteSize(textureSize), rotation: c.rotation,
+                   mode: .floater, alpha: 0.95, parallax: 1)
+        }
+    }
+
+    /// In the air: clouds and whatever is flying over.
+    func skySprites() -> [Sprite] {
+        var out: [Sprite] = clouds.map { c in
+            Sprite(c.texture, at: c.position, size: CGSize(width: c.width, height: c.width * c.aspect),
+                   alpha: 0.30, tint: [0.92, 0.97, 1.0, 1], parallax: 2.2)
+        }
+        if let f = flyer {
+            let s = f.spriteSize(textureSize)
+            out.append(Sprite(f.texture, at: CGPoint(x: f.position.x + 14, y: f.position.y + 40), size: s,
+                              rotation: f.rotation, mode: .shadow, alpha: 0.5, parallax: 1.0))
+            out.append(Sprite(f.texture, at: f.position, size: s, rotation: f.rotation, alpha: 1, parallax: 1.5))
+        }
+        return out
     }
 
     /// Over the surface: falling blossom.
     func petalSprites() -> [Sprite] {
         petals.map { p in
             Sprite(p.texture, at: CGPoint(x: p.x, y: p.y), size: CGSize(width: 14 * p.scale, height: 14 * p.scale),
-                   rotation: p.rotation, mode: p.landed ? .floater : .plain, alpha: p.alpha)
+                   rotation: p.rotation, mode: p.landed ? .floater : .plain, alpha: p.alpha,
+                   parallax: p.landed ? 1 : 1.4)
         }
     }
 
@@ -153,10 +253,10 @@ final class Garden {
             let name = art.branch[index]
             let side = w * art.branchScale
             let left = CGPoint(x: side * 0.5 - art.branchInset, y: side * 0.5 - art.branchInset)
-            out.append(Sprite(name, at: left, size: CGSize(width: side, height: side), alpha: alpha))
+            out.append(Sprite(name, at: left, size: CGSize(width: side, height: side), alpha: alpha, parallax: 1.6))
             let small = side * art.branchRightScale
             let right = CGPoint(x: w - small * 0.5 + art.branchInset, y: small * 0.5 + art.branchRightDrop)
-            out.append(Sprite(name, at: right, size: CGSize(width: small, height: small), alpha: alpha, flipX: true))
+            out.append(Sprite(name, at: right, size: CGSize(width: small, height: small), alpha: alpha, flipX: true, parallax: 1.6))
         }
         branch(lo, alpha: 1)
         if hi != lo { branch(hi, alpha: t) }
@@ -166,7 +266,7 @@ final class Garden {
             let ts = textureSize(bank)
             let bh = bw * ts.height / max(1, ts.width)
             out.append(Sprite(bank, at: CGPoint(x: w / 2, y: size.height - bh * 0.5 + art.bankSink),
-                              size: CGSize(width: bw, height: bh)))
+                              size: CGSize(width: bw, height: bh), parallax: 1.3))
         }
         return out
     }
@@ -430,5 +530,119 @@ final class FallingPetal {
         landed = true
         vx = 0
         vy = 0
+    }
+}
+
+
+/// A strand of pondweed rooted in the bed.
+struct Weed {
+    let texture: String
+    let root: CGPoint
+    let height: CGFloat
+    let lean: Float
+    let phase: Float
+    let depth: Float
+}
+
+/// A small creature: a tadpole under the surface or a skater on it. It rests,
+/// then darts a short way, then rests again.
+final class Critter {
+    let texture: String
+    let forward: Float
+    let size: CGFloat
+    let under: Bool
+    private(set) var position = CGPoint.zero
+    private(set) var heading: Float
+    private var speed: Float = 0
+    private var restUntil: TimeInterval
+    private var started = false
+    private var crossing = false
+
+    init(texture: String, forward: Float, size: CGFloat, seed: Int, under: Bool) {
+        self.texture = texture
+        self.forward = forward
+        self.size = size
+        self.under = under
+        heading = Float(seed) * 1.3
+        restUntil = Double(seed) * 0.7
+    }
+
+    var rotation: Float { heading - forward }
+
+    func spriteSize(_ textureSize: (String) -> CGSize) -> CGSize {
+        let t = textureSize(texture)
+        let long = max(t.width, t.height)
+        return CGSize(width: size * t.width / long, height: size * t.height / long)
+    }
+
+    func beginCrossing(in bounds: CGSize) {
+        crossing = true
+        started = true
+        let fromLeft = Bool.random()
+        position = CGPoint(x: fromLeft ? -40 : bounds.width + 40, y: CGFloat.random(in: 120...(bounds.height * 0.6)))
+        heading = fromLeft ? Float.random(in: -0.3...0.3) : Float.pi + Float.random(in: -0.3...0.3)
+        speed = 120
+    }
+
+    func gone(in bounds: CGSize) -> Bool {
+        position.x < -60 || position.x > bounds.width + 60 || position.y < -60 || position.y > bounds.height + 60
+    }
+
+    func update(dt: Float, now: TimeInterval, in bounds: CGSize) {
+        if !started {
+            started = true
+            position = CGPoint(x: CGFloat.random(in: 60...(bounds.width - 60)),
+                               y: CGFloat.random(in: 140...(bounds.height - 200)))
+        }
+        if crossing {
+            heading += sin(Float(now) * 6) * 0.02
+            position.x += CGFloat(cos(heading) * speed * dt)
+            position.y += CGFloat(sin(heading) * speed * dt)
+            return
+        }
+        if now > restUntil {
+            if speed > 1 {
+                speed = 0
+                restUntil = now + Double.random(in: 1.2...4.0)
+            } else {
+                heading += Float.random(in: -1.4...1.4)
+                speed = under ? Float.random(in: 40...70) : Float.random(in: 90...150)
+                restUntil = now + Double.random(in: 0.25...0.6)
+            }
+        }
+        if speed > 1 {
+            var nx = position.x + CGFloat(cos(heading) * speed * dt)
+            var ny = position.y + CGFloat(sin(heading) * speed * dt)
+            if nx < 40 || nx > bounds.width - 40 { heading = .pi - heading; nx = position.x }
+            if ny < 120 || ny > bounds.height - 180 { heading = -heading; ny = position.y }
+            position = CGPoint(x: nx, y: ny)
+            speed *= exp(-dt * 2.2)
+        }
+    }
+}
+
+/// A hazed cloud crossing high over the pond, throwing its shadow on the bed.
+final class Cloud {
+    let texture: String
+    let width: CGFloat
+    let aspect: CGFloat
+    private(set) var position: CGPoint
+    private let speed: CGFloat
+
+    init(texture: String, seed: Int, size: CGSize) {
+        self.texture = texture
+        width = size.width * CGFloat.random(in: 0.8...1.3)
+        aspect = CGFloat.random(in: 0.28...0.36)
+        position = CGPoint(x: CGFloat(seed) * size.width * 0.7 - size.width * 0.3,
+                           y: size.height * CGFloat.random(in: 0.1...0.8))
+        speed = CGFloat.random(in: 5...9)
+    }
+
+    func update(dt: Float, in size: CGSize) {
+        position.x += speed * CGFloat(dt)
+        if position.x - width * 0.6 > size.width {
+            position.x = -width * 0.6
+            position.y = size.height * CGFloat.random(in: 0.1...0.8)
+        }
     }
 }

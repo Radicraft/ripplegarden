@@ -48,6 +48,7 @@ struct FloorParams {
     var shallow: SIMD4<Float>
     var mosaic: SIMD4<Float>
     var siltColour: SIMD4<Float>
+    var drift: SIMD4<Float>
 }
 
 struct SiltParams {
@@ -76,6 +77,8 @@ struct FloorLook {
     var mosaicCentre: SIMD2<Float>
     var mosaicRadius: Float
     var mosaicImage: String
+    /// The painted pond bed, if the season has one.
+    var bedImage: String = ""
 
     static let plain = FloorLook(deep: [0.012, 0.046, 0.066], mid: [0.036, 0.120, 0.142],
                                  shallow: [0.082, 0.208, 0.226], waterTint: [1, 1, 1],
@@ -240,9 +243,14 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     var floorLook = FloorLook.plain {
         didSet {
             loadMosaic(named: floorLook.mosaicImage)
+            bedTexture = floorLook.bedImage.isEmpty ? nil : textures.texture(floorLook.bedImage)
             needsFloorBake = true
         }
     }
+    private var bedTexture: MTLTexture?
+
+    /// The camera's slow breath, in points. Layers take their own share.
+    var drift = SIMD2<Float>(0, 0)
 
     /// Heavy floaters and rocks that waves should bounce off, in points.
     var walls: [(centre: CGPoint, radius: CGFloat)] = []
@@ -627,7 +635,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             gains: SIMD4(Tuning.floaterLift, Tuning.floaterTilt, Tuning.floaterWetThreshold, Tuning.floaterBob),
             floorTint: SIMD4(floorLook.mid * 2.2, 1),
             light: SIMD4(-0.40, -0.56, 0.72, 0),
-            relief: style == .woodblock ? SIMD4(0.55, 0.16, 0.28, 0.55) : SIMD4(0.35, 0.10, 0.15, 0.35))
+            relief: style == .woodblock ? SIMD4(0.55, 0.16, 0.28, 0.55) : SIMD4(0.35, 0.10, 0.15, 0.35),
+            drift: SIMD4(drift.x, drift.y, 0, 0))
 
         let spineCount = min(spines.count, 13 * Tuning.maxSpines)
         if spineCount > 0 {
@@ -648,6 +657,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(mosaicTexture ?? blankMosaic, index: 1)
                 encoder.setFragmentTexture(silt, index: 2)
                 encoder.setFragmentTexture(depthTexture, index: 3)
+                encoder.setFragmentTexture(bedTexture ?? blankMosaic, index: 4)
                 encoder.setFragmentBytes(&fp, length: MemoryLayout<FloorParams>.stride, index: 0)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
@@ -686,10 +696,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
     private func floorParams() -> FloorParams {
         let look = floorLook
+        let scale = viewportSize.x / Float(max(1, viewSizePoints?.width ?? 1))
         return FloorParams(viewport: SIMD4(viewportSize.x, viewportSize.y, 0, 0),
                            deep: SIMD4(look.deep, 1), mid: SIMD4(look.mid, 1), shallow: SIMD4(look.shallow, 1),
                            mosaic: SIMD4(look.mosaicCentre.x, look.mosaicCentre.y, look.mosaicRadius, 1),
-                           siltColour: SIMD4(look.siltColour, 1))
+                           siltColour: SIMD4(look.siltColour, 1),
+                           drift: SIMD4(drift.x * 0.35 * scale, drift.y * 0.35 * scale, bedTexture == nil ? 0 : 0.9, 0))
     }
 
     private func siltParams(dt: Float) -> SiltParams {

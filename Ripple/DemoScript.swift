@@ -42,6 +42,22 @@ enum DemoScript {
         let c = CGPoint(x: controller.level.mosaicCentre.x * size.width, y: controller.level.mosaicCentre.y * size.height)
         let r = controller.level.mosaicRadius * size.height
         let live = controller.debris.filter { !$0.cleared }
+
+        // A tidying level: push each piece toward its nearest bank.
+        if controller.level.mosaicRadius <= 0 {
+            guard let piece = live.min(by: { edgeDistance($0.position, size) < edgeDistance($1.position, size) }) else { return }
+            let p = piece.position
+            let toLeft = p.x, toRight = size.width - p.x, toTop = p.y, toBottom = size.height - p.y
+            let m = min(toLeft, toRight, toTop, toBottom)
+            var away = CGVector(dx: 0, dy: 0)
+            if m == toLeft { away.dx = 1 } else if m == toRight { away.dx = -1 } else if m == toTop { away.dy = 1 } else { away.dy = -1 }
+            if piece.cls == .heavy, beats % 3 == 0 {
+                hold(controller, at: CGPoint(x: p.x + away.dx * 42, y: p.y + away.dy * 42), size: size, for: 1.6)
+            } else {
+                tap(controller, at: CGPoint(x: p.x + away.dx * 32, y: p.y + away.dy * 32), size: size)
+            }
+            return
+        }
         let onTile = live.filter { hypot($0.position.x - c.x, $0.position.y - c.y) < r + $0.radius * 0.5 }
 
         // Every fifth beat, if the log still lies on the tile, a held press on
@@ -91,6 +107,10 @@ enum DemoScript {
             controller.touchEnded(id: id, at: p, in: size)
             holding = false
         }
+    }
+
+    private static func edgeDistance(_ p: CGPoint, _ size: CGSize) -> CGFloat {
+        min(p.x, size.width - p.x, p.y, size.height - p.y)
     }
 
     private static func sizeOf(_ controller: GameController) -> CGSize? {

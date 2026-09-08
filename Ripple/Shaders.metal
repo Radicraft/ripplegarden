@@ -48,6 +48,7 @@ struct FloorParams {
     float4 shallow;
     float4 mosaic;         // xy centre (uv), z radius (fraction of height), w silt tint strength
     float4 siltColour;     // rgb of the silt film
+    float4 drift;          // xy camera breath in points for the bed layer; z bed strength
 };
 
 struct SiltParams {
@@ -78,6 +79,7 @@ struct SpriteParams {
     float4 floorTint;      // rgb cast for submerged things at full depth
     float4 light;          // xyz direction toward the light, screen space
     float4 relief;         // x diffuse, y specular, z edge darkening, w ink alpha
+    float4 drift;          // xy camera breath in points, scaled per instance by _pad.y
 };
 
 // ---------------------------------------------------------------------------
@@ -325,26 +327,38 @@ fragment float4 floor_compose_fragment(VertexOut in                             
                                        texture2d<float, access::sample> mosaic  [[texture(1)]],
                                        texture2d<float, access::sample> silt    [[texture(2)]],
                                        texture2d<float, access::sample> depth   [[texture(3)]],
+                                       texture2d<float, access::sample> bed     [[texture(4)]],
                                        constant FloorParams &p                  [[buffer(0)]])
 {
     constexpr sampler smp(filter::linear, address::clamp_to_edge);
+    // The bed is the deepest layer, so it breathes least with the camera.
+    float2 buv = in.uv + p.drift.xy / p.viewport.xy;
     float3 col = base.sample(smp, in.uv).rgb;
+    float3 painted = bed.sample(smp, buv).rgb;
+    // Quieten the painting: less contrast, tinted toward the season, so it
+    // reads as a bed a metre down and not a print laid on the surface.
+    float lum = dot(painted, float3(0.3, 0.59, 0.11));
+    painted = mix(float3(lum), painted, 0.7);
+    painted = mix(painted, painted * (p.mid.rgb * 2.4 + 0.1), 0.6) * 0.62;
+    col = mix(col, painted, p.drift.z);
 
-    // Shallows: the bed rises toward the light and goes sandy, so the player
-    // can see where waves will slow and bend. Walls (rocks) stay dark.
+    // Depth: the pond is a bowl. The middle is deep, and the water column
+    // above it swallows the bed into a dark blue haze; toward the banks the
+    // bed shelves up into sand and pebbles that catch the light.
     float d = depth.sample(smp, in.uv).r;
+    float aspect = p.viewport.x / p.viewport.y;
+    float2 q = float2(in.uv.x * aspect, in.uv.y);
+    float deepness = smoothstep(0.35, 1.0, d);
+    float3 abyss = p.deep.rgb * 0.7;
+    col = mix(col, abyss, deepness * 0.72);
     if (d < 0.98) {
-        float aspect = p.viewport.x / p.viewport.y;
-        float2 q = float2(in.uv.x * aspect, in.uv.y);
         float grain = 0.85 + 0.30 * fbm(q * 30.0, 3);
-        float3 sand = mix(p.shallow.rgb, float3(0.70, 0.62, 0.42), 0.7) * grain;
-        float shallowness = smoothstep(0.98, 0.15, d);
-        col = mix(col, sand, shallowness * 0.8);
+        float3 sand = mix(p.shallow.rgb, float3(0.70, 0.62, 0.42), 0.6) * grain;
+        float shallowness = smoothstep(0.75, 0.15, d);
+        col = mix(col, sand, shallowness * 0.55);
         col *= 1.0 - smoothstep(0.15, 0.0, d) * 0.55;
     }
 
-    float aspect = p.viewport.x / p.viewport.y;
-    float2 q = float2(in.uv.x * aspect, in.uv.y);
     float2 centre = float2(p.mosaic.x * aspect, p.mosaic.y);
     float2 rel = (q - centre) / p.mosaic.z;
     float r = length(rel);
@@ -410,8 +424,23 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
     float tailness = 1.0 - uv.y;
     local.x += sin(s.wave + uv.y * 4.2) * s.waveAmp * s.size.x * tailness * tailness;
 
+    // Camera breath: each layer drifts by its own share.
+    float2 breath = p.drift.xy * s._pad.y;
+
     float wet = 0.0;
-    float2 centre = s.center;
+    float2 centre = s.center + breath;
+
+    // Pondweed: rooted at the bottom of the image, the strand leans with the
+    // water moving over it, most at the tip.
+    if ((s.mode & 32u) != 0u) {
+        float2 cuv = s.center / p.viewport.xy;
+        float2 texel = 1.0 / float2(field.get_width(), field.get_height());
+        float gx = field.sample(smp, cuv + float2(texel.x * 3.0, 0)).r - field.sample(smp, cuv - float2(texel.x * 3.0, 0)).r;
+        float gy = field.sample(smp, cuv + float2(0, texel.y * 3.0)).r - field.sample(smp, cuv - float2(0, texel.y * 3.0)).r;
+        float2 lateral = float2(cos(s.rotation), sin(s.rotation));
+        float lean = dot(float2(gx, gy), lateral) * 900.0;
+        local.x += clamp(lean, -0.6, 0.6) * s.size.x * tailness * tailness;
+    }
     float2 world;
     float rotation = s.rotation;
 
@@ -424,7 +453,7 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
         float4 sp = spines[spine * 13 + row];
         float2 t = sp.zw;                      // unit tangent, head-ward
         float2 n = float2(-t.y, t.x);
-        world = sp.xy + n * local.x + s.center;
+        world = sp.xy + n * local.x + s.center + breath;
         float4 head = spines[spine * 13 + 12];
         rotation = atan2(head.w, head.z) - M_PI_F * 0.5;
         SpriteOut out;

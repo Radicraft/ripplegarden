@@ -211,8 +211,12 @@ final class GameController: ObservableObject, TouchInput {
             lastCleaned = cleaned
             lastProgressAt = elapsed
         }
-        // Done when the tile is washed and nothing heavy still lies on it.
-        if phase == .playing, cleaned >= 0.94, heavyOverTile().isEmpty { finish() }
+        // Done when the pond is tidy: nothing left floating on it. (Levels
+        // with a roundel also want it washed and clear of heavy pieces.)
+        if phase == .playing {
+            let tidy = debris.allSatisfy(\.cleared)
+            if level.mosaicRadius <= 0 ? tidy : (cleaned >= 0.94 && heavyOverTile().isEmpty) { finish() }
+        }
 
         // Feed the renderer.
         feedRenderer(renderer)
@@ -272,7 +276,10 @@ final class GameController: ObservableObject, TouchInput {
             SIMD4(Float($0.position.x) / w, Float($0.position.y) / h, Float($0.radius) / h * ($0.cls == .heavy ? 0.95 : 0.8), 0)
         }
 
-        // Sprites. Under the water: koi, plus every floater's shadow on the floor.
+        renderer.drift = garden.drift
+
+        // Sprites. Under the water: weeds, cloud shadows, tadpoles, koi, plus
+        // every floater's shadow on the floor.
         let submerged = garden.submergedSprites()
         renderer.spines = submerged.spines
         var under = submerged.sprites
@@ -314,8 +321,10 @@ final class GameController: ObservableObject, TouchInput {
             paper(Sprite(d.sprite, at: d.position, size: spriteSize(d), rotation: Float(d.angle),
                          mode: .floater, alpha: d.fade))
         }
+        for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
+        over += garden.skySprites()
         renderer.surfaceSprites = over
     }
 
@@ -486,15 +495,23 @@ enum HintMemory {
 /// Turns a level's rocks and shallows into the depth map the wave kernel
 /// samples. 1 is deep open water, 0 is a wall.
 enum DepthPainter {
+    private static func smoothstep(_ a: Float, _ b: Float, _ x: Float) -> Float {
+        let t = max(0, min(1, (x - a) / (b - a)))
+        return t * t * (3 - 2 * t)
+    }
+
     static func paint(level: LevelSpec, width: Int, height: Int) -> [Float] {
         var map = [Float](repeating: 1, count: width * height)
-        guard !level.rocks.isEmpty || !level.shallows.isEmpty else { return map }
         let fw = Float(width), fh = Float(height)
         let aspect = fw / fh
         for y in 0..<height {
             for x in 0..<width {
                 let px = Float(x) / fw, py = Float(y) / fh
-                var d: Float = 1
+                // The pond is a bowl: deep in the middle, shelving to the banks,
+                // so waves slow near the edge and the bed shows there.
+                let bx = (px - 0.5) * aspect, by = py - 0.5
+                let rim = max(abs(bx) / (0.5 * aspect), abs(by) / 0.5)
+                var d: Float = 1 - 0.62 * smoothstep(0.55, 1.0, rim)
                 for s in level.shallows {
                     let r = Float(s.radius)
                     let dx = (px - Float(s.centre.x)) * aspect, dy = py - Float(s.centre.y)
