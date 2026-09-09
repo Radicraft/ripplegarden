@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 /// The garden path, or a level. One controller lives for the whole app and is
@@ -45,7 +46,7 @@ struct RootView: View {
                 .transition(.opacity)
             }
         }
-        .modelContainer(ProgressStore.shared.container)
+        .progressContainer()
         .onAppear {
             DemoScript.startIfRequested(controller: game)
             Tour.shared.open = { level in
@@ -56,6 +57,18 @@ struct RootView: View {
             Tour.shared.next = { game.next() }
             Tour.shared.phase = { game.phase }
             Tour.shared.start()
+        }
+    }
+}
+
+private extension View {
+    /// The store is only nil if no container could be made at all, in which
+    /// case the game runs without one rather than refusing to launch.
+    @ViewBuilder func progressContainer() -> some View {
+        if let container = ProgressStore.shared.container {
+            self.modelContainer(container)
+        } else {
+            self
         }
     }
 }

@@ -38,8 +38,10 @@ final class ProgressStore: ObservableObject {
 
     static let shared = ProgressStore()
 
-    let container: ModelContainer
-    private var context: ModelContext { container.mainContext }
+    /// Nil only if every attempt at a store failed, which would take a
+    /// broken schema. The game then runs with no memory rather than dying.
+    let container: ModelContainer?
+    private var context: ModelContext? { container?.mainContext }
     /// Bumped on every write so the path redraws.
     @Published private(set) var version = 0
 
@@ -66,7 +68,8 @@ final class ProgressStore: ObservableObject {
                 break
             }
         }
-        container = made ?? (try! ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]))
+        container = made
+        guard let context else { return }
 
         if reset {
             try? context.delete(model: LevelRecord.self)
@@ -83,16 +86,19 @@ final class ProgressStore: ObservableObject {
     }
 
     func isComplete(levelID: String) -> Bool {
+        guard let context else { return false }
         let descriptor = FetchDescriptor<LevelRecord>(predicate: #Predicate { $0.levelID == levelID })
         return ((try? context.fetchCount(descriptor)) ?? 0) > 0
     }
 
     func completedCount(seasonID: String) -> Int {
+        guard let context else { return 0 }
         let descriptor = FetchDescriptor<LevelRecord>(predicate: #Predicate { $0.seasonID == seasonID })
         return (try? context.fetchCount(descriptor)) ?? 0
     }
 
     func bloomStage(for seasonID: String) -> Float {
+        guard let context else { return 0 }
         let descriptor = FetchDescriptor<GardenRecord>(predicate: #Predicate { $0.seasonID == seasonID })
         return Float((try? context.fetch(descriptor))?.map(\.bloomStage).max() ?? 0)
     }
@@ -111,6 +117,7 @@ final class ProgressStore: ObservableObject {
     }
 
     func markComplete(levelID: String, seasonID: String, bloomStage: Float) {
+        guard let context else { return }
         if !isComplete(levelID: levelID) {
             context.insert(LevelRecord(levelID: levelID, seasonID: seasonID))
         }

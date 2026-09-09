@@ -2,13 +2,25 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>UILaunchScreen</key>
-	<dict/>
 	<key>UIAppFonts</key>
 	<array>
 		<string>ShipporiMinchoB1-Regular.ttf</string>
 		<string>ShipporiMinchoB1-Medium.ttf</string>
 		<string>ShipporiMincho-Regular.ttf</string>
 	</array>
+	<!-- SwiftData mirrors progress through the player's private CloudKit
+	     database. CloudKit tells the app that another device wrote something
+	     with a silent push, which needs this mode to arrive in the
+	     background. Requires the Push Notifications capability in Xcode. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>
