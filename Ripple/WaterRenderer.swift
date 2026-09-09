@@ -245,9 +245,13 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// The view's bounds in points, known once the first frame draws.
     private(set) var viewSizePoints: CGSize?
     /// The pond is bigger than the screen; the view looks at part of it.
-    static let worldScale: CGFloat = 1.4
+    /// How much bigger than the screen the world is, per axis. A level is
+    /// 1.4 both ways; the hub is a stream several screens tall.
+    var worldScale = CGSize(width: 1.4, height: 1.4)
+    /// Sim cells along the world's long side.
+    var gridLongSide = Tuning.gridLongSide
     var worldSizePoints: CGSize? {
-        viewSizePoints.map { CGSize(width: $0.width * WaterRenderer.worldScale, height: $0.height * WaterRenderer.worldScale) }
+        viewSizePoints.map { CGSize(width: $0.width * worldScale.width, height: $0.height * worldScale.height) }
     }
     /// Screen points per world point, and the world point at the screen centre.
     var zoom: Float = 0.9
@@ -976,14 +980,14 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private func allocate(for screenSize: CGSize) {
         guard screenSize.width > 0, screenSize.height > 0 else { return }
         // Everything simulated and baked covers the world, not the screen.
-        let size = CGSize(width: screenSize.width * WaterRenderer.worldScale, height: screenSize.height * WaterRenderer.worldScale)
+        let size = CGSize(width: screenSize.width * worldScale.width, height: screenSize.height * worldScale.height)
         let aspect = size.width / size.height
 
         func dims(long: Int) -> (Int, Int) {
             if aspect >= 1 { return (long, max(2, Int((CGFloat(long) / aspect).rounded()))) }
             return (max(2, Int((CGFloat(long) * aspect).rounded())), long)
         }
-        let (w, h) = dims(long: Tuning.gridLongSide)
+        let (w, h) = dims(long: gridLongSide)
         gridSize = SIMD2<UInt32>(UInt32(w), UInt32(h))
         viewportSize = SIMD2<Float>(Float(size.width), Float(size.height))     // world, in pixels
         screenPixels = SIMD2<Float>(Float(screenSize.width), Float(screenSize.height))
@@ -1013,8 +1017,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         siltArea = max(1, Float.pi * r * r)
 
         for tex in [floorBase, floorTexture] { _ = tex }
+        // The floor is baked at world pixels, but a tall world (the hub) would
+        // pass the largest texture Metal allows: scale it down to fit.
+        let cap: CGFloat = 8192
+        let fit = min(1, cap / max(size.width, size.height))
         let floorDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
-                                                                 width: max(2, Int(size.width)), height: max(2, Int(size.height)),
+                                                                 width: max(2, Int(size.width * fit)), height: max(2, Int(size.height * fit)),
                                                                  mipmapped: false)
         floorDesc.usage = [.shaderRead, .renderTarget]
         floorDesc.storageMode = .private

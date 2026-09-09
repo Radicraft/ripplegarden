@@ -60,7 +60,22 @@ final class TouchMetalView: MTKView {
 
 struct WaterView: UIViewRepresentable {
 
-    let controller: GameController
+    let input: TouchInput
+    let attach: (WaterRenderer) -> Void
+    var worldScale = CGSize(width: 1.4, height: 1.4)
+    var gridLongSide = Tuning.gridLongSide
+
+    init(controller: GameController) {
+        input = controller
+        attach = { controller.attach(renderer: $0) }
+    }
+
+    init(input: TouchInput, worldScale: CGSize, gridLongSide: Int, attach: @escaping (WaterRenderer) -> Void) {
+        self.input = input
+        self.attach = attach
+        self.worldScale = worldScale
+        self.gridLongSide = gridLongSide
+    }
 
     final class Coordinator {
         var renderer: WaterRenderer?
@@ -80,12 +95,14 @@ struct WaterView: UIViewRepresentable {
         view.preferredFramesPerSecond = 120
         view.enableSetNeedsDisplay = false
         view.isPaused = false
-        view.input = controller
+        view.input = input
 
         if let renderer = WaterRenderer(view: view) {
+            renderer.worldScale = worldScale
+            renderer.gridLongSide = gridLongSide
             view.delegate = renderer
             context.coordinator.renderer = renderer
-            controller.attach(renderer: renderer)
+            attach(renderer)
             renderer.mtkView(view, drawableSizeWillChange: view.drawableSize)
         }
         return view

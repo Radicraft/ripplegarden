@@ -637,7 +637,8 @@ final class GameController: ObservableObject, TouchInput {
     /// Pull back until the whole pond is on screen (the demo uses it on
     /// frozen levels, where the sheet runs beyond the default view).
     func showWholePond() {
-        zoomTarget = Float(1 / WaterRenderer.worldScale)
+        let scale = renderer?.worldScale ?? CGSize(width: 1.4, height: 1.4)
+        zoomTarget = Float(1 / max(scale.width, scale.height))
     }
 
     func worldPoint(_ p: CGPoint) -> CGPoint {

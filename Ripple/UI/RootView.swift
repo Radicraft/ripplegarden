@@ -10,6 +10,7 @@ struct RootView: View {
     }
 
     @StateObject private var game: GameController
+    @StateObject private var hub = HubController()
     @State private var screen: Screen
 
     init() {
@@ -31,7 +32,7 @@ struct RootView: View {
         ZStack {
             switch screen {
             case .garden:
-                GardenPathView { level in
+                HubView(hub: hub) { level in
                     game.prepare(level: level)
                     withAnimation(.easeInOut(duration: 0.6)) { screen = .level(level.id) }
                 }
