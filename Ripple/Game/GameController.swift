@@ -104,6 +104,22 @@ final class GameController: ObservableObject, TouchInput {
 
     // MARK: - Wiring
 
+    /// Two pieces knock: the harder or hollower one sounds, once in a while.
+    private func knock(_ a: Debris, _ b: Debris, _ speed: Float) {
+        var loud: Debris? = nil
+        for d in [a, b] where d.kind == .can { loud = d }
+        if loud == nil { for d in [a, b] where d.kind == .bottle { loud = d } }
+        if loud == nil { for d in [a, b] where d.cls == .heavy { loud = d } }
+        guard let d = loud, elapsed - d.lastKnockAt > 0.7 else { return }
+        d.lastKnockAt = elapsed
+        let x = Float(d.position.x / viewSize.width)
+        switch d.kind {
+        case .can: sound.can(x: x); haptics.tap(weight: 0.4)
+        case .bottle: sound.bottle(x: x); haptics.tap(weight: 0.3)
+        default: sound.wood(x: x); haptics.tap(weight: 0.5)
+        }
+    }
+
     /// The player has gone back to the map: the pond's air fades, held
     /// fingers are let go.
     func leave() {
@@ -136,6 +152,7 @@ final class GameController: ObservableObject, TouchInput {
             self?.sound.swell()
             self?.haptics.swell()
         }
+        DebrisPhysics.onKnock = { [weak self] a, b, speed in self?.knock(a, b, speed) }
         load(level: level)
     }
 

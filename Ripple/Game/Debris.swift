@@ -158,6 +158,9 @@ enum DebrisPhysics {
         }
     }
 
+    /// Told when two pieces meet with some force, so the meeting can sound.
+    static var onKnock: ((Debris, Debris, Float) -> Void)?
+
     /// Keeps pieces from occupying the same spot.
     static func separate(_ all: [Debris], dt: Float) {
         let live = all.filter { !$0.cleared }
@@ -172,6 +175,9 @@ enum DebrisPhysics {
                 guard dist < minDist else { continue }
                 let overlap = (minDist - dist) / minDist
                 let n = SIMD2(dx, dy) / dist
+                // Closing speed along the line between them: a knock if brisk.
+                let closing = simd_dot(a.velocity - b.velocity, n)
+                if closing > 18 { onKnock?(a, b, closing) }
                 let kick = n * overlap * GameTuning.separationStrength * dt
                 let total = a.mass + b.mass
                 a.velocity -= kick * (b.mass / total) * 2
