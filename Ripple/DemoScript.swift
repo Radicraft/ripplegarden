@@ -61,7 +61,10 @@ enum DemoScript {
     /// `stir:centre` two turns of a circle over 1.2s (`stir:centre:r` for a
     /// radius as a fraction of the pond's height). `drop:at` two taps 0.2s
     /// apart. `gust:from>to` two parallel flicks; `gust:>` sweeps the middle
-    /// of the pond left to right. `tap:at` and `hold:at` are here too.
+    /// of the pond left to right. `slosh:from>to` one slow finger over 1.5s,
+    /// shoving a body of water ahead of it. `tilt:` two fingers drawn 120 pt
+    /// up the screen over 0.6s, laying the camera over toward the water
+    /// (`tilt:-120` stands it up again). `tap:at` and `hold:at` are here too.
     static func scheduleScriptedGestures(controller: GameController) {
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "-gestures"), i + 1 < args.count else { return }
@@ -116,6 +119,16 @@ enum DemoScript {
             }
             syntheticID += 1
             drag(controller, path: path, seconds: 1.2, id: syntheticID, size: size)
+        case "slosh":
+            // Slow enough not to cut a wake, far enough to shove the water.
+            let a = (ends.count == 2 ? point(ends[0]) : nil) ?? CGPoint(x: size.width * 0.35, y: size.height * 0.5)
+            let b = (ends.count == 2 ? point(ends[1]) : nil) ?? CGPoint(x: size.width * 0.62, y: size.height * 0.5)
+            syntheticID += 1
+            drag(controller, path: line(from: a, to: b, steps: 60), seconds: 1.5, id: syntheticID, size: size)
+        case "tilt":
+            // Two fingers side by side, drawn up the screen: the camera lies
+            // over and the pond is seen more from its side.
+            tiltDrag(controller, by: CGFloat(Double(arg) ?? 120), seconds: 1.5, size: size)
         case "gust":
             let a = (ends.count == 2 ? point(ends[0]) : nil) ?? CGPoint(x: size.width * 0.15, y: size.height * 0.5)
             let b = (ends.count == 2 ? point(ends[1]) : nil) ?? CGPoint(x: size.width * 0.85, y: size.height * 0.5)
@@ -131,6 +144,30 @@ enum DemoScript {
             }
         default:
             break
+        }
+    }
+
+    /// Two fingers put down in the middle of the screen and drawn `by` points
+    /// up it, which the controller reads as a tilt.
+    private static func tiltDrag(_ controller: GameController, by: CGFloat, seconds: Double, size: CGSize) {
+        let screen = screenSizeOf(controller) ?? size
+        syntheticID += 1
+        let a = syntheticID
+        syntheticID += 1
+        let b = syntheticID
+        let from = [a: CGPoint(x: screen.width * 0.38, y: screen.height * 0.58),
+                    b: CGPoint(x: screen.width * 0.62, y: screen.height * 0.58)]
+        for id in [a, b] { controller.touchBegan(id: id, at: from[id]!, in: screen, weight: 0.4) }
+        let steps = 30
+        for k in 1...steps {
+            let t = seconds * Double(k) / Double(steps)
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) {
+                for id in [a, b] {
+                    let at = CGPoint(x: from[id]!.x, y: from[id]!.y - by * CGFloat(k) / CGFloat(steps))
+                    controller.touchMoved(id: id, to: at, in: screen)
+                    if k == steps { controller.touchEnded(id: id, at: at, in: screen) }
+                }
+            }
         }
     }
 

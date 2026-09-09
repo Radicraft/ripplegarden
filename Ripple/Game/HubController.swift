@@ -60,6 +60,18 @@ final class HubController: ObservableObject, TouchInput {
     private var momentum: Float = 0
     private var scroll: (id: Int, lastY: CGFloat, lastAt: TimeInterval, moved: Bool, startY: CGFloat)?
     private var pending: [Int: (start: CGPoint, began: TimeInterval)] = [:]
+    private var touches: [Int: CGPoint] = [:]
+    /// Two fingers drawn the same way up or down the screen tilt the camera,
+    /// the same as they do on a pond.
+    private struct Tilt {
+        var ids: [Int]
+        var last: [Int: CGPoint]
+        var travel: [Int: CGPoint] = [:]
+        var speed: [Int: CGFloat] = [:]
+        var lastAt: TimeInterval
+        var on = false
+    }
+    private var tilt: Tilt?
     private var lastMarksAt: TimeInterval = 0
     private var opening: (level: LevelSpec, at: TimeInterval)?
     private var elapsed: Float = 0
@@ -295,19 +307,8 @@ final class HubController: ObservableObject, TouchInput {
         return max(0.05, d)
     }
 
-    /// Smooth value noise in 0...1, for a shoreline that wanders like one.
-    private func noise(_ x: Float, _ y: Float) -> Float {
-        func hash(_ i: Int, _ j: Int) -> Float {
-            var h = UInt32(truncatingIfNeeded: i) &* 374761393 &+ UInt32(truncatingIfNeeded: j) &* 668265263
-            h = (h ^ (h >> 13)) &* 1274126177
-            return Float(h & 0xFFFF) / 65535
-        }
-        let ix = Int(floor(x)), iy = Int(floor(y))
-        let fx = x - floor(x), fy = y - floor(y)
-        let ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy)
-        let a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), dd = hash(ix + 1, iy + 1)
-        return (a + (b - a) * ux) + ((c + (dd - c) * ux) - (a + (b - a) * ux)) * uy
-    }
+    /// The shoreline wanders on the same noise the ponds use.
+    private func noise(_ x: Float, _ y: Float) -> Float { ShoreNoise.value(x, y) }
 
     private func smooth(_ a: Float, _ b: Float, _ x: Float) -> Float {
         let t = max(0, min(1, (x - a) / (b - a)))
@@ -630,7 +631,12 @@ final class HubController: ObservableObject, TouchInput {
         guard placed, opening == nil else { return }
         let now = CACurrentMediaTime()
         pending[id] = (screen, now)
+        touches[id] = screen
         if scroll == nil { scroll = (id, screen.y, now, false, screen.y) }
+        // A second finger down beside the first: they may be a tilt.
+        if tilt == nil, let other = touches.keys.first(where: { $0 != id }), let op = touches[other] {
+            tilt = Tilt(ids: [other, id], last: [other: op, id: screen], lastAt: now)
+        }
         momentum = 0
     }
 
@@ -654,6 +660,8 @@ final class HubController: ObservableObject, TouchInput {
 
     func touchMoved(id: Int, to screen: CGPoint, in size: CGSize) {
         if menu?.isOpen == true { return }
+        touches[id] = screen
+        if tilt?.ids.contains(id) == true, updateTilt(moved: id, to: screen) { return }
         guard var s = scroll, s.id == id, let renderer else { return }
         let dy = screen.y - s.lastY
         let now = CACurrentMediaTime()
@@ -670,7 +678,52 @@ final class HubController: ObservableObject, TouchInput {
         scroll = s
     }
 
+    /// A finger of the pair moving. Returns true once the two are read as a
+    /// tilt, so the stream stops scrolling under them. Both must be going
+    /// much the same way, both mostly up or down, and neither of them fast.
+    private func updateTilt(moved id: Int, to screen: CGPoint) -> Bool {
+        guard var t = tilt, let r = renderer else { return false }
+        let now = CACurrentMediaTime()
+        var step = CGPoint.zero
+        if let was = t.last[id] {
+            step = CGPoint(x: screen.x - was.x, y: screen.y - was.y)
+            let dt = max(1.0 / 240, now - t.lastAt)
+            t.speed[id] = hypot(step.x, step.y) / CGFloat(dt)
+            var travel = t.travel[id] ?? .zero
+            travel.x += step.x
+            travel.y += step.y
+            t.travel[id] = travel
+        }
+        t.last[id] = screen
+        t.lastAt = now
+        if !t.on, let ta = t.travel[t.ids[0]], let tb = t.travel[t.ids[1]] {
+            let sameWay = ta.y * tb.y > 0
+            let upright = abs(ta.y) > abs(ta.x) * 1.2 && abs(tb.y) > abs(tb.x) * 1.2
+            let gentle = max(t.speed[t.ids[0]] ?? 0, t.speed[t.ids[1]] ?? 0) < CGFloat(GameTuning.gustSpeed)
+            let far = min(hypot(ta.x, ta.y), hypot(tb.x, tb.y))
+            if sameWay, upright, gentle, far > 10 {
+                t.on = true
+                scroll = nil
+                momentum = 0
+            }
+        }
+        if t.on {
+            // Half a step from each finger is the pair's average.
+            r.pitchTarget -= Float(step.y) * 0.5 * GameTuning.tiltPerPoint
+        }
+        tilt = t
+        return t.on
+    }
+
     func touchEnded(id: Int, at screen: CGPoint, in size: CGSize) {
+        touches.removeValue(forKey: id)
+        let wasTilt = tilt?.ids.contains(id) == true && tilt?.on == true
+        if tilt?.ids.contains(id) == true { tilt = nil }
+        if wasTilt {
+            pending.removeValue(forKey: id)
+            if scroll?.id == id { scroll = nil }
+            return
+        }
         if let m = menu, m.isOpen {
             m.hit(worldPoint(screen))
             return

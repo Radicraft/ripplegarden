@@ -43,7 +43,7 @@ final class GameController: ObservableObject, TouchInput {
     private var viewSize = CGSize.zero
     private var screenSize = CGSize.zero
     // The view: zoom and centre, eased toward their targets so it flows.
-    private var zoomTarget: Float = 0.9
+    private var zoomTarget: Float = 0.76
     private var centreTarget = SIMD2<Float>(0, 0)
     private struct Pinch {
         var ids: [Int]
@@ -51,6 +51,15 @@ final class GameController: ObservableObject, TouchInput {
         var startZoom: Float
         var anchorWorld: SIMD2<Float>
         var active = false
+        /// Two fingers drawn the same way tilt the camera instead of zooming
+        /// it. Once they are read as a tilt they stay one.
+        var tilting = false
+        /// Where each finger was last seen, how far it has come since the
+        /// two went down, and how fast it is going now.
+        var last: [Int: CGPoint] = [:]
+        var travel: [Int: CGPoint] = [:]
+        var speed: [Int: CGFloat] = [:]
+        var lastAt: TimeInterval = 0
     }
     private var pinch: Pinch?
     private var screenTouches: [Int: CGPoint] = [:]
@@ -119,6 +128,9 @@ final class GameController: ObservableObject, TouchInput {
         var lastAt: TimeInterval
         var speed: Float = 0
         var isWake = false
+        /// A slow, long drag: it shoves a body of water ahead of the hand.
+        var isSlosh = false
+        var travelled: CGFloat = 0
         var sinceSplat: CGFloat = 0
         var heading: SIMD2<Float>?
         /// The last stretch of the stroke: where it went and how far it
@@ -274,6 +286,11 @@ final class GameController: ObservableObject, TouchInput {
         look.mosaicCentre = SIMD2(Float(newLevel.mosaicCentre.x), Float(newLevel.mosaicCentre.y))
         look.mosaicRadius = Float(newLevel.mosaicRadius)
         renderer?.floorLook = look
+        // The pond has a real bank all round it, in this season's ground.
+        // One stretch covers the whole world, so all four slots wear it.
+        let painting = "bank_\(season.id)"
+        renderer?.bankPaintings = [painting, painting, painting, painting]
+        renderer?.bank = SIMD3(1, 1, 1)
         renderer?.depthPainter = { [level = newLevel] w, h in DepthPainter.paint(level: level, width: w, height: h) }
         renderer?.rebuildDepth()
         renderer?.cancelAll()
@@ -328,9 +345,15 @@ final class GameController: ObservableObject, TouchInput {
             return d
         }
         iceField = level.frozen ? IceField(world: viewSize) : nil
+        // The sheet lies on the water, not on the bank around it.
+        if let f = iceField {
+            let aspect = Float(viewSize.width / viewSize.height)
+            f.trimToWater { DepthPainter.ground(at: $0, aspect: aspect) >= 0.08 }
+        }
         // A frozen pond is seen whole: nothing of the sheet hides off screen.
-        if level.frozen { showWholePond() } else { zoomTarget = 0.9 }
-        garden.iceCover = level.frozen ? 1 : 0
+        // The pond is seen with its banks: pulled back, not pressed in.
+        if level.frozen { showWholePond() } else { zoomTarget = 0.76 }
+        garden.iceCover = iceField?.fraction ?? 0
         if let f = iceField {
             renderer?.setIce(f.cells, scuff: f.scuff, width: f.width, height: f.height)
             renderer?.setIceCracks(seeds: f.seeds, strikes: f.strikes)
@@ -516,7 +539,7 @@ final class GameController: ObservableObject, TouchInput {
                 }
             }
             DebrisPhysics.separate(debris, dt: dt)
-            for d in debris where !d.cleared && DebrisPhysics.hasReachedShore(d, in: viewSize) {
+            for d in debris where !d.cleared && (DebrisPhysics.hasReachedShore(d, in: viewSize) || isBeached(d)) {
                 clear(d)
             }
         }
@@ -659,6 +682,7 @@ final class GameController: ObservableObject, TouchInput {
             }
             if diagFrames % 60 == 0 {
                 let heavy = debris.first { $0.cls == .heavy }
+                NSLog("[camera] zoom=%.2f pitch=%.2f", renderer.zoom, renderer.pitch)
                 NSLog("[garden] ice=%.3f targets=%d/%d debris=%d heavyLift=%.3f heavyPos=(%.0f,%.0f) phase=%@",
                       iceField?.fraction ?? 0, targets.filter(\.woke).count, targets.count, probeOrder.count, diagHeavyLift,
                       heavy?.position.x ?? 0, heavy?.position.y ?? 0, String(describing: phase))
@@ -881,6 +905,14 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     /// Floaters cannot pass through a rock.
+    /// A piece left on ground this shallow is out of the water for good: no
+    /// ripple reaches it there, so it counts as landed rather than stuck.
+    private func isBeached(_ d: Debris) -> Bool {
+        guard viewSize.width > 0 else { return false }
+        let u = CGPoint(x: d.position.x / viewSize.width, y: d.position.y / viewSize.height)
+        return DepthPainter.ground(at: u, aspect: Float(viewSize.width / viewSize.height)) < 0.08
+    }
+
     private func keepOffRocks(_ d: Debris) {
         for r in rocks {
             let dx = Float(d.position.x - r.centre.x), dy = Float(d.position.y - r.centre.y)
@@ -973,30 +1005,75 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     /// Two fingers: a swell if they move together, a pinch if they spread or
-    /// close. Once a pinch is decided the water stops hearing those fingers.
+    /// close, a tilt if they are both drawn the same way up or down the
+    /// screen. Once a pinch is decided the water stops hearing those fingers.
     private func updatePinch(moved id: Int) {
         guard var p = pinch, p.ids.contains(id),
               let a = screenTouches[p.ids[0]], let b = screenTouches[p.ids[1]], let r = renderer else { return }
+        let now = CACurrentMediaTime()
+        let here = id == p.ids[0] ? a : b
+        var step = CGPoint.zero
+        if let was = p.last[id] {
+            step = CGPoint(x: here.x - was.x, y: here.y - was.y)
+            let elapsedSince = max(1.0 / 240, now - p.lastAt)
+            p.speed[id] = hypot(step.x, step.y) / CGFloat(elapsedSince)
+            var t = p.travel[id] ?? .zero
+            t.x += step.x
+            t.y += step.y
+            p.travel[id] = t
+        }
+        p.last[id] = here
+        p.lastAt = now
         let dist = hypot(a.x - b.x, a.y - b.y)
-        if !p.active {
-            guard abs(dist - p.startDistance) > 18 else { return }
-            // Two fingers thrown the same way are a gust, and a gust must not
-            // be read as a pinch just because the hand spread a little.
-            if gustPair() != nil { return }
-            p.active = true
-            r.cancelAll()
-            for pid in p.ids {
-                pondTouches.removeValue(forKey: pid)
-                if holdSounding.remove(pid) != nil { sound.holdEnd(id: pid) }
-                if wakeSounding.remove(pid) != nil { sound.wakeEnd(id: pid); haptics.slideEnd() }
+
+        // A tilt, read before the pinch so a hand that spreads a little on
+        // the way does not zoom instead: both fingers going much the same
+        // way, both mostly up or down the screen, and neither of them fast
+        // enough to be half a gust.
+        if !p.active, !p.tilting,
+           let ta = p.travel[p.ids[0]], let tb = p.travel[p.ids[1]] {
+            let sameWay = ta.y * tb.y > 0
+            let upright = abs(ta.y) > abs(ta.x) * 1.2 && abs(tb.y) > abs(tb.x) * 1.2
+            let gentle = max(p.speed[p.ids[0]] ?? 0, p.speed[p.ids[1]] ?? 0) < CGFloat(GameTuning.gustSpeed)
+            let far = min(hypot(ta.x, ta.y), hypot(tb.x, tb.y))
+            if sameWay, upright, gentle, far > 10 {
+                p.tilting = true
+                r.cancelAll()
+                for pid in p.ids { forgetWaterTouch(pid) }
             }
         }
-        let z = max(0.8, min(1.8, p.startZoom * Float(dist / max(1, p.startDistance))))
+
+        if p.tilting {
+            // Half the step from each of the two fingers is their average.
+            // Drawn up the screen the camera lies down toward the water.
+            r.pitchTarget -= Float(step.y) * 0.5 * GameTuning.tiltPerPoint
+            pinch = p
+            return
+        }
+
+        if !p.active {
+            guard abs(dist - p.startDistance) > 18 else { pinch = p; return }
+            // Two fingers thrown the same way are a gust, and a gust must not
+            // be read as a pinch just because the hand spread a little.
+            if gustPair() != nil { pinch = p; return }
+            p.active = true
+            r.cancelAll()
+            for pid in p.ids { forgetWaterTouch(pid) }
+        }
+        let z = max(GameTuning.zoomMin, min(GameTuning.zoomMax, p.startZoom * Float(dist / max(1, p.startDistance))))
         zoomTarget = z
         // Keep the world point that was under the fingers under them.
         let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
         centreTarget = p.anchorWorld - SIMD2(Float(mid.x - screenSize.width / 2), Float(mid.y - screenSize.height / 2)) / z
         pinch = p
+    }
+
+    /// A finger that turned out to belong to the camera and not the water:
+    /// its hold, its wake and its voice all go.
+    private func forgetWaterTouch(_ id: Int) {
+        pondTouches.removeValue(forKey: id)
+        if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
+        if wakeSounding.remove(id) != nil { sound.wakeEnd(id: id); haptics.slideEnd() }
     }
 
     // MARK: - Gestures on open water
@@ -1032,6 +1109,7 @@ final class GameController: ObservableObject, TouchInput {
         let elapsedSince = max(1.0 / 240, now - t.lastAt)
         let instant = Float(step / CGFloat(elapsedSince))
         t.speed += (instant - t.speed) * 0.4
+        t.travelled += step
 
         // The turning of the stroke, step by step, kept for as long as a
         // circle may take to draw.
@@ -1047,12 +1125,17 @@ final class GameController: ObservableObject, TouchInput {
         t.path.removeAll { now - $0.at > GameTuning.stirWindow }
 
         if !t.isWake, !t.spent, t.speed > GameTuning.wakeSpeed {
+            if !t.isSlosh { beginStroke(id: id) }
             t.isWake = true
-            renderer.cancelHold(id: id)
-            if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
-            sound.wakeBegin(id: id)
-            wakeSounding.insert(id)
-            haptics.slideBegin()
+            t.isSlosh = false
+        }
+        // Slower than a wake but going somewhere: the hand is not cutting the
+        // water, it is pushing it. Once it has carried far enough the hold is
+        // let go and a body of water is shoved along ahead of the finger.
+        if !t.isWake, !t.isSlosh, !t.spent,
+           t.speed > GameTuning.sloshSlowest, t.travelled > GameTuning.sloshTravel {
+            t.isSlosh = true
+            beginStroke(id: id)
         }
 
         if t.isWake, !t.spent {
@@ -1074,6 +1157,23 @@ final class GameController: ObservableObject, TouchInput {
                 // ahead of the hand without the camera jerking after it.
                 garden.startle(at: point, in: size)
             }
+        } else if t.isSlosh, !t.spent {
+            // Broad and shallow, laid a step at a time: the water in front of
+            // the hand is heaped up and runs on to the bank on its own.
+            sound.wakeLevel(id: id, speed: t.speed * 0.35)
+            haptics.slide(speed: t.speed, grain: 0.05, travel: Float(step))
+            t.sinceSplat += step
+            if t.sinceSplat >= GameTuning.sloshSpacing {
+                let n = min(Int(t.sinceSplat / GameTuning.sloshSpacing), 4)
+                t.sinceSplat -= CGFloat(n) * GameTuning.sloshSpacing
+                for i in 1...n {
+                    let f = CGFloat(i) / CGFloat(n)
+                    budgetedSplat(at: CGPoint(x: t.last.x + dx * f, y: t.last.y + dy * f),
+                                  radius: GameTuning.sloshRadius,
+                                  amplitude: GameTuning.sloshAmplitude)
+                }
+                garden.startle(at: point, in: size)
+            }
         } else if !t.spent {
             // Still a slow drag: the renderer lays its own trail behind it.
             renderer.touchMoved(id: id, to: point, in: size)
@@ -1093,6 +1193,16 @@ final class GameController: ObservableObject, TouchInput {
         t.lastAt = now
         pondTouches[id] = t
         checkGust()
+    }
+
+    /// A finger that has stopped pressing and started moving water: the hold
+    /// it was charging goes, and the water rushing past it is heard and felt.
+    private func beginStroke(id: Int) {
+        renderer?.cancelHold(id: id)
+        if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
+        sound.wakeBegin(id: id)
+        wakeSounding.insert(id)
+        haptics.slideBegin()
     }
 
     /// The stroke went round: a whirl at the middle of the circle it drew,
@@ -1275,7 +1385,8 @@ final class GameController: ObservableObject, TouchInput {
             let mid = CGPoint(x: (op.x + screen.x) / 2, y: (op.y + screen.y) / 2)
             let anchor = worldPoint(mid)
             pinch = Pinch(ids: [other, id], startDistance: hypot(op.x - screen.x, op.y - screen.y),
-                          startZoom: r.zoom, anchorWorld: SIMD2(Float(anchor.x), Float(anchor.y)))
+                          startZoom: r.zoom, anchorWorld: SIMD2(Float(anchor.x), Float(anchor.y)),
+                          last: [other: op, id: screen], lastAt: CACurrentMediaTime())
         }
         // A finger that lands on the sheet belongs to the ice: no ring, no
         // hold, no splat. What it means is decided when it moves or lifts.
@@ -1314,8 +1425,9 @@ final class GameController: ObservableObject, TouchInput {
         screenTouches[id] = screen
         if pinch != nil {
             updatePinch(moved: id)
-            // A finger that turned out to be half a pinch is no longer on the ice.
-            if pinch?.active == true {
+            // A finger that turned out to be half a pinch, or half a tilt, is
+            // no longer on the ice.
+            if pinch?.active == true || pinch?.tilting == true {
                 if let t = iceTouches.removeValue(forKey: id), t.isSlide { haptics.slideEnd() }
                 return
             }
@@ -1407,7 +1519,7 @@ final class GameController: ObservableObject, TouchInput {
         }
         if let p = pinch, p.ids.contains(id) {
             pinch = nil
-            if p.active { renderer?.touchUp(id: id); pondTouches.removeValue(forKey: id); return }
+            if p.active || p.tilting { renderer?.touchUp(id: id); pondTouches.removeValue(forKey: id); return }
         }
         let point = worldPoint(screen)
         let size = viewSize
@@ -1442,7 +1554,7 @@ final class GameController: ObservableObject, TouchInput {
             if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
             renderer?.touchUp(id: id)
             // A plain tap, and one just landed beside it: a stone drops in.
-            let plain = !t.isWake && !t.spent && t.held < Float(GameTuning.doubleTapSeconds)
+            let plain = !t.isWake && !t.isSlosh && !t.spent && t.held < Float(GameTuning.doubleTapSeconds)
             let now = CACurrentMediaTime()
             if plain, let last = lastTap, now - last.at < GameTuning.doubleTapSeconds,
                hypot(last.point.x - point.x, last.point.y - point.y) < GameTuning.doubleTapDistance {
@@ -1606,6 +1718,24 @@ enum HintMemory {
     static func markSeen(_ h: Hint) { UserDefaults.standard.set(true, forKey: "hint.seen.\(h.rawValue)") }
 }
 
+/// Smooth value noise in 0...1. The pond and the stream both wander their
+/// shorelines with it, so no bank is ever a straight line.
+enum ShoreNoise {
+    static func value(_ x: Float, _ y: Float) -> Float {
+        func hash(_ i: Int, _ j: Int) -> Float {
+            var h = UInt32(truncatingIfNeeded: i) &* 374761393 &+ UInt32(truncatingIfNeeded: j) &* 668265263
+            h = (h ^ (h >> 13)) &* 1274126177
+            return Float(h & 0xFFFF) / 65535
+        }
+        let ix = Int(floor(x)), iy = Int(floor(y))
+        let fx = x - floor(x), fy = y - floor(y)
+        let ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy)
+        let a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1)
+        let lo = a + (b - a) * ux
+        return lo + ((c + (d - c) * ux) - lo) * uy
+    }
+}
+
 /// Turns a level's rocks and shallows into the depth map the wave kernel
 /// samples. 1 is deep open water, 0 is a wall.
 enum DepthPainter {
@@ -1614,12 +1744,40 @@ enum DepthPainter {
         return t * t * (3 - 2 * t)
     }
 
+    /// Where the bowl stops and the shore begins, and where the ground is
+    /// dry. The line between them wanders, so no pond has a straight edge.
+    static let shoreStart: Float = 0.90
+    static let shoreEnd: Float = 0.97
+    /// Depth of dry ground. Below `dryDepth` no ripple reaches a piece.
+    static let dryDepth: Float = 0.03
+
+    /// The bowl shelving up to the bank at the world's rim, on a shoreline
+    /// that wanders. `d` is the bowl's depth here.
+    private static func shore(_ d: Float, rim: Float, px: Float, py: Float) -> Float {
+        // A slow swell of the shoreline and a finer raggedness over it.
+        let wander = (ShoreNoise.value(px * 6.5, py * 6.5) - 0.5) * 0.05
+                   + (ShoreNoise.value(px * 21.0 + 4.3, py * 21.0 + 9.1) - 0.5) * 0.018
+        let up = smoothstep(shoreStart + wander, shoreEnd + wander, rim)
+        return d + (dryDepth - d) * up
+    }
+
+    /// The bed alone at a unit point: the bowl and the shore it shelves up
+    /// to, with none of the rocks and pads that stand in it. This is what
+    /// says whether a piece is on dry ground.
+    static func ground(at p: CGPoint, aspect: Float) -> Float {
+        let px = Float(p.x), py = Float(p.y)
+        let bx = (px - 0.5) * aspect, by = py - 0.5
+        let rim = max(abs(bx) / (0.5 * aspect), abs(by) / 0.5)
+        return shore(1 - 0.62 * smoothstep(0.55, 1.0, rim), rim: rim, px: px, py: py)
+    }
+
     /// Depth at a unit point: the bowl, then the level's shallows and rocks.
     static func depth(at p: CGPoint, level: LevelSpec, aspect: Float) -> Float {
         let px = Float(p.x), py = Float(p.y)
         let bx = (px - 0.5) * aspect, by = py - 0.5
         let rim = max(abs(bx) / (0.5 * aspect), abs(by) / 0.5)
         var d: Float = 1 - 0.62 * smoothstep(0.55, 1.0, rim)
+        d = shore(d, rim: rim, px: px, py: py)
         for s in level.shallows {
             let r = Float(s.radius)
             let dx = (px - Float(s.centre.x)) * aspect, dy = py - Float(s.centre.y)
@@ -1647,6 +1805,7 @@ enum DepthPainter {
                 let bx = (px - 0.5) * aspect, by = py - 0.5
                 let rim = max(abs(bx) / (0.5 * aspect), abs(by) / 0.5)
                 var d: Float = 1 - 0.62 * smoothstep(0.55, 1.0, rim)
+                d = shore(d, rim: rim, px: px, py: py)
                 for s in level.shallows {
                     let r = Float(s.radius)
                     let dx = (px - Float(s.centre.x)) * aspect, dy = py - Float(s.centre.y)

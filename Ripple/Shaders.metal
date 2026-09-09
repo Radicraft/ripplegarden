@@ -948,7 +948,11 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // softer it is drawn: a small cross blur that grows with the depth.
     float dHere = depthTex.sample(smp, wuv).r;
     // Bank: above the waterline there is no water to draw, just the ground.
-    float dry = 1.0 - smoothstep(0.05, 0.11, dHere);
+    // The waterline is not fixed. The surface here rides up and down with the
+    // wave, so a crest arriving at the shore runs up the bank and covers
+    // ground that was dry, and the trough behind it draws the water back.
+    float lift = clamp(hC * 6.0, -0.04, 0.09);
+    float dry = 1.0 - smoothstep(0.05 - lift, 0.11 - lift, dHere);
     // The bank stands a hand above the water. Its top is seen where the
     // ray meets the raised plane over ground; where only the water-level
     // point is ground, the ray has hit the bank's face at the waterline.
@@ -956,7 +960,7 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     float2 groundPt = planeUnderPixel(screenPt, bankH, cam);
     float2 guv = groundPt / cam.world.xy;
     float dGround = (any(guv < 0.0) || any(guv > 1.0)) ? 0.05 : depthTex.sample(smp, guv).r;
-    float bankTop = 1.0 - smoothstep(0.05, 0.11, dGround);
+    float bankTop = 1.0 - smoothstep(0.05 - lift, 0.11 - lift, dGround);
     // Only the deep bed goes soft; anything over the shelves, and the fish,
     // stay crisp.
     float blur = smoothstep(0.7, 1.0, dHere) * 1.1 / float(p.size.y);
@@ -1040,9 +1044,13 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         float lU = dot(floorTex.sample(smp, clamp(guv + float2(0, tx.y), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
         float3 bn = normalize(float3(-(lR - lL) * 6.0, -(lU - lD) * 6.0, 1.0));
         float lit = 0.72 + 0.45 * max(0.0, dot(bn, L));
-        // Bank's own shadow line where the top drops to the water.
-        float lip = smoothstep(0.03, 0.06, dGround) * (1.0 - smoothstep(0.06, 0.11, dGround));
-        float3 top = g0 * lit * (1.0 - 0.35 * lip);
+        // Bank's own shadow line where the top drops to the water. It moves
+        // with the waterline, so the lip follows the wave up and back.
+        float lip = smoothstep(0.03 - lift, 0.06 - lift, dGround) * (1.0 - smoothstep(0.06 - lift, 0.11 - lift, dGround));
+        // The strip the water has just left is still wet: dark at the line,
+        // drying out the further up the bank it is.
+        float damp = 0.25 * smoothstep(0.16, 0.08, dGround + lift);
+        float3 top = g0 * lit * (1.0 - 0.35 * lip) * (1.0 - damp);
         col = mix(col, top, bankTop);
     }
 

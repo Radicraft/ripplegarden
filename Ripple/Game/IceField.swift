@@ -64,6 +64,24 @@ final class IceField {
 
     var fraction: Float { cells.reduce(0, +) / Float(cells.count) }
 
+    /// The sheet stops at the water's edge: cells whose bed is dry ground
+    /// carry no ice, so no wave is ever waited on where none can reach.
+    /// `wet` is asked in unit world coordinates.
+    func trimToWater(_ wet: (CGPoint) -> Bool) {
+        let fw = CGFloat(width), fh = CGFloat(height)
+        for y in 0..<height {
+            let v = (CGFloat(y) + 0.5) / fh
+            for x in 0..<width {
+                let u = (CGFloat(x) + 0.5) / fw
+                // Only the rim can be dry: the middle is never asked.
+                let rim = max(abs(u - 0.5), abs(v - 0.5)) * 2
+                guard rim > 0.86 else { continue }
+                if !wet(CGPoint(x: u, y: v)) { cells[y * width + x] = 0 }
+            }
+        }
+        touch(0, 0, width - 1, height - 1)
+    }
+
     /// The patch to upload: its corner and size in cells, or nil if clean.
     var dirtyRect: (x: Int, y: Int, w: Int, h: Int)? {
         guard dx1 >= dx0, dy1 >= dy0 else { return nil }

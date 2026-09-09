@@ -351,11 +351,27 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     static let cameraPitch: Float = 0.52
     static let cameraDistance: Float = 1500
     static let depthScale: Float = 260
+    /// How far off vertical the player may tip the camera. At the far end the
+    /// pond is seen from the side: the banks rise and the koi foreshorten.
+    static let minPitch: Float = 0.40
+    static let maxPitch: Float = 0.95
+    /// The tilt last chosen, so it is kept from level to level and in the hub.
+    static var chosenPitch: Float = cameraPitch
+
+    /// The tilt now, and the tilt the fingers asked for. The one eases toward
+    /// the other so the camera never snaps.
+    private(set) var pitch: Float = WaterRenderer.chosenPitch
+    var pitchTarget: Float = WaterRenderer.chosenPitch {
+        didSet {
+            pitchTarget = max(WaterRenderer.minPitch, min(WaterRenderer.maxPitch, pitchTarget))
+            WaterRenderer.chosenPitch = pitchTarget
+        }
+    }
 
     /// The camera for this frame, from the view centre, the zoom and the
     /// small orbit the breath and the phone's tilt give it.
     func cameraParams(screenPoints: SIMD2<Float>, worldPoints: SIMD2<Float>) -> CameraParams {
-        let pitch = WaterRenderer.cameraPitch + camera.y * 0.0012
+        let pitch = self.pitch + camera.y * 0.0012
         let yaw = camera.x * 0.0018
         let dist = WaterRenderer.cameraDistance
         let V = SIMD3(viewCentre.x, viewCentre.y, 0)
@@ -665,6 +681,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
         if logFrames { recordFrame(now: now, dt: Double(dt)) }
         onFrame?(dt)
+        // The tilt eases toward what the fingers asked for.
+        pitch += (pitchTarget - pitch) * min(1, dt * 4)
         accumulateHolds(dt: dt)
         accumulateSwell()
         releaseScheduledSplats(now: now)

@@ -36,10 +36,12 @@ enum GameTuning {
     static let edgeBand: CGFloat = 30
     static let edgeStrokeMinTravel: CGFloat = 12
 
-    /// A piece this close to the edge has reached the bank and is cleared.
-    static let shoreTop: CGFloat = 20
-    static let shoreSide: CGFloat = 20
-    static let shoreBottom: CGFloat = 44
+    /// A piece this far into the bank has reached it and is cleared, as a
+    /// fraction of the world. The bed goes dry around rim 0.93, so a piece
+    /// inside the outermost 3.5% of the pond is on the shore.
+    static let shoreTop: CGFloat = 0.035
+    static let shoreSide: CGFloat = 0.035
+    static let shoreBottom: CGFloat = 0.05
 
     /// Pieces push each other apart so a cluster does not stack into one.
     static let separationStrength: Float = 140
@@ -80,6 +82,22 @@ enum GameTuning {
     static let stirSplatAmplitude: Float = -0.03
     static let stirPushLight: Float = 1.0
     static let stirPushHeavy: Float = 0.3
+
+    /// A finger crossing open water slower than a wake, but not idling, and
+    /// carried this far, shoves a body of water ahead of it.
+    static let sloshSlowest: Float = 30
+    static let sloshTravel: CGFloat = 40
+    /// Points along the path between the broad low splats a slosh lays.
+    static let sloshSpacing: CGFloat = 8
+    static let sloshRadius: Float = 28
+    static let sloshAmplitude: Float = -0.035
+
+    /// How far the fingers may pinch the view in and out. The water is a
+    /// grid, so past the top it only goes soft; the camera tilts instead.
+    static let zoomMin: Float = 0.8
+    static let zoomMax: Float = 1.25
+    /// Radians of tilt per point of average vertical travel by two fingers.
+    static let tiltPerPoint: Float = 0.0025
 
     /// Two taps this close in time and place drop a stone in.
     static let doubleTapSeconds: TimeInterval = 0.3
@@ -279,7 +297,10 @@ enum DebrisPhysics {
 
     /// True once the piece has reached the bank.
     static func hasReachedShore(_ d: Debris, in size: CGSize) -> Bool {
-        d.position.x < GameTuning.shoreSide || d.position.x > size.width - GameTuning.shoreSide ||
-        d.position.y < GameTuning.shoreTop || d.position.y > size.height - GameTuning.shoreBottom
+        let side = GameTuning.shoreSide * size.width
+        let top = GameTuning.shoreTop * size.height
+        let bottom = GameTuning.shoreBottom * size.height
+        return d.position.x < side || d.position.x > size.width - side ||
+               d.position.y < top || d.position.y > size.height - bottom
     }
 }
