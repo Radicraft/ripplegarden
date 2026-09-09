@@ -51,12 +51,20 @@ final class HubController: ObservableObject, TouchInput {
     private var elapsed: Float = 0
     private let progress = ProgressStore.shared
     private var placed = false
+    private var zoomTarget: Float = 0.9
+    /// Things laid along each stretch so the year shows: ice at the source,
+    /// petals, lotus, leaves; and the season's branches over the bank.
+    private var dressing: [Sprite] = []
+    private var stretchBranches: [Sprite] = []
+    private var snow: [(x: CGFloat, y: CGFloat, phase: Float, size: CGFloat)] = []
+    private var winterBand: ClosedRange<CGFloat> = 0...0
 
     init() {
         // Spring dresses the stream; the seasons show in what sits at each
         // pool. Every shoal swims here.
         var a = Library.springWoodblock
         a.shoal = ["minnow_1", "rudd_1", "stickleback_1", "minnow_2", "rudd_2", "stickleback_2"]
+        a.branch = []          // each stretch hangs its own season's branches
         art = a
         garden = Garden(art: a)
     }
@@ -65,6 +73,12 @@ final class HubController: ObservableObject, TouchInput {
 
     func attach(renderer: WaterRenderer) {
         self.renderer = renderer
+        // A fresh view: lay the stream out again on this renderer.
+        viewSize = .zero
+        placed = false
+        opening = nil
+        zoomTarget = 0.9
+        momentum = 0
         renderer.style = .woodblock
         var look = art.floor
         look.mosaicRadius = 0
@@ -102,7 +116,67 @@ final class HubController: ObservableObject, TouchInput {
         let start = pools.first { !progress.isComplete(levelID: $0.level.id) } ?? pools[0]
         centreTarget = SIMD2(Float(viewSize.width / 2), Float(start.centre.y))
         renderer?.viewCentre = centreTarget
+        dress(top: top, stretch: stretch)
         placed = true
+    }
+
+    /// The year along the stream: each season's branches over its stretch,
+    /// ice around the winter pools, blossom in spring, lotus in summer,
+    /// leaves in autumn, and snow in the air at the source.
+    private func dress(top: CGFloat, stretch: CGFloat) {
+        dressing = []
+        stretchBranches = []
+        var rng = SystemRandomNumberGenerator()
+        let w = viewSize.width
+        for (si, season) in Library.seasons.enumerated() {
+            let y0 = top + stretch * CGFloat(si)
+            let a = season.woodblock
+            // Branches reach in from both banks at the head of the stretch.
+            if a.branch.count > 2 {
+                let name = a.branch[si == 0 ? 1 : 2]
+                // Tucked into the banks at the head of the stretch, above the
+                // season's name, reaching a little way over the water.
+                let side = w * a.branchScale * 0.62
+                let head = y0 - stretch * 0.085
+                stretchBranches.append(Sprite(name, at: CGPoint(x: side * 0.32 - a.branchInset, y: head - side * 0.12),
+                                              size: CGSize(width: side, height: side), z: 0.9))
+                let small = side * 0.8
+                stretchBranches.append(Sprite(name, at: CGPoint(x: w - small * 0.3 + a.branchInset, y: head + small * 0.05),
+                                              size: CGSize(width: small, height: small), flipX: true, z: 0.9))
+            }
+            if si == 0 { winterBand = (y0 - 40)...(y0 + stretch) }
+            for pool in pools where pool.season.id == season.id {
+                let n = Int.random(in: 3...5, using: &rng)
+                for k in 0..<n {
+                    let ang = CGFloat(k) / CGFloat(n) * 2 * .pi + CGFloat.random(in: -0.4...0.4, using: &rng)
+                    let r = pool.radius * CGFloat.random(in: 0.75...1.15, using: &rng)
+                    let p = CGPoint(x: pool.centre.x + cos(ang) * r, y: pool.centre.y + sin(ang) * r * 0.9)
+                    let turn = Float.random(in: 0...(2 * .pi), using: &rng)
+                    switch season.id {
+                    case "winter":
+                        let ice = ["ice_1", "ice_2", "ice_3", "ice_4", "ice_5", "ice_8", "ice_9", "ice_10"].randomElement(using: &rng)!
+                        let sz = CGFloat.random(in: 30...56, using: &rng)
+                        dressing.append(Sprite(ice, at: p, size: CGSize(width: sz, height: sz * 0.7), rotation: turn, mode: .floater, alpha: 1, z: 0.02))
+                    case "spring":
+                        let petal = "petal_n_\(Int.random(in: 1...6, using: &rng))"
+                        let sz = CGFloat.random(in: 22...34, using: &rng)
+                        dressing.append(Sprite(petal, at: p, size: CGSize(width: sz, height: sz), rotation: turn, mode: .floater, alpha: 1))
+                    case "summer":
+                        let name = k == 0 ? "lotus_1" : "lilypad_\(Int.random(in: 2...3, using: &rng))"
+                        let sz = k == 0 ? CGFloat(72) : CGFloat.random(in: 40...60, using: &rng)
+                        dressing.append(Sprite(name, at: p, size: CGSize(width: sz, height: sz), rotation: turn, mode: .floater, alpha: 1))
+                    default:
+                        let leaf = "leaf_\(Int.random(in: 1...3, using: &rng))"
+                        let sz = CGFloat.random(in: 30...46, using: &rng)
+                        dressing.append(Sprite(leaf, at: p, size: CGSize(width: sz, height: sz), rotation: turn, mode: .floater, alpha: 1))
+                    }
+                }
+            }
+        }
+        snow = (0..<60).map { _ in
+            (CGFloat.random(in: 0...w, using: &rng), CGFloat.random(in: winterBand, using: &rng),
+             Float.random(in: 0...(2 * .pi), using: &rng), CGFloat.random(in: 6...13, using: &rng))
+        }
     }
 
     // MARK: - The stream's shape
@@ -178,10 +252,19 @@ final class HubController: ObservableObject, TouchInput {
             centreTarget.y += momentum * dt
             momentum *= exp(-dt * 2.4)
         }
+        renderer.zoom += (zoomTarget - renderer.zoom) * min(1, dt * 4)
         let halfH = Float(screenSize.height) / renderer.zoom / 2
         centreTarget.y = max(halfH, min(Float(viewSize.height) - halfH, centreTarget.y))
-        centreTarget.x = Float(viewSize.width) / 2
-        renderer.viewCentre += (centreTarget - renderer.viewCentre) * min(1, dt * 9)
+        if opening == nil { centreTarget.x = Float(viewSize.width) / 2 }
+        renderer.viewCentre += (centreTarget - renderer.viewCentre) * min(1, dt * (opening == nil ? 9 : 4))
+
+        // Snow drifts down over the source and starts again at its head.
+        for i in snow.indices {
+            snow[i].phase += dt * 0.8
+            snow[i].y += CGFloat(dt) * (14 + snow[i].size)
+            snow[i].x += CGFloat(sin(snow[i].phase)) * 0.4
+            if snow[i].y > winterBand.upperBound { snow[i].y = winterBand.lowerBound }
+        }
 
         // Weed tips read the water.
         let samples = renderer.latestSamples()
@@ -201,7 +284,7 @@ final class HubController: ObservableObject, TouchInput {
 
         feed(renderer)
 
-        if let o = opening, now - o.at > 0.55 {
+        if let o = opening, now - o.at > 0.75 {
             opening = nil
             onPlay?(o.level)
         }
@@ -252,11 +335,19 @@ final class HubController: ObservableObject, TouchInput {
         }
         // Each pool: a stone at its shoulder, a lily pad with the bud that
         // opens once the level is done; a sleeping season lies under mist.
+        var solids: [SolidInstance] = []
+        for s in dressing { paper(s) }
         for pool in pools {
             let unlocked = progress.isUnlocked(level: pool.level)
             let done = progress.isComplete(levelID: pool.level.id)
             let stone = CGPoint(x: pool.centre.x + pool.radius * 0.7, y: pool.centre.y - pool.radius * 0.55)
-            paper(Sprite(art.rock, at: stone, size: CGSize(width: 50, height: 40), z: 0.15))
+            let winter = pool.season.id == "winter"
+            let r: Float = 22 * 0.95
+            solids.append(SolidInstance(position: SIMD2(Float(stone.x), Float(stone.y)), lift: r * 0.35,
+                                        yaw: Float(pool.centre.y * 0.013), roll: Float(pool.centre.x * 0.37 + pool.centre.y * 0.11),
+                                        tilt: .zero, length: r * 1.35, radius: r, shape: 2, alpha: 1,
+                                        colourA: winter ? [0.62, 0.66, 0.72, 1] : [0.50, 0.53, 0.52, 1],
+                                        colourB: winter ? [0.62, 0.66, 0.72, 1] : [0.36, 0.55, 0.30, 1]))
             let pad = CGPoint(x: pool.centre.x - pool.radius * 0.55, y: pool.centre.y + pool.radius * 0.5)
             over.append(Sprite("lilypad_1", at: CGPoint(x: pad.x + 3, y: pad.y + 4), size: CGSize(width: 62, height: 62), mode: .shadow, alpha: 0.3, z: 0))
             paper(Sprite("lilypad_1", at: pad, size: CGSize(width: 58, height: 58), rotation: Float(pool.centre.y * 0.01), mode: .floater, alpha: 1))
@@ -274,11 +365,15 @@ final class HubController: ObservableObject, TouchInput {
         }
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
-        for s in garden.floraSprites() { paper(s, cast: 18) }
+        for s in stretchBranches { paper(s, cast: 18) }
+        for f in snow {
+            over.append(Sprite("snow_2", at: CGPoint(x: f.x, y: f.y), size: CGSize(width: f.size, height: f.size),
+                               rotation: f.phase, mode: .floater, alpha: 0.85, z: 0.5))
+        }
         over += garden.skySprites()
         renderer.surfaceSprites = over
         renderer.contactShadows = []
-        renderer.solids = []
+        renderer.solids = solids
     }
 
     // MARK: - Touch
@@ -327,6 +422,9 @@ final class HubController: ObservableObject, TouchInput {
            let pool = pools.first(where: { hypot($0.centre.x - point.x, $0.centre.y - point.y) < $0.radius }),
            progress.isUnlocked(level: pool.level) {
             renderer.addSplat(at: pool.centre, in: viewSize, radius: 40, amplitude: -0.6)
+            // The dive: the camera drops toward the pool as the water closes.
+            centreTarget = SIMD2(Float(pool.centre.x), Float(pool.centre.y))
+            zoomTarget = 1.6
             opening = (pool.level, CACurrentMediaTime())
         }
     }

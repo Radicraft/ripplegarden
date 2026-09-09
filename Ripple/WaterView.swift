@@ -90,6 +90,8 @@ struct WaterView: UIViewRepresentable {
         // The solid bodies on the water sort against each other, so the
         // drawable pass carries depth. Everything else ignores it.
         view.depthStencilPixelFormat = .depth32Float
+        // Deep water until the first frame lands, never a black flash.
+        view.clearColor = MTLClearColor(red: 0.07, green: 0.16, blue: 0.19, alpha: 1)
         view.framebufferOnly = true
         view.isOpaque = true
         view.preferredFramesPerSecond = 120
