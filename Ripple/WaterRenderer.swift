@@ -73,6 +73,11 @@ struct FloorParams {
     var bank: SIMD4<Float> = .zero
 }
 
+struct WetParams {
+    var size: SIMD4<Float>
+    var rate: SIMD4<Float>
+}
+
 struct SiltParams {
     var viewport: SIMD4<Float>
     var size: SIMD4<Float>
@@ -215,6 +220,11 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private let simPipeline: MTLComputePipelineState
     private let probePipeline: MTLComputePipelineState
     private let siltPipeline: MTLComputePipelineState
+    private let wetPipeline: MTLComputePipelineState
+    private var wetA: MTLTexture?
+    private var wetB: MTLTexture?
+    private var wetFront = 0
+    private var needsWetReset = true
     private let siltSumPipeline: MTLComputePipelineState
     private let iceBakePipeline: MTLComputePipelineState
     private let drawPipeline: MTLRenderPipelineState
@@ -436,6 +446,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         guard let stepFn = library.makeFunction(name: "wave_step"),
               let probeFn = library.makeFunction(name: "sample_field"),
               let siltFn = library.makeFunction(name: "silt_erode"),
+              let wetFn = library.makeFunction(name: "wet_update"),
               let siltSumFn = library.makeFunction(name: "silt_rowsum"),
               let iceBakeFn = library.makeFunction(name: "ice_bake"),
               let vertFn = library.makeFunction(name: "fullscreen_vertex"),
@@ -447,6 +458,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             simPipeline = try device.makeComputePipelineState(function: stepFn)
             probePipeline = try device.makeComputePipelineState(function: probeFn)
             siltPipeline = try device.makeComputePipelineState(function: siltFn)
+            wetPipeline = try device.makeComputePipelineState(function: wetFn)
             siltSumPipeline = try device.makeComputePipelineState(function: siltSumFn)
             iceBakePipeline = try device.makeComputePipelineState(function: iceBakeFn)
 
@@ -639,6 +651,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         if let a = fieldA { zero(a) }
         if let b = fieldB { zero(b) }
         needsSiltReset = true
+        needsWetReset = true
         siltLock.withLock { $0 = 1 }
     }
 
@@ -719,6 +732,11 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             fill(siltB, value: 1)
             needsSiltReset = false
         }
+        if needsWetReset, let wa = wetA, let wb = wetB {
+            fill(wa, value: 0)
+            fill(wb, value: 0)
+            needsWetReset = false
+        }
 
         // --- simulate -----------------------------------------------------------
 
@@ -792,6 +810,24 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             }
         }
         sp.coverCount = UInt32(coverCount)
+        // Wetness: once a frame, where the water is now and where it has been.
+        if let wa = wetA, let wb = wetB, let encoder = commands.makeComputeCommandEncoder() {
+            let (src, dst) = wetFront == 0 ? (wa, wb) : (wb, wa)
+            var wp = WetParams(size: SIMD4(Float(siltSize.x), Float(siltSize.y), 0, 0),
+                               rate: SIMD4(exp(-max(0.001, dt) / 28.0), 0, 0, 0))
+            encoder.setComputePipelineState(wetPipeline)
+            encoder.setTexture(src, index: 0)
+            encoder.setTexture(dst, index: 1)
+            encoder.setTexture(read, index: 2)
+            encoder.setTexture(depthTexture, index: 3)
+            encoder.setBytes(&wp, length: MemoryLayout<WetParams>.stride, index: 0)
+            let w = wetPipeline.threadExecutionWidth
+            let h = max(1, wetPipeline.maxTotalThreadsPerThreadgroup / w)
+            encoder.dispatchThreads(MTLSize(width: siltSize.x, height: siltSize.y, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: w, height: h, depth: 1))
+            encoder.endEncoding()
+            wetFront = 1 - wetFront
+        }
         if steps > 0, let encoder = commands.makeComputeCommandEncoder() {
             encoder.setComputePipelineState(siltPipeline)
             encoder.setTexture(siltA, index: 0)
@@ -926,6 +962,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(iceTexture ?? blankIce, index: 3)
             encoder.setFragmentTexture(iceTexture == nil ? blankMosaic : (textures.texture("ice_surface") ?? blankMosaic), index: 4)
             encoder.setFragmentTexture(crackTexture ?? blankCracks, index: 5)
+            encoder.setFragmentTexture((wetFront == 0 ? wetA : wetB) ?? blankIce, index: 6)
             encoder.setFragmentBytes(&rp, length: MemoryLayout<RenderParams>.stride, index: 0)
             encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
             encoder.setFragmentBuffer(iceStrikeBuffer, offset: 0, index: 2)
@@ -1086,6 +1123,9 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         siltA = device.makeTexture(descriptor: siltDesc)
         siltB = device.makeTexture(descriptor: siltDesc)
         needsSiltReset = true
+        wetA = device.makeTexture(descriptor: siltDesc)
+        wetB = device.makeTexture(descriptor: siltDesc)
+        needsWetReset = true
         // Texels inside the mosaic circle, for normalising the readback.
         let r = floorLook.mosaicRadius * Float(sh)
         siltArea = max(1, Float.pi * r * r)

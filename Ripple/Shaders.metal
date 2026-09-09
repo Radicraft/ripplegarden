@@ -281,6 +281,32 @@ kernel void sample_field(texture2d<float, access::read> field   [[texture(0)]],
 // clean, and debris has to be moved before the tile beneath it can appear.
 // ---------------------------------------------------------------------------
 
+struct WetParams {
+    float4 size;           // xy texels
+    float4 rate;           // x keep per frame (drying), y unused
+};
+
+/// Where the water has been. Ground under water is wet; ground the water has
+/// just drawn back from stays wet and dries slowly, so a wave that runs up
+/// the bank leaves its mark behind for a while.
+kernel void wet_update(texture2d<float, access::read>   wetIn  [[texture(0)]],
+                       texture2d<float, access::write>  wetOut [[texture(1)]],
+                       texture2d<float, access::sample> field  [[texture(2)]],
+                       texture2d<float, access::sample> depth  [[texture(3)]],
+                       constant WetParams &p                   [[buffer(0)]],
+                       uint2 gid                               [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(p.size.x) || gid.y >= uint(p.size.y)) { return; }
+    constexpr sampler smp(filter::linear, address::clamp_to_edge);
+    float2 uv = (float2(gid) + 0.5) / p.size.xy;
+    float h = field.sample(smp, uv).r;
+    float d = depth.sample(smp, uv).r;
+    float lift = clamp(h * 14.0, -0.05, 0.16);
+    float covered = smoothstep(0.07 - lift, 0.11 - lift, d);
+    float was = wetIn.read(gid).r;
+    wetOut.write(float4(max(was * p.rate.x, covered), 0.0, 0.0, 1.0), gid);
+}
+
 kernel void silt_erode(texture2d<float, access::read>   siltIn  [[texture(0)]],
                        texture2d<float, access::write>  siltOut [[texture(1)]],
                        texture2d<float, access::sample> field   [[texture(2)]],
@@ -895,6 +921,7 @@ fragment float4 water_fragment(VertexOut in                              [[stage
                                texture2d<float, access::sample> iceTex    [[texture(3)]],
                                texture2d<float, access::sample> iceLook   [[texture(4)]],
                                texture2d<float, access::sample> crackTex  [[texture(5)]],
+                               texture2d<float, access::sample> wetTex    [[texture(6)]],
                                constant RenderParams &p                   [[buffer(0)]],
                                constant CameraParams &cam                 [[buffer(1)]],
                                constant IceStrike *iceStrikes             [[buffer(2)]])
@@ -951,7 +978,7 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // The waterline is not fixed. The surface here rides up and down with the
     // wave, so a crest arriving at the shore runs up the bank and covers
     // ground that was dry, and the trough behind it draws the water back.
-    float lift = clamp(hC * 6.0, -0.04, 0.09);
+    float lift = clamp(hC * 14.0, -0.05, 0.16);
     float dry = 1.0 - smoothstep(0.05 - lift, 0.11 - lift, dHere);
     // The bank stands a hand above the water. Its top is seen where the
     // ray meets the raised plane over ground; where only the water-level
@@ -1032,7 +1059,8 @@ fragment float4 water_fragment(VertexOut in                              [[stage
 
     if (dry > 0.001 || bankTop > 0.001) {
         // The face: damp dark earth between the water and the bank's top.
-        float3 face = floorTex.sample(smp, wuv).rgb * float3(0.42, 0.40, 0.38);
+        float wetHere = wetTex.sample(smp, wuv).r;
+        float3 face = floorTex.sample(smp, wuv).rgb * float3(0.42, 0.40, 0.38) * (1.0 - 0.3 * wetHere);
         col = mix(col, face, dry);
         // The top, lit in relief from its own texture: a little bump from
         // the luminance so grass and pebbles catch the light.
@@ -1050,8 +1078,17 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         // The strip the water has just left is still wet: dark at the line,
         // drying out the further up the bank it is.
         float damp = 0.25 * smoothstep(0.16, 0.08, dGround + lift);
-        float3 top = g0 * lit * (1.0 - 0.35 * lip) * (1.0 - damp);
+        // Ground the water has reached is darker, and dries over half a minute.
+        float wetTop = wetTex.sample(smp, clamp(guv, 0.0, 1.0)).r;
+        float3 top = g0 * lit * (1.0 - 0.35 * lip) * (1.0 - damp) * (1.0 - 0.5 * wetTop);
         col = mix(col, top, bankTop);
+        // A thread of foam where a wave meets the shore, broken up by the
+        // water's own fine grain so it never reads as a drawn line.
+        float atLine = 1.0 - smoothstep(0.0, 0.035, abs(dHere - (0.11 - lift)));
+        float active = smoothstep(0.008, 0.04, abs(hC));
+        float grain = fbm(wuv * float2(cam.world.x / cam.world.y, 1.0) * 90.0 + p.time * 0.3, 2);
+        float foam = atLine * active * smoothstep(0.35, 0.7, grain);
+        col = mix(col, float3(0.93, 0.95, 0.94), foam * 0.9);
     }
 
     // The frozen sheet. Where the mask says ice, the water is under a slab:
