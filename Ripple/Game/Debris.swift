@@ -138,9 +138,15 @@ enum DebrisPhysics {
 
         d.velocity += force / d.mass * dt
         d.velocity *= exp(-d.drag * dt)
+        // A NaN out of the field would stay one for ever, and a piece with a
+        // NaN position never reaches the bank, so the level could not be
+        // finished. Put it back to rest instead.
+        if !d.velocity.x.isFinite || !d.velocity.y.isFinite { d.velocity = .zero }
 
         d.position.x += CGFloat(d.velocity.x * dt)
         d.position.y += CGFloat(d.velocity.y * dt)
+        if !d.position.x.isFinite { d.position.x = 0 }
+        if !d.position.y.isFinite { d.position.y = 0 }
 
         // A little roll when it moves, in a direction that stays put per piece.
         let speed = simd_length(d.velocity)

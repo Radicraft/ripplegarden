@@ -58,7 +58,9 @@ struct Sprite {
                              rotation: rotation, alpha: alpha, depth: depth,
                              wave: wave, waveAmp: waveAmp,
                              mode: mode.rawValue | (flipX ? SpriteInstance.flipX : 0) | (weed ? SpriteInstance.weed : 0) | (stands ? SpriteInstance.stands : 0),
-                             pad: SIMD2(Float((spine ?? -1) + 1), z),
+                             // Slot 0 means no spine; the rest index a buffer
+                             // with room for `maxSpines` of them.
+                             pad: SIMD2(Float(min(Tuning.maxSpines, (spine ?? -1) + 1)), z),
                              tint: tint)
     }
 }
@@ -166,14 +168,23 @@ final class TextureCache {
     /// Puts an image drawn at run time into the cache under a name, so it
     /// is drawn like any sprite, relief and all.
     func register(_ name: String, image: CGImage) {
-        guard let t = try? loader.newTexture(cgImage: image, options: [.SRGB: false, .generateMipmaps: true]) else { return }
+        guard !failed.contains(name) else { return }
+        guard let t = try? loader.newTexture(cgImage: image, options: [.SRGB: false, .generateMipmaps: true]) else {
+            // Remembered, or the caller would draw the same picture again on
+            // every frame for the rest of the run.
+            failed.insert(name)
+            return
+        }
         cache[name] = t
         sizes[name] = CGSize(width: t.width, height: t.height)
         registered[name] = image
         normals[name] = nil
     }
 
-    func has(_ name: String) -> Bool { cache[name] != nil }
+    func has(_ name: String) -> Bool { cache[name] != nil || failed.contains(name) }
+
+    /// Names whose image would not become a texture, so it is not tried twice.
+    private var failed: Set<String> = []
 
     func texture(_ name: String) -> MTLTexture? {
         if let t = cache[name] { return t }
@@ -284,7 +295,6 @@ final class SpriteBatch {
         encoder.setVertexBytes(&camera, length: MemoryLayout<CameraParams>.stride, index: 4)
         encoder.setVertexTexture(field, index: 0)
         encoder.setFragmentBytes(&p, length: MemoryLayout<SpriteParams>.stride, index: 0)
-        if let ice { encoder.setFragmentTexture(ice, index: 2) }
 
         var runStart = 0
         while runStart < count {
@@ -294,6 +304,9 @@ final class SpriteBatch {
             if let tex = textures.texture(name) {
                 encoder.setFragmentTexture(tex, index: 0)
                 encoder.setFragmentTexture(textures.normal(name) ?? tex, index: 1)
+                // The fragment shader names an ice mask whether or not there
+                // is ice, and a draw with nothing bound there is an error.
+                encoder.setFragmentTexture(ice ?? tex, index: 2)
                 encoder.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint16,
                                               indexBuffer: indexBuffer, indexBufferOffset: 0,
                                               instanceCount: runEnd - runStart, baseVertex: 0,

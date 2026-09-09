@@ -296,6 +296,9 @@ struct StoreCard: View {
             }
         }
         .padding(.horizontal, 28)
+        // The first fetch runs at launch and may have found nothing (no
+        // network yet). Ask again while the card is open.
+        .task { if store.products.isEmpty { await store.load() } }
     }
 }
 

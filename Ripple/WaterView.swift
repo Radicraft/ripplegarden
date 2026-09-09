@@ -21,7 +21,17 @@ final class TouchMetalView: MTKView {
     override init(frame frameRect: CGRect, device: MTLDevice?) {
         super.init(frame: frameRect, device: device)
         isMultipleTouchEnabled = true
+        // The pond stops drawing while the app is away. Work sent to the GPU
+        // from the background is refused, and the app is taken down with it.
+        let centre = NotificationCenter.default
+        centre.addObserver(self, selector: #selector(sleepDraws),
+                           name: UIApplication.didEnterBackgroundNotification, object: nil)
+        centre.addObserver(self, selector: #selector(wakeDraws),
+                           name: UIApplication.willEnterForegroundNotification, object: nil)
     }
+
+    @objc private func sleepDraws() { isPaused = true }
+    @objc private func wakeDraws() { isPaused = false }
 
     required init(coder: NSCoder) { fatalError("not used") }
 

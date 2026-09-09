@@ -154,7 +154,7 @@ final class IceField {
     /// the nearest seed, the distance to the edge it shares with `b` is the
     /// distance from the point to the plane halfway between them.
     func crack(at p: CGPoint) -> (dist: Float, strength: Float) {
-        guard let ai = nearestSeed(at: p) else { return (1e9, 0) }
+        guard !strikes.isEmpty, let ai = nearestSeed(at: p) else { return (1e9, 0) }
         let a = seeds[ai]
         let px = Float(p.x), py = Float(p.y)
         var best = Float.greatestFiniteMagnitude

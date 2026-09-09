@@ -230,14 +230,18 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private var siltB: MTLTexture?
     private var mosaicTexture: MTLTexture?
     private var iceTexture: MTLTexture?
-    private var blankIce: MTLTexture?
-    private var blankMosaic: MTLTexture?
+    /// Stand-ins for the passes that name a texture they may not have this
+    /// frame. A pass with a slot left unbound is an error, not an empty read.
+    private let blankIce: MTLTexture
+    private let blankMosaic: MTLTexture
     /// The crack distance field: rgba8, two texels per world point.
     private var crackTexture: MTLTexture?
-    private var blankCracks: MTLTexture?
-    private var iceSeedBuffer: MTLBuffer?
-    private var iceStrikeBuffer: MTLBuffer?
-    private var iceRangeBuffer: MTLBuffer?
+    private let blankCracks: MTLTexture
+    private let iceSeedBuffer: MTLBuffer
+    private let iceStrikeBuffer: MTLBuffer
+    private let iceRangeBuffer: MTLBuffer
+    /// Scratch for the ice upload, kept between frames.
+    private var iceBytes: [UInt8] = []
     private var iceSeedCount = 0
     private var iceStrikeCount = 0
     private var cracksDirty = false
@@ -467,6 +471,27 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
               let sbuf = device.makeBuffer(length: MemoryLayout<Float>.stride * 2048, options: .storageModeShared),
               let spbuf = device.makeBuffer(length: MemoryLayout<SIMD4<Float>>.stride * 13 * Tuning.maxSpines, options: .storageModeShared)
         else { return nil }
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false)
+        d.usage = .shaderRead
+        let iceDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg8Unorm, width: 1, height: 1, mipmapped: false)
+        iceDesc.usage = .shaderRead
+        // No cracks anywhere: r = 1 is "far from any crack", g = 0 is "no edge".
+        let crackDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
+        crackDesc.usage = .shaderRead
+        guard let mosaic = device.makeTexture(descriptor: d),
+              let ice = device.makeTexture(descriptor: iceDesc),
+              let cracks = device.makeTexture(descriptor: crackDesc),
+              let iseeds = device.makeBuffer(length: MemoryLayout<IceSeedGPU>.stride * WaterRenderer.maxIceSeeds, options: .storageModeShared),
+              let istrikes = device.makeBuffer(length: MemoryLayout<IceStrikeGPU>.stride * WaterRenderer.maxIceStrikes, options: .storageModeShared),
+              let iranges = device.makeBuffer(length: MemoryLayout<SIMD2<UInt32>>.stride * WaterRenderer.maxIceStrikes, options: .storageModeShared)
+        else { return nil }
+        blankMosaic = mosaic
+        blankIce = ice
+        blankCracks = cracks
+        iceSeedBuffer = iseeds
+        iceStrikeBuffer = istrikes
+        iceRangeBuffer = iranges
+
         splatBuffer = buf
         probeBuffer = pbuf
         resultBuffer = rbuf
@@ -479,25 +504,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         self.queue = queue
         super.init()
 
-        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false)
-        d.usage = .shaderRead
-        blankMosaic = device.makeTexture(descriptor: d)
         var zero: UInt32 = 0
-        blankMosaic?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zero, bytesPerRow: 4)
-        let iceDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg8Unorm, width: 1, height: 1, mipmapped: false)
-        iceDesc.usage = .shaderRead
-        blankIce = device.makeTexture(descriptor: iceDesc)
+        blankMosaic.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zero, bytesPerRow: 4)
         var zeroBytes: UInt16 = 0
-        blankIce?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zeroBytes, bytesPerRow: 2)
-        // No cracks anywhere: r = 1 is "far from any crack", g = 0 is "no edge".
-        let crackDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
-        crackDesc.usage = .shaderRead
-        blankCracks = device.makeTexture(descriptor: crackDesc)
+        blankIce.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zeroBytes, bytesPerRow: 2)
         var farBytes: UInt32 = 0x000000FF   // r = 255, gba = 0 (little endian)
-        blankCracks?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &farBytes, bytesPerRow: 4)
-        iceSeedBuffer = device.makeBuffer(length: MemoryLayout<IceSeedGPU>.stride * WaterRenderer.maxIceSeeds, options: .storageModeShared)
-        iceStrikeBuffer = device.makeBuffer(length: MemoryLayout<IceStrikeGPU>.stride * WaterRenderer.maxIceStrikes, options: .storageModeShared)
-        iceRangeBuffer = device.makeBuffer(length: MemoryLayout<SIMD2<UInt32>>.stride * WaterRenderer.maxIceStrikes, options: .storageModeShared)
+        blankCracks.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &farBytes, bytesPerRow: 4)
     }
 
     /// Caps on the fractured sheet: the bake buffers are sized for these.
@@ -829,8 +841,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(depthTexture, index: 3)
                 encoder.setFragmentTexture(bedTexture ?? blankMosaic, index: 4)
                 encoder.setFragmentTexture(read, index: 5)
-                for (k, name) in bankPaintings.prefix(4).enumerated() {
-                    let tex = bank.x > 0 ? (textures.texture(name) ?? textures.texture("bank_tile") ?? blankMosaic) : blankMosaic
+                // The shader declares four bank slots: all four are bound
+                // every frame, painted or not, or the draw has no texture there.
+                for k in 0..<4 {
+                    let name = k < bankPaintings.count ? bankPaintings[k] : ""
+                    let painted = bank.x > 0 && !name.isEmpty
+                    let tex = painted ? (textures.texture(name) ?? textures.texture("bank_tile") ?? blankMosaic) : blankMosaic
                     encoder.setFragmentTexture(tex, index: 6 + k)
                 }
                 encoder.setFragmentBytes(&fp, length: MemoryLayout<FloorParams>.stride, index: 0)
@@ -869,7 +885,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(crackTexture ?? blankCracks, index: 5)
             encoder.setFragmentBytes(&rp, length: MemoryLayout<RenderParams>.stride, index: 0)
             encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
-            if let iceStrikeBuffer { encoder.setFragmentBuffer(iceStrikeBuffer, offset: 0, index: 2) }
+            encoder.setFragmentBuffer(iceStrikeBuffer, offset: 0, index: 2)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
             spriteParams.screen.w = 0
@@ -1044,6 +1060,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         floorBase = device.makeTexture(descriptor: floorDesc)
         floorTexture = device.makeTexture(descriptor: floorDesc)
         needsFloorBake = true
+        // The crack field is laid out over the world, so a new size needs a
+        // new one rather than the old one stretched.
+        if crackTexture != nil {
+            crackTexture = nil
+            cracksDirty = true
+        }
 
         reset()
     }
@@ -1054,7 +1076,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// The Voronoi seeds and strikes of the fractured sheet; the crack
     /// distance field is re-baked from them before the next frame.
     func setIceCracks(seeds: [IceSeedGPU], strikes: [IceStrikeGPU]) {
-        guard let seedBuf = iceSeedBuffer, let strikeBuf = iceStrikeBuffer, let rangeBuf = iceRangeBuffer else { return }
+        let seedBuf = iceSeedBuffer, strikeBuf = iceStrikeBuffer, rangeBuf = iceRangeBuffer
         let strikeCount = min(strikes.count, WaterRenderer.maxIceStrikes)
         guard strikeCount > 0 else {
             iceSeedCount = 0
@@ -1065,10 +1087,15 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
         // The bake walks one strike's seeds at a time, so group them by strike
         // (a counting sort) and hand the kernel a first/count range per strike.
+        // The strike a seed names is checked before it is turned into an
+        // index: a number that is not one traps on the way to Int.
+        func slot(_ s: IceSeedGPU) -> Int? {
+            guard s.strike >= 0, s.strike < Float(strikeCount), s.pos.x.isFinite, s.pos.y.isFinite else { return nil }
+            return Int(s.strike)
+        }
         var counts = [Int](repeating: 0, count: strikeCount)
         for s in seeds {
-            let i = Int(s.strike)
-            if i >= 0 && i < strikeCount && s.pos.x.isFinite && s.pos.y.isFinite { counts[i] += 1 }
+            if let i = slot(s) { counts[i] += 1 }
         }
         var starts = [Int](repeating: 0, count: strikeCount)
         var total = 0
@@ -1083,8 +1110,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         var cursor = starts
         seedBuf.contents().withMemoryRebound(to: IceSeedGPU.self, capacity: WaterRenderer.maxIceSeeds) { ptr in
             for s in seeds {
-                let i = Int(s.strike)
-                guard i >= 0, i < strikeCount, s.pos.x.isFinite, s.pos.y.isFinite else { continue }
+                guard let i = slot(s) else { continue }
                 guard cursor[i] < starts[i] + counts[i] else { continue }
                 ptr[cursor[i]] = s
                 cursor[i] += 1
@@ -1106,17 +1132,23 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// water pass reads it.
     private func bakeCracks(commands: MTLCommandBuffer, worldPoints: SIMD2<Float>) {
         guard cracksDirty, worldPoints.x > 1, worldPoints.y > 1 else { return }
-        let w = max(2, Int((worldPoints.x * 2).rounded()))
-        let h = max(2, Int((worldPoints.y * 2).rounded()))
+        // Nothing has ever broken here (an open pond, or the map): there is no
+        // field to bake and no texture worth making.
+        if iceStrikeCount == 0, crackTexture == nil { cracksDirty = false; return }
+        // Two texels per world point, but never past the largest texture
+        // Metal takes: a tall world (the hub) would ask for more.
+        let cap: Float = 8192
+        let fit = min(1, cap / max(worldPoints.x * 2, worldPoints.y * 2))
+        let w = max(2, Int((worldPoints.x * 2 * fit).rounded()))
+        let h = max(2, Int((worldPoints.y * 2 * fit).rounded()))
         if crackTexture == nil || crackTexture!.width != w || crackTexture!.height != h {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: w, height: h, mipmapped: false)
             d.usage = [.shaderRead, .shaderWrite]
             d.storageMode = .private
             crackTexture = device.makeTexture(descriptor: d)
         }
-        guard let crackTexture, let seedBuf = iceSeedBuffer, let strikeBuf = iceStrikeBuffer,
-              let rangeBuf = iceRangeBuffer,
-              let encoder = commands.makeComputeCommandEncoder() else { return }
+        guard let crackTexture, let encoder = commands.makeComputeCommandEncoder() else { return }
+        let seedBuf = iceSeedBuffer, strikeBuf = iceStrikeBuffer, rangeBuf = iceRangeBuffer
         var params = IceBakeParams(world: worldPoints, tex: SIMD2(UInt32(w), UInt32(h)),
                                    strikeCount: UInt32(iceSeedCount > 0 ? iceStrikeCount : 0))
         encoder.setComputePipelineState(iceBakePipeline)
@@ -1135,19 +1167,25 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
     /// Uploads the ice (red) and finger-scuff (green) masks over the world; nil clears them.
     func setIce(_ cells: [Float]?, scuff: [Float]? = nil, width: Int, height: Int) {
-        guard let cells, width > 0, height > 0 else { iceTexture = nil; return }
+        guard let cells, width > 0, height > 0, cells.count >= width * height else { iceTexture = nil; return }
         if iceTexture == nil || iceTexture!.width != width || iceTexture!.height != height {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg8Unorm, width: width, height: height, mipmapped: false)
             d.usage = .shaderRead
             d.storageMode = .shared
             iceTexture = device.makeTexture(descriptor: d)
         }
-        var bytes = [UInt8](repeating: 0, count: width * height * 2)
+        // The sheet is uploaded whenever a finger scuffs it, so the scratch is
+        // kept and written in place rather than a megabyte asked for and given
+        // back every time.
+        if iceBytes.count != width * height * 2 { iceBytes = [UInt8](repeating: 0, count: width * height * 2) }
+        // A scuff map that does not match the sheet is ignored rather than
+        // read off its end.
+        let scuffed = (scuff?.count ?? 0) >= width * height ? scuff : nil
         for i in 0..<(width * height) {
-            bytes[i * 2] = UInt8(max(0, min(255, cells[i] * 255)))
-            if let c = scuff { bytes[i * 2 + 1] = UInt8(max(0, min(255, c[i] * 255))) }
+            iceBytes[i * 2] = UInt8(max(0, min(255, cells[i] * 255)))
+            if let c = scuffed { iceBytes[i * 2 + 1] = UInt8(max(0, min(255, c[i] * 255))) }
         }
-        bytes.withUnsafeBytes { raw in
+        iceBytes.withUnsafeBytes { raw in
             iceTexture?.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: raw.baseAddress!, bytesPerRow: width * 2)
         }
     }

@@ -86,6 +86,11 @@ final class GameController: ObservableObject, TouchInput {
         var isStroke = false
         var sinceHaptic: CGFloat = 0
     }
+    /// The waits that run after the pond is clear, and the one that takes the
+    /// title card away. Both are dropped when the level changes, or a stale
+    /// one would finish over the next level.
+    private var celebration: Task<Void, Never>?
+    private var titleWait: Task<Void, Never>?
     private var edgeStrokes: [Int: EdgeStroke] = [:]
     private var pondTouches: [Int: Float] = [:]
     private var holdSounding: Set<Int> = []
@@ -123,6 +128,8 @@ final class GameController: ObservableObject, TouchInput {
     /// The player has gone back to the map: the pond's air fades, held
     /// fingers are let go.
     func leave() {
+        celebration?.cancel()
+        titleWait?.cancel()
         sound.stopAmbience()
         for id in Array(holdSounding) { sound.holdEnd(id: id) }
         holdSounding.removeAll()
@@ -139,6 +146,8 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     func attach(renderer: WaterRenderer) {
+        // The view being replaced must stop driving the level.
+        self.renderer?.onFrame = nil
         self.renderer = renderer
         renderer.style = style
         garden.textureSize = { [weak renderer] name in renderer?.textures.size(name) ?? CGSize(width: 1, height: 1) }
@@ -157,6 +166,8 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     func load(level newLevel: LevelSpec) {
+        celebration?.cancel()
+        titleWait?.cancel()
         level = newLevel
         season = Library.season(for: newLevel)
         art = season.art(for: style)
@@ -188,8 +199,9 @@ final class GameController: ObservableObject, TouchInput {
         if viewSize != .zero { place() }
 
         showTitle = true
-        Task { @MainActor [weak self] in
+        titleWait = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2.6))
+            if Task.isCancelled { return }
             self?.showTitle = false
         }
         sound.startAmbience(named: newLevel.rain ? "amb_rain_light" : "amb_\(season.id)")
@@ -222,10 +234,12 @@ final class GameController: ObservableObject, TouchInput {
             let radius: CGFloat
             switch p.cls {
             case .light:
-                name = art.light[p.variant % art.light.count]
+                // A season with nothing painted for this class falls back to
+                // the piece every season has, rather than dividing by zero.
+                name = art.light.isEmpty ? "leaf_1" : art.light[p.variant % art.light.count]
                 radius = 15 * p.scale
             case .heavy:
-                name = art.heavy[p.variant % art.heavy.count]
+                name = art.heavy.isEmpty ? "driftwood_1" : art.heavy[p.variant % art.heavy.count]
                 radius = 40 * p.scale
             }
             let d = Debris(id: i, cls: p.cls, sprite: name,
@@ -990,13 +1004,15 @@ final class GameController: ObservableObject, TouchInput {
         iceField?.sinkAll(time: renderer?.clock ?? 0)
         let target = level.bloomTarget
         progress.markComplete(levelID: level.id, seasonID: season.id, bloomStage: target)
-        Task { @MainActor [weak self] in
+        celebration = Task { @MainActor [weak self] in
             guard let self else { return }
             try? await Task.sleep(for: .seconds(0.8))
+            if Task.isCancelled { return }
             self.sound.complete()
             self.haptics.complete()
             self.garden.bloom(to: target, duration: 5.0)
             try? await Task.sleep(for: .seconds(5.2))
+            if Task.isCancelled { return }
             withAnimation(.easeOut(duration: 0.8)) { self.phase = .complete }
         }
     }

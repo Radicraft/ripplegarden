@@ -84,8 +84,9 @@ final class Garden {
         bloomRate = 0
         petals = []
         petalRate = 0
+        petalAccumulator = 0
         koi = (0..<min(2, art.koi.count)).map { i in
-            Koi(texture: art.koi[i], forward: art.koiForward[i % art.koiForward.count], seed: i,
+            Koi(texture: art.koi[i], forward: art.koiForward.isEmpty ? .pi / 2 : art.koiForward[i % art.koiForward.count], seed: i,
                 waveAmp: art.koiWaveAmp)
         }
         // Weed clumps rooted in the bed, mostly toward the banks where it is
@@ -148,7 +149,7 @@ final class Garden {
             for _ in 0..<count {
                 var p = CGPoint.zero
                 for _ in 0..<8 {
-                    p = CGPoint(x: CGFloat.random(in: 10...(w - 10), using: &rng), y: CGFloat.random(in: 60...(h - 40), using: &rng))
+                    p = CGPoint(x: CGFloat.random(in: 10...max(10, w - 10), using: &rng), y: CGFloat.random(in: 60...max(60, h - 40), using: &rng))
                     let d = depthAt(p)
                     // rimBias 1 wants the shelves, 0 does not care.
                     if Float.random(in: 0...1, using: &rng) > d * rimBias { break }
@@ -295,6 +296,9 @@ final class Garden {
                 p.scale *= 0.55
                 petals.append(p)
             }
+            // At the cap the accumulator would climb all level and then dump
+            // the backlog the moment a flake dies.
+            petalAccumulator = min(petalAccumulator, 1)
         }
 
         if petalRate > 0 {
@@ -305,6 +309,7 @@ final class Garden {
                 petals.append(FallingPetal(x: CGFloat.random(in: 0...size.width),
                                            y: -20, texture: art.petalParticle))
             }
+            petalAccumulator = min(petalAccumulator, 1)
         }
         for p in petals {
             p.update(dt: dt)
@@ -479,8 +484,12 @@ final class Garden {
         guard size.width > 0 else { return [] }
         var out: [Sprite] = []
         let w = size.width
-        let stage = bloomStage
-        let lo = Int(floor(stage)), hi = min(3, lo + 1)
+        guard !art.branch.isEmpty else { return out }
+        // The stage is kept inside the states this season actually has, and a
+        // stage that is not a number is read as the bare one.
+        let top = art.branch.count - 1
+        let stage = bloomStage.isFinite ? min(Float(top), max(0, bloomStage)) : 0
+        let lo = Int(floor(stage)), hi = min(top, lo + 1)
         let t = stage - Float(lo)
 
         func branch(_ index: Int, alpha: Float) {
@@ -554,8 +563,8 @@ final class Koi {
                 rocks: [(centre: CGPoint, radius: CGFloat)] = []) -> (at: CGPoint, radius: Float, amplitude: Float)? {
         if !started {
             started = true
-            position = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)),
-                               y: CGFloat.random(in: 140...(size.height - 160)))
+            position = CGPoint(x: CGFloat.random(in: 80...max(80, size.width - 80)),
+                               y: CGFloat.random(in: 140...max(140, size.height - 160)))
             pickTarget(in: size)
         }
         var splash: (at: CGPoint, radius: Float, amplitude: Float)?
@@ -757,8 +766,8 @@ final class Koi {
         var best: CGPoint?
         var bestScore: Float = -1
         for _ in 0..<16 {
-            let candidate = CGPoint(x: CGFloat.random(in: 90...(size.width - 90)),
-                                    y: CGFloat.random(in: 150...(size.height - 170)))
+            let candidate = CGPoint(x: CGFloat.random(in: 90...max(90, size.width - 90)),
+                                    y: CGFloat.random(in: 150...max(150, size.height - 170)))
             let dx = Float(candidate.x - position.x), dy = Float(candidate.y - position.y)
             let dist = hypot(dx, dy)
             var diff = atan2(dy, dx) - heading
@@ -783,8 +792,8 @@ final class Koi {
         depthRate = 0.55
         // Reappear somewhere new only if the fish is fully hidden.
         if depth > 0.95 {
-            position = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)),
-                               y: CGFloat.random(in: 140...(size.height - 160)))
+            position = CGPoint(x: CGFloat.random(in: 80...max(80, size.width - 80)),
+                               y: CGFloat.random(in: 140...max(140, size.height - 160)))
             pickTarget(in: size)
             heading = atan2(Float(target.y - position.y), Float(target.x - position.x))
             straightTrail()
@@ -939,7 +948,7 @@ final class Critter {
         crossing = true
         started = true
         let fromLeft = Bool.random()
-        position = CGPoint(x: fromLeft ? -40 : bounds.width + 40, y: CGFloat.random(in: 120...(bounds.height * 0.6)))
+        position = CGPoint(x: fromLeft ? -40 : bounds.width + 40, y: CGFloat.random(in: 120...max(120, bounds.height * 0.6)))
         heading = fromLeft ? Float.random(in: -0.3...0.3) : Float.pi + Float.random(in: -0.3...0.3)
         speed = 120
     }
@@ -951,8 +960,8 @@ final class Critter {
     func update(dt: Float, now: TimeInterval, in bounds: CGSize) {
         if !started {
             started = true
-            position = CGPoint(x: CGFloat.random(in: 60...(bounds.width - 60)),
-                               y: CGFloat.random(in: 140...(bounds.height - 200)))
+            position = CGPoint(x: CGFloat.random(in: 60...max(60, bounds.width - 60)),
+                               y: CGFloat.random(in: 140...max(140, bounds.height - 200)))
         }
         if crossing {
             heading += sin(Float(now) * 6) * 0.02
@@ -1027,8 +1036,8 @@ final class Dragonfly {
     init(body: String, size: CGSize, now: TimeInterval) {
         self.body = body
         let fromLeft = Bool.random()
-        position = CGPoint(x: fromLeft ? -50 : size.width + 50, y: CGFloat.random(in: 140...(size.height * 0.55)))
-        target = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)), y: CGFloat.random(in: 140...(size.height * 0.6)))
+        position = CGPoint(x: fromLeft ? -50 : size.width + 50, y: CGFloat.random(in: 140...max(140, size.height * 0.55)))
+        target = CGPoint(x: CGFloat.random(in: 80...max(80, size.width - 80)), y: CGFloat.random(in: 140...max(140, size.height * 0.6)))
         heading = atan2(Float(target.y - position.y), Float(target.x - position.x))
         hoverUntil = 0
         startedAt = now
@@ -1048,7 +1057,7 @@ final class Dragonfly {
                 if hops >= 2 {
                     target = CGPoint(x: position.x < size.width / 2 ? -80 : size.width + 80, y: position.y + CGFloat.random(in: -80...80))
                 } else {
-                    target = CGPoint(x: CGFloat.random(in: 80...(size.width - 80)), y: CGFloat.random(in: 140...(size.height * 0.6)))
+                    target = CGPoint(x: CGFloat.random(in: 80...max(80, size.width - 80)), y: CGFloat.random(in: 140...max(140, size.height * 0.6)))
                 }
             }
             // Hovering: a tiny drift, the heading holds.
@@ -1183,7 +1192,7 @@ final class Heron {
     init(size: CGSize) {
         width = size.width * 1.1
         let fromLeft = Bool.random()
-        position = CGPoint(x: fromLeft ? -size.width * 0.8 : size.width * 1.8, y: CGFloat.random(in: 160...(size.height - 200)))
+        position = CGPoint(x: fromLeft ? -size.width * 0.8 : size.width * 1.8, y: CGFloat.random(in: 160...max(160, size.height - 200)))
         let dir: CGFloat = fromLeft ? 1 : -1
         velocity = CGVector(dx: dir * CGFloat.random(in: 110...150), dy: CGFloat.random(in: -25...25))
         rotation = Float(atan2(velocity.dy, velocity.dx)) + (fromLeft ? 0 : .pi) + (fromLeft ? 0 : 0)

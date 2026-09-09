@@ -17,7 +17,7 @@ enum LabelSprites {
     /// A washi chip carrying a level's name; a blossom dot when it is done.
     /// Returns the texture name. Drawn at 2x for the retina.
     static func chip(_ text: String, done: Bool, textures: TextureCache, wide: Bool = false) -> String {
-        let name = "label_chip_\(text)_\(done ? 1 : 0)"
+        let name = "label_chip_\(text)_\(done ? 1 : 0)_\(wide ? "w" : "n")"
         if textures.has(name) { return name }
         let size = wide ? CGSize(width: 320, height: 84) : CGSize(width: 180, height: 76)
         let renderer = UIGraphicsImageRenderer(size: size, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; f.opaque = false; return f }())
@@ -50,7 +50,8 @@ enum LabelSprites {
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: paper]
         let s = NSAttributedString(string: text, attributes: attrs)
         let b = s.size()
-        let size = CGSize(width: ceil(b.width) + 40, height: ceil(b.height) + 40)
+        // Long words are cut rather than asking for a texture no device takes.
+        let size = CGSize(width: min(4096, ceil(b.width) + 40), height: min(4096, ceil(b.height) + 40))
         let renderer = UIGraphicsImageRenderer(size: size, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; f.opaque = false; return f }())
         let image = renderer.image { ctx in
             ctx.cgContext.setShadow(offset: CGSize(width: 0, height: 4), blur: 12, color: UIColor.black.withAlphaComponent(0.45).cgColor)

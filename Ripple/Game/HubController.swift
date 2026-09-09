@@ -41,7 +41,9 @@ final class HubController: ObservableObject, TouchInput {
     static let gridLongSide = 1400
 
     private(set) var pools: [Pool] = []
-    private var renderer: WaterRenderer?
+    /// Weak, like the level's: the Metal view owns the renderer, and the
+    /// hub must not keep a whole second one alive while a level plays.
+    private weak var renderer: WaterRenderer?
     private var garden: Garden
     private let art: ArtSet
     private var viewSize = CGSize.zero
@@ -84,6 +86,9 @@ final class HubController: ObservableObject, TouchInput {
     // MARK: - Wiring
 
     func attach(renderer: WaterRenderer) {
+        // An older view still fading out must stop driving the hub, or the
+        // stream would be stepped twice a frame.
+        self.renderer?.onFrame = nil
         self.renderer = renderer
         // A fresh view: lay the stream out again on this renderer.
         viewSize = .zero
@@ -143,7 +148,8 @@ final class HubController: ObservableObject, TouchInput {
         garden.configure(art: art, size: viewSize, bloomStage: 1.5)
         garden.rocks = pools.map { (CGPoint(x: $0.centre.x + $0.radius * 0.7, y: $0.centre.y - $0.radius * 0.55), 22) }
         // Start at the source, on the first pool not yet done.
-        let start = pools.first { !progress.isComplete(levelID: $0.level.id) } ?? pools[0]
+        guard let first = pools.first else { placed = true; return }
+        let start = pools.first { !progress.isComplete(levelID: $0.level.id) } ?? first
         centreTarget = SIMD2(Float(viewSize.width / 2), Float(start.centre.y))
         if ProcessInfo.processInfo.arguments.contains("-hubTop") { centreTarget.y = Float(top) }
         // `-hubTap`: a scripted tap on the first pool after three seconds.
@@ -330,7 +336,10 @@ final class HubController: ObservableObject, TouchInput {
                 }
                 guard let edge = found else { continue }
                 let winter = y > winterBand.lowerBound
-                let seasonIndex = min(3, max(0, Int((0.915 - y / h) / ((0.915 - 0.06) / 4))))
+                // The stretch this point falls in, kept inside the seasons we
+                // actually have so a fifth season never walks off the end.
+                let stretchIndex = Int((0.915 - y / h) / ((0.915 - 0.06) / 4))
+                let seasonIndex = min(Library.seasons.count - 1, max(0, stretchIndex))
                 let reedSet = Library.seasons[seasonIndex].woodblock.reeds
                 let flip = side == 1
                 let roll = CGFloat.random(in: 0...1, using: &rng)
@@ -503,9 +512,10 @@ final class HubController: ObservableObject, TouchInput {
             if !unlocked {
                 // Mist: cloud sprites low over the pool.
                 for k in 0..<2 {
+                    guard let name = cloud(k) else { break }
                     let c = CGPoint(x: pool.centre.x + CGFloat(k * 70 - 35) + CGFloat(sin(Double(elapsed) * 0.13 + Double(k))) * 18,
                                     y: pool.centre.y + CGFloat(k * 24 - 12))
-                    over.append(Sprite(art.clouds[k % max(1, art.clouds.count)], at: c, size: CGSize(width: 320, height: 200),
+                    over.append(Sprite(name, at: c, size: CGSize(width: 320, height: 200),
                                        mode: .floater, alpha: 0.28, z: 0.3))
                 }
             }
@@ -516,7 +526,8 @@ final class HubController: ObservableObject, TouchInput {
         if let tex = renderer.textures as TextureCache? {
             for pool in pools {
                 let idx = Library.levels(in: pool.season).firstIndex { $0.id == pool.level.id } ?? 0
-                let word = ["one", "two", "three", "four", "five", "six"][idx]
+                let words = ["one", "two", "three", "four", "five", "six"]
+                let word = idx < words.count ? words[idx] : "\(idx + 1)"
                 let done = progress.isComplete(levelID: pool.level.id)
                 let unlocked = progress.isUnlocked(level: pool.level)
                 let name = LabelSprites.chip(word, done: done, textures: tex)
@@ -545,15 +556,17 @@ final class HubController: ObservableObject, TouchInput {
         for s in garden.petalSprites() { paper(s) }
         for s in stretchBranches { paper(s, cast: 18) }
         for (i, m) in sourceMist.enumerated() {
+            guard let name = cloud(i) else { break }
             let drift = CGFloat(sin(Double(elapsed) * 0.09 + Double(m.phase))) * 24
-            over.append(Sprite(art.clouds[i % max(1, art.clouds.count)], at: CGPoint(x: m.x + drift, y: m.y),
+            over.append(Sprite(name, at: CGPoint(x: m.x + drift, y: m.y),
                                size: CGSize(width: m.size * 1.6, height: m.size), rotation: m.phase * 0.05,
                                mode: .floater, alpha: 0.55, z: 0.35))
         }
         // Foam at each lip: pale wisps that swell and shrink.
         for (i, f) in foam.enumerated() {
+            guard let name = cloud(i) else { break }
             let pulse = 0.75 + 0.25 * CGFloat(sin(Double(elapsed) * 1.7 + Double(f.phase)))
-            over.append(Sprite(art.clouds[i % max(1, art.clouds.count)], at: CGPoint(x: f.x, y: f.y),
+            over.append(Sprite(name, at: CGPoint(x: f.x, y: f.y),
                                size: CGSize(width: f.size * 2.2 * pulse, height: f.size * pulse), rotation: f.phase * 0.1,
                                mode: .floater, alpha: 0.42, z: 0.02))
         }
@@ -570,6 +583,11 @@ final class HubController: ObservableObject, TouchInput {
     // MARK: - Touch
 
     private func worldPoint(_ p: CGPoint) -> CGPoint { renderer?.worldPoint(screen: p) ?? p }
+
+    /// A cloud sprite by count, or nothing when the season has none painted.
+    private func cloud(_ i: Int) -> String? {
+        art.clouds.isEmpty ? nil : art.clouds[i % art.clouds.count]
+    }
 
     func touchBegan(id: Int, at screen: CGPoint, in size: CGSize, weight: Float) {
         screenSize = size

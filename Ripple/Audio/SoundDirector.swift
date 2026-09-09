@@ -80,7 +80,12 @@ final class SoundDirector {
         }
         loadManifest()
         try? engine.start()
-        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in self?.tick() }
+        // The timer outlives the director unless it is told to stop, and a
+        // level left behind would leave one ticking for the rest of the run.
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            self.tick()
+        }
     }
 
     private func loadManifest() {
@@ -189,7 +194,9 @@ final class SoundDirector {
         if held.values.contains(where: { $0 === v }) { return nil }
         v.player.stop()
         guard running() else { return nil }
-        let vary = 1 + Float.random(in: -e.pitchVariation...e.pitchVariation)
+        // A negative variation in the manifest would be a backwards range.
+        let spread = abs(e.pitchVariation)
+        let vary = 1 + Float.random(in: -spread...spread)
         v.speed.rate = max(0.5, min(2, pitch * vary))
         v.player.volume = e.gain * gain
         v.player.pan = x.map { max(-0.7, min(0.7, ($0 - 0.5) * 1.4)) } ?? 0

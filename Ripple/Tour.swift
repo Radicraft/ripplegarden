@@ -29,6 +29,7 @@ final class Tour {
             exit?()
             try? await Task.sleep(for: .seconds(4.0))
             DemoScript.reset()
+            guard levels.count > 1 else { return }
             open?(levels[1])
             await waitForCard()
             try? await Task.sleep(for: .seconds(3.0))

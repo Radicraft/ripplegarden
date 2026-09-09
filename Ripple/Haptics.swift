@@ -39,8 +39,13 @@ final class Haptics {
                 self.slidePlayer = nil
                 try? self.engine?.start()
             }
+            // iOS stops the engine when the app goes away, and every player
+            // with it.
+            e.stoppedHandler = { [weak self] _ in self?.slidePlayer = nil }
             try e.start()
             engine = e
+            NotificationCenter.default.addObserver(self, selector: #selector(wake),
+                                                   name: UIApplication.willEnterForegroundNotification, object: nil)
         } catch {
             engine = nil
         }
@@ -49,6 +54,14 @@ final class Haptics {
         medium.prepare()
         rigid.prepare()
         heavy.prepare()
+    }
+
+    /// Back from the background: the engine was stopped under us, and without
+    /// starting it again the hand feels nothing for the rest of the run.
+    @objc private func wake() {
+        slidePlayer = nil
+        holdPlayer = nil
+        try? engine?.start()
     }
 
     private func play(_ events: [CHHapticEvent]) {
