@@ -175,7 +175,7 @@ final class GameController: ObservableObject, TouchInput {
             try? await Task.sleep(for: .seconds(2.6))
             self?.showTitle = false
         }
-        sound.startAmbience(named: "amb_\(season.id)")
+        sound.startAmbience(named: newLevel.rain ? "amb_rain_light" : "amb_\(season.id)")
     }
 
     private func place() {
@@ -326,6 +326,20 @@ final class GameController: ObservableObject, TouchInput {
 
         if simd_length(current) > 0.01 {
             current *= exp(-dt * log(2) / GameTuning.currentHalfLife)
+        }
+
+        // Rain: drops land all over the water, small rings by the dozen and
+        // now and then a fatter one, so the surface never rests.
+        if level.rain, phase == .playing || phase == .celebrating {
+            let w = viewSize.width, h = viewSize.height
+            for _ in 0..<4 {
+                let p = CGPoint(x: CGFloat.random(in: 0...w), y: CGFloat.random(in: 0...h))
+                renderer.addSplat(at: p, in: viewSize, radius: Float.random(in: 2.2...3.6), amplitude: Float.random(in: -0.028 ... -0.012))
+            }
+            if Int.random(in: 0..<24) == 0 {
+                let p = CGPoint(x: CGFloat.random(in: 0...w), y: CGFloat.random(in: 0...h))
+                renderer.addSplat(at: p, in: viewSize, radius: 6, amplitude: -0.05)
+            }
         }
 
         // A light piece reads the water at one point. A heavy one reads three

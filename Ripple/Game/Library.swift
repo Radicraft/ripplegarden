@@ -216,6 +216,8 @@ struct LevelSpec: Identifiable {
     var bloomTarget: Float
     /// The pond starts frozen over as one sheet.
     var frozen: Bool = false
+    /// Rain falls on the pond: drops all over the water, and the rain's air.
+    var rain: Bool = false
 }
 
 /// A small deterministic generator so a level lays out the same every time.
@@ -662,7 +664,7 @@ enum Library {
                                           variant: 0, scale: 1, rotation: 0.25, kind: .can))
             out["summer-3"] = LevelSpec(id: "summer-3", seasonID: "summer", index: 3, title: "Summer, three",
                                         mosaicCentre: CGPoint(x: 0.5, y: 0.46), mosaicRadius: 0, debris: debris,
-                                        hint: .order, bloomTarget: 1.5)
+                                        hint: .order, bloomTarget: 1.5, rain: true)
         }
 
         // Summer four, "round the stones": a bud at the top of the pond with a
@@ -827,7 +829,7 @@ enum Library {
                                           variant: 0, scale: 1, rotation: 0.8, kind: .bag))
             out["autumn-5"] = LevelSpec(id: "autumn-5", seasonID: "autumn", index: 5, title: "Autumn, five",
                                         mosaicCentre: CGPoint(x: 0.5, y: 0.48), mosaicRadius: 0, debris: debris,
-                                        shallows: banks, hint: .current, bloomTarget: 2.5)
+                                        shallows: banks, hint: .current, bloomTarget: 2.5, rain: true)
         }
 
         // Autumn six, "last light": a bell hangs over open water with nothing
