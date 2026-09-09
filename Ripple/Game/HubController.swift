@@ -146,6 +146,15 @@ final class HubController: ObservableObject, TouchInput {
         let start = pools.first { !progress.isComplete(levelID: $0.level.id) } ?? pools[0]
         centreTarget = SIMD2(Float(viewSize.width / 2), Float(start.centre.y))
         if ProcessInfo.processInfo.arguments.contains("-hubTop") { centreTarget.y = Float(top) }
+        // `-hubTap`: a scripted tap on the first pool after three seconds.
+        if ProcessInfo.processInfo.arguments.contains("-hubTap") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self, let r = self.renderer, let pool = self.pools.first else { return }
+                let sp = r.screenPoint(world: pool.centre)
+                self.touchBegan(id: 77, at: sp, in: self.screenSize, weight: 0.5)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { self.touchEnded(id: 77, at: sp, in: self.screenSize) }
+            }
+        }
         renderer?.viewCentre = centreTarget
         dress(bottom: bottom, stretch: stretch)
         placed = true

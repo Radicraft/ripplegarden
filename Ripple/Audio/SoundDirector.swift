@@ -19,6 +19,10 @@ final class SoundDirector {
     }
 
     private let engine = AVAudioEngine()
+    /// Every buffer is converted to this on load, and every node is
+    /// connected with it once, so no player ever meets a format it was not
+    /// wired for (which raises, and took the app down with it).
+    private let canonical = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
     private let ambienceMix = AVAudioMixerNode()
     private let effectMix = AVAudioMixerNode()
     private var buffers: [String: AVAudioPCMBuffer] = [:]
@@ -61,18 +65,18 @@ final class SoundDirector {
         } catch {}
         engine.attach(ambienceMix)
         engine.attach(effectMix)
-        engine.connect(ambienceMix, to: engine.mainMixerNode, format: nil)
-        engine.connect(effectMix, to: engine.mainMixerNode, format: nil)
+        engine.connect(ambienceMix, to: engine.mainMixerNode, format: canonical)
+        engine.connect(effectMix, to: engine.mainMixerNode, format: canonical)
         for l in layers {
             engine.attach(l.player)
-            engine.connect(l.player, to: ambienceMix, format: nil)
+            engine.connect(l.player, to: ambienceMix, format: canonical)
             l.player.volume = 0
         }
         for v in voices {
             engine.attach(v.player)
             engine.attach(v.speed)
-            engine.connect(v.player, to: v.speed, format: nil)
-            engine.connect(v.speed, to: effectMix, format: nil)
+            engine.connect(v.player, to: v.speed, format: canonical)
+            engine.connect(v.speed, to: effectMix, format: canonical)
         }
         loadManifest()
         try? engine.start()
@@ -89,6 +93,11 @@ final class SoundDirector {
         for e in list { entries[e.name] = e }
     }
 
+    private func running() -> Bool {
+        if !engine.isRunning { try? engine.start() }
+        return engine.isRunning
+    }
+
     private func buffer(_ name: String) -> AVAudioPCMBuffer? {
         if let b = buffers[name] { return b }
         guard let e = entries[name] else { return nil }
@@ -97,8 +106,28 @@ final class SoundDirector {
         guard let url = Bundle.main.url(forResource: base, withExtension: ext)
                 ?? Bundle.main.url(forResource: base, withExtension: ext, subdirectory: "Sounds"),
               let file = try? AVAudioFile(forReading: url),
-              let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else { return nil }
-        try? file.read(into: buf)
+              let raw = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else { return nil }
+        do { try file.read(into: raw) } catch { return nil }
+        let buf: AVAudioPCMBuffer
+        if raw.format.sampleRate == canonical.sampleRate && raw.format.channelCount == canonical.channelCount
+            && raw.format.commonFormat == canonical.commonFormat && raw.format.isInterleaved == canonical.isInterleaved {
+            buf = raw
+        } else {
+            // Mono, or another rate: convert once, here, to the canonical format.
+            guard let converter = AVAudioConverter(from: raw.format, to: canonical) else { return nil }
+            let frames = AVAudioFrameCount(Double(raw.frameLength) * canonical.sampleRate / raw.format.sampleRate) + 64
+            guard let out = AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: frames) else { return nil }
+            var fed = false
+            var error: NSError?
+            converter.convert(to: out, error: &error) { _, status in
+                if fed { status.pointee = .endOfStream; return nil }
+                fed = true
+                status.pointee = .haveData
+                return raw
+            }
+            if error != nil || out.frameLength == 0 { return nil }
+            buf = out
+        }
         buffers[name] = buf
         return buf
     }
@@ -126,6 +155,7 @@ final class SoundDirector {
         let l = layers[front]
         l.name = name
         l.player.stop()
+        guard running() else { return }
         l.player.scheduleBuffer(buf, at: nil, options: [.loops])
         l.player.volume = 0
         l.target = e.gain
@@ -154,10 +184,11 @@ final class SoundDirector {
         setUp()
         guard let buf = buffer(name), let e = entries[name] else { return nil }
         let now = CACurrentMediaTime()
-        guard let v = voices.first(where: { $0.busyUntil <= now && held.values.contains { $0 === $0 } == false || $0.busyUntil <= now })
-                ?? voices.min(by: { $0.busyUntil < $1.busyUntil }) else { return nil }
+        let free = voices.filter { voice in voice.busyUntil <= now && !held.values.contains { $0 === voice } }
+        guard let v = free.first ?? voices.filter({ voice in !held.values.contains { $0 === voice } }).min(by: { $0.busyUntil < $1.busyUntil }) else { return nil }
         if held.values.contains(where: { $0 === v }) { return nil }
         v.player.stop()
+        guard running() else { return nil }
         let vary = 1 + Float.random(in: -e.pitchVariation...e.pitchVariation)
         v.speed.rate = max(0.5, min(2, pitch * vary))
         v.player.volume = e.gain * gain
