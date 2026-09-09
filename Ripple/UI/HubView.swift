@@ -1,13 +1,11 @@
 import SwiftUI
 
-/// The stream, with its labels floating over the water.
+/// The stream, with its labels floating on the water. The only thing over the
+/// glass is the leaf: the settings and the seasons pass happen in the water.
 struct HubView: View {
 
     @ObservedObject var hub: HubController
     let onPlay: (LevelSpec) -> Void
-    @ObservedObject private var store = Store.shared
-    @State private var showSettings = false
-    @State private var showStore = false
 
     var body: some View {
         ZStack {
@@ -21,40 +19,14 @@ struct HubView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
-        .overlay {
-            PondOverlay(isPresented: $showStore) {
-                StoreCard { showStore = false }
-            }
-            PondOverlay(isPresented: $showSettings) {
-                SettingsCard { showSettings = false }
-            }
-        }
-        .onAppear {
-            hub.onPlay = onPlay
-            hub.onStore = { showStore = true }
-            if ProcessInfo.processInfo.arguments.contains("-showSettings") { showSettings = true }
-            if ProcessInfo.processInfo.arguments.contains("-showStore") { showStore = true }
-        }
-    }
-
-    private func label(_ mark: HubController.Mark) -> some View {
-        PaperChip(opacity: mark.unlocked ? 0.95 : 0.6) {
-            Text(mark.level.title.split(separator: ",").last.map { String($0).trimmingCharacters(in: .whitespaces) } ?? mark.level.title)
-                .font(Ink.label(13))
-                .foregroundStyle(mark.unlocked ? Ink.ink : Ink.ink.opacity(0.45))
-        }
-        .overlay(alignment: .topTrailing) {
-            if mark.complete {
-                Circle().fill(Ink.blossom).frame(width: 8, height: 8).offset(x: 2, y: -2)
-            }
-        }
+        .onAppear { hub.onPlay = onPlay }
     }
 
     private var header: some View {
         VStack {
             HStack(alignment: .firstTextBaseline) {
                 Spacer()
-                StoneIconButton(symbol: "leaf") { showSettings = true }
+                StoneIconButton(symbol: "leaf") { hub.openSettings() }
             }
             .padding(.horizontal, 24)
             .padding(.top, 58)

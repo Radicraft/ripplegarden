@@ -41,6 +41,13 @@ struct RenderParams {
     var inkColour: SIMD4<Float>
     var view: SIMD4<Float>
     var world: SIMD4<Float>
+    /// The clear water around an open menu: xy centre, zw radii, in world uv.
+    var menuRect: SIMD4<Float>
+    /// How far the cloud has passed over the water, 0...1.
+    var menuDim: Float
+    var menuPad0: Float = 0
+    var menuPad1: Float = 0
+    var menuPad2: Float = 0
 }
 
 /// Mirrors `IceBakeParams` in Shaders.metal.
@@ -303,6 +310,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     // --- what the game sets ---------------------------------------------------
 
     var style: WaterStyle = .photographic
+    /// A menu is open in the water: the pond darkens outside the soft ellipse
+    /// `menuRect` names (xy centre, zw radii, in world uv).
+    var menuDim: Float = 0
+    var menuRect = SIMD4<Float>(0.5, 0.5, 0.35, 0.35)
     var onChargedRelease: ((Float) -> Void)?
     var onSwellStart: (() -> Void)?
     var onFrame: ((Float) -> Void)?
@@ -872,7 +883,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                               view: SIMD4(zoom, viewCentre.x * pointScale, viewCentre.y * pointScale, 0),
                               world: SIMD4(viewportSize.x, viewportSize.y,
                                            (iceTexture != nil && iceStrikeCount > 0 && crackTexture != nil) ? 1 : 0,
-                                           Float(iceStrikeCount)))
+                                           Float(iceStrikeCount)),
+                              menuRect: menuRect, menuDim: menuDim)
 
         if let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) {
             encoder.setRenderPipelineState(drawPipeline)

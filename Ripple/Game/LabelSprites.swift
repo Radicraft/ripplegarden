@@ -10,6 +10,7 @@ enum LabelSprites {
 
     private static let chipFace = "ShipporiMinchoB1-Medium"
     private static let captionFace = "ShipporiMinchoB1-Regular"
+    private static let bodyFace = "ShipporiMincho-Regular"
     private static let ink = UIColor(red: 0.106, green: 0.106, blue: 0.106, alpha: 1)
     private static let paper = UIColor(red: 0.965, green: 0.945, blue: 0.900, alpha: 1)
     private static let blossom = UIColor(red: 0.93, green: 0.55, blue: 0.65, alpha: 1)
@@ -56,6 +57,33 @@ enum LabelSprites {
         let image = renderer.image { ctx in
             ctx.cgContext.setShadow(offset: CGSize(width: 0, height: 4), blur: 12, color: UIColor.black.withAlphaComponent(0.45).cgColor)
             s.draw(at: CGPoint(x: 20, y: 20))
+        }
+        if let cg = image.cgImage { textures.register(name, image: cg) }
+        return name
+    }
+
+    /// Body copy in paper ink: centred, wrapped to a width, one soft shadow
+    /// under the lot. This is what the menus and the hints are written in.
+    /// `width` and `points` are in the same units the caption uses; the
+    /// picture is drawn at twice that.
+    static func words(_ text: String, points: CGFloat, textures: TextureCache, width: CGFloat) -> String {
+        let name = "label_words_\(text)_\(Int(points))_\(Int(width))"
+        if textures.has(name) { return name }
+        let font = UIFont(name: bodyFace, size: points * 2) ?? UIFont.systemFont(ofSize: points * 2, weight: .regular)
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.lineSpacing = points * 0.28
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: paper, .paragraphStyle: style]
+        let s = NSAttributedString(string: text, attributes: attrs)
+        let wrap = min(3800, max(80, width * 2))
+        let bounds = s.boundingRect(with: CGSize(width: wrap, height: 4000),
+                                    options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+        let size = CGSize(width: wrap + 40, height: min(4096, ceil(bounds.height) + 40))
+        let renderer = UIGraphicsImageRenderer(size: size, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; f.opaque = false; return f }())
+        let image = renderer.image { ctx in
+            ctx.cgContext.setShadow(offset: CGSize(width: 0, height: 4), blur: 12, color: UIColor.black.withAlphaComponent(0.45).cgColor)
+            s.draw(with: CGRect(x: 20, y: 20, width: wrap, height: size.height - 40),
+                   options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
         }
         if let cg = image.cgImage { textures.register(name, image: cg) }
         return name

@@ -218,6 +218,40 @@ struct LevelSpec: Identifiable {
     var frozen: Bool = false
     /// Rain falls on the pond: drops all over the water, and the rain's air.
     var rain: Bool = false
+
+    /// What the player is here to do, in one line, worked out from what the
+    /// level holds. Shown when the level opens and kept in view.
+    var goal: String {
+        var parts: [String] = []
+        if frozen {
+            parts.append(debris.isEmpty ? "Break through the ice." : "Open the ice and free what is under it.")
+        }
+        let rubbish = debris.filter { $0.kind.isRubbish }.count
+        let natural = debris.count - rubbish
+        if rubbish > 0 && natural > 0 { parts.append("Send the rubbish and the loose pieces to the banks.") }
+        else if rubbish > 0 { parts.append(rubbish == 1 ? "Send the rubbish to a bank." : "Send all the rubbish to the banks.") }
+        else if natural > 0 && !frozen { parts.append("Send everything floating to the banks.") }
+        else if natural > 0 { parts.append("Then send the pieces to the banks.") }
+        for t in targets {
+            switch t.kind {
+            case .bud: parts.append("Wake the lily bud with a wave.")
+            case .bell: parts.append("Ring the bell with a wave.")
+            }
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// What is left, for the line that stays on screen: counts by kind.
+    static func status(remaining debris: [DebrisKind], targetsAsleep: Int, ice: Float) -> String {
+        var parts: [String] = []
+        if ice > 0.06 { parts.append("ice \(Int((ice * 100).rounded()))%") }
+        let rubbish = debris.filter { $0.isRubbish }.count
+        let natural = debris.count - rubbish
+        if natural > 0 { parts.append(natural == 1 ? "1 piece" : "\(natural) pieces") }
+        if rubbish > 0 { parts.append(rubbish == 1 ? "1 rubbish" : "\(rubbish) rubbish") }
+        if targetsAsleep > 0 { parts.append(targetsAsleep == 1 ? "one asleep" : "\(targetsAsleep) asleep") }
+        return parts.isEmpty ? "The pond is clear." : parts.joined(separator: ", ") + " left"
+    }
 }
 
 /// A small deterministic generator so a level lays out the same every time.
