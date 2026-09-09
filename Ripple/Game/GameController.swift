@@ -44,7 +44,21 @@ final class GameController: ObservableObject, TouchInput {
     private(set) var debris: [Debris] = []
     /// The frozen sheet on winter levels, nil elsewhere.
     private(set) var iceField: IceField?
-    private var crackSprites: [Sprite] = []
+
+    /// A finger that came down on the sheet. It is neither a pond hold nor a
+    /// splat: held still it does nothing, dragged it scuffs the frost and the
+    /// hand feels the surface, lifted quickly it is a tap that breaks ice.
+    private struct IceTouch {
+        var began: TimeInterval
+        var last: CGPoint          // screen
+        var lastMoveAt: TimeInterval
+        var travelled: CGFloat = 0
+        var sinceStamp: CGFloat = 0
+        var isSlide = false
+        var speed: Float = 0
+        var lastCrackDist: Float = 1e9
+    }
+    private var iceTouches: [Int: IceTouch] = [:]
 
     private var probeOrder: [(debris: Debris, probes: Int)] = []
     private var lastDebrisProbeCount = 0
@@ -126,6 +140,7 @@ final class GameController: ObservableObject, TouchInput {
         lastProgressAt = 0
         edgeStrokes.removeAll()
         pondTouches.removeAll()
+        iceTouches.removeAll()
         holdSounding.removeAll()
         debris = []
         probeOrder = []
@@ -178,68 +193,57 @@ final class GameController: ObservableObject, TouchInput {
         }
         iceField = level.frozen ? IceField(world: viewSize) : nil
         garden.iceCover = level.frozen ? 1 : 0
-        if let f = iceField { renderer?.setIce(f.cells, cracks: f.cracks, width: f.width, height: f.height); f.markClean() } else { renderer?.setIce(nil, width: 0, height: 0) }
+        if let f = iceField {
+            renderer?.setIce(f.cells, scuff: f.scuff, width: f.width, height: f.height)
+            renderer?.setIceCracks(seeds: f.seeds, strikes: f.strikes)
+            f.markCracksClean()
+            f.markClean()
+        } else {
+            renderer?.setIce(nil, width: 0, height: 0)
+            renderer?.setIceCracks(seeds: [], strikes: [])
+        }
     }
 
-    /// A tap on the sheet. Solid ice takes the blow as fractures running
-    /// out across it, ringed a little way out. A second tap anywhere in
-    /// that struck region breaks the whole of it out to the ring; a tap on
-    /// ice already thin at a hole's edge breaks a piece off. Returns true if
-    /// the tap was on ice.
+    /// A tap on the sheet. Fresh ice takes the blow as a ring of shards, the
+    /// cracks racing out from the point. A second tap anywhere inside that
+    /// ring takes the whole of it out at once. Ice within a finger's width of
+    /// open water is already weak: it gives way on the first tap, in a small
+    /// bite. Returns true if the tap was on ice.
+    @discardableResult
     private func tapIce(at point: CGPoint) -> Bool {
         guard let field = iceField, field.ice(at: point) > 0.5 else { return false }
-        haptics.tap(weight: 0.9)
-        renderer?.addSplat(at: point, in: viewSize, radius: 6, amplitude: -0.04)
-        if let strike = field.strike(containing: point), field.isCracked(near: point, within: 60) {
-            field.forgetStrike(at: strike.centre)
-            breakThrough(at: point, limit: strike.ring * 1.1, crossing: true)
+        let now = renderer?.clock ?? 0
+        if let index = field.strikeIndex(containing: point) {
+            afterBreak(at: point, shards: field.breakOut(index, time: renderer?.clock ?? 0))
         } else if field.isEdge(at: point, within: 46) {
-            let opened = field.breakPolygon(at: point, ring: CGFloat.random(in: 60...95))
-            afterBreak(at: point, opened: opened, limit: 90)
+            let index = field.strike(at: point, ring: CGFloat.random(in: 50...90), time: now)
+            afterBreak(at: point, shards: field.breakOut(index, time: renderer?.clock ?? 0))
         } else {
-            field.strike(at: point)
+            field.strike(at: point, ring: CGFloat.random(in: 110...190), time: now)
+            haptics.iceStrike()
+            renderer?.addSplat(at: point, in: viewSize, radius: 6, amplitude: -0.04)
         }
         return true
     }
 
-    /// Each pending strike shows as one painted fracture, scaled to the
-    /// piece it will take out and turned at random; when the piece goes,
-    /// the fracture goes with it.
-    private func rebuildCrackSprites(_ field: IceField) {
-        func sprite(_ strike: (centre: CGPoint, ring: CGFloat, pattern: Int, turn: Float), alpha: Float) -> Sprite {
-            // The painted fractures run well past the piece that gives way,
-            // so a hole is left ringed by the cracks that made it.
-            let side = strike.ring * 2.9
-            var s = Sprite("fracture_\(strike.pattern + 1)", at: strike.centre, size: CGSize(width: side, height: side),
-                           rotation: strike.turn, alpha: alpha, z: 0.012)
-            s.gpu.mode |= SpriteInstance.maskIce
-            return s
-        }
-        crackSprites = field.scars.map { sprite($0, alpha: 0.85) } + field.strikes.map { sprite($0, alpha: 0.95) }
-    }
-
-    private func breakThrough(at point: CGPoint, limit: CGFloat, crossing: Bool) {
-        guard let field = iceField else { return }
-        let opened = field.breakThrough(at: point, limit: limit, crossing: crossing)
-        guard opened > 0 else { field.strike(at: point); return }
-        afterBreak(at: point, opened: opened, limit: limit)
-    }
-
-    /// The splash, the chunks and the bookkeeping after any piece gives way.
-    private func afterBreak(at point: CGPoint, opened: CGFloat, limit: CGFloat) {
-        guard let field = iceField, opened > 0 else { return }
-        haptics.holdRelease(charge: 0.9)
+    /// The splash, the chunks and the bookkeeping after a piece of the sheet
+    /// gives way: one floating chunk per shard, sized to the shard it was.
+    private func afterBreak(at point: CGPoint, shards: [(centre: CGPoint, area: CGFloat)]) {
+        guard let field = iceField, !shards.isEmpty else { return }
+        let total = shards.reduce(CGFloat(0)) { $0 + $1.area }
+        haptics.iceBreak(size: Float(min(1, total / 60000)))
         renderer?.addSplat(at: point, in: viewSize, radius: 22, amplitude: -0.45)
-        // Chunks in proportion to what gave way, drifting off to melt or beach.
-        let pieces = max(2, min(9, Int(opened / 4000)))
-        for k in 0..<pieces {
-            let a = Float(k) / Float(pieces) * 2 * .pi + Float.random(in: -0.5...0.5)
-            let r = CGFloat.random(in: 10...max(30, limit * 0.55))
-            let p = CGPoint(x: point.x + CGFloat(cos(a)) * r, y: point.y + CGFloat(sin(a)) * r)
+        // The shards themselves tip under the water; what floats afterwards
+        // is a few small pieces broken off the biggest of them.
+        let big = shards.filter { $0.area > 2500 }.sorted { $0.area > $1.area }.prefix(4)
+        for shard in big {
+            let dx = shard.centre.x - point.x, dy = shard.centre.y - point.y
+            let len = max(1, hypot(dx, dy))
+            let radius = min(22, max(10, sqrt(shard.area / .pi) * 0.35))
             let d = Debris(id: 3000 + Int.random(in: 0...99999), cls: .light,
-                           sprite: art.iceFragments[k % max(1, art.iceFragments.count)],
-                           position: p, radius: CGFloat.random(in: 16...30), scale: 1)
-            d.velocity = SIMD2(cos(a), sin(a)) * Float.random(in: 15...40)
+                           sprite: art.iceFragments[Int.random(in: 0..<max(1, art.iceFragments.count))],
+                           position: shard.centre, radius: radius, scale: 1)
+            d.velocity = SIMD2(Float(dx / len), Float(dy / len)) * Float.random(in: 4...12)
             let life = Float.random(in: 22...36)
             d.meltsIn = life
             d.meltTotal = life
@@ -248,20 +252,16 @@ final class GameController: ObservableObject, TouchInput {
         garden.iceCover = field.fraction
     }
 
-    /// A tap in open water near the sheet: the ring reaches the edge, runs
-    /// a fracture into it and breaks a piece off.
+    /// A tap in open water near the sheet: the wave reaches the edge and
+    /// bites a small piece off it.
     private func waveBitesIce(from point: CGPoint) {
-        guard let field = iceField, let edge = field.bite(nearestTo: point, range: 220) else { return }
-        if Int.random(in: 0...2) == 0 {
-            let d = Debris(id: 4000 + Int.random(in: 0...99999), cls: .light,
-                           sprite: art.iceFragments[Int.random(in: 0..<max(1, art.iceFragments.count))],
-                           position: edge, radius: CGFloat.random(in: 14...24), scale: 1)
-            d.velocity = SIMD2(Float(point.x - edge.x), Float(point.y - edge.y)) * -0.25
-            d.meltsIn = 24
-            d.meltTotal = 24
-            debris.append(d)
-        }
-        garden.iceCover = field.fraction
+        guard let field = iceField, let edge = field.nearestIce(to: point, range: 220) else { return }
+        let dx = edge.x - point.x, dy = edge.y - point.y
+        let len = max(1, hypot(dx, dy))
+        let inward = CGPoint(x: edge.x + dx / len * 12, y: edge.y + dy / len * 12)
+        guard field.ice(at: inward) > 0.5 else { return }
+        let index = field.strike(at: inward, ring: CGFloat.random(in: 50...90), time: renderer?.clock ?? 0)
+        afterBreak(at: point, shards: field.breakOut(index, time: renderer?.clock ?? 0))
     }
 
     // MARK: - Per frame
@@ -310,10 +310,16 @@ final class GameController: ObservableObject, TouchInput {
             cursor += n
         }
 
+        iceField?.settle(clock: renderer.clock)
         if let f = iceField, f.dirty {
-            renderer.setIce(f.cells, cracks: f.cracks, width: f.width, height: f.height)
+            renderer.setIce(f.cells, scuff: f.scuff, width: f.width, height: f.height)
+            // A scuffed streak of frost does not move a crack: the field is
+            // only re-baked when the diagram itself has changed.
+            if f.cracksDirty {
+                renderer.setIceCracks(seeds: f.seeds, strikes: f.strikes)
+                f.markCracksClean()
+            }
             f.markClean()
-            rebuildCrackSprites(f)
         }
         if phase == .playing {
             for d in debris where !d.cleared {
@@ -473,7 +479,6 @@ final class GameController: ObservableObject, TouchInput {
             paper(Sprite(d.sprite, at: d.position, size: CGSize(width: s.width * melt, height: s.height * melt),
                          rotation: Float(d.angle), mode: .floater, alpha: d.fade))
         }
-        over += crackSprites
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
@@ -590,16 +595,19 @@ final class GameController: ObservableObject, TouchInput {
             edgeStrokes[id] = EdgeStroke(last: screen)
             return
         }
-        // A second finger on the pond may be the start of a pinch.
-        let pondIDs = pondTouches.keys.filter { screenTouches[$0] != nil }
+        // A second finger on the pond or on the sheet may be a pinch.
+        let pondIDs = (Array(pondTouches.keys) + Array(iceTouches.keys)).filter { screenTouches[$0] != nil && $0 != id }
         if pinch == nil, let other = pondIDs.first, let op = screenTouches[other], let r = renderer {
             let mid = CGPoint(x: (op.x + screen.x) / 2, y: (op.y + screen.y) / 2)
             let anchor = worldPoint(mid)
             pinch = Pinch(ids: [other, id], startDistance: hypot(op.x - screen.x, op.y - screen.y),
                           startZoom: r.zoom, anchorWorld: SIMD2(Float(anchor.x), Float(anchor.y)))
         }
-        if tapIce(at: point) {
-            pondTouches[id] = 0
+        // A finger that lands on the sheet belongs to the ice: no ring, no
+        // hold, no splat. What it means is decided when it moves or lifts.
+        if let field = iceField, field.ice(at: point) > 0.5 {
+            let now = CACurrentMediaTime()
+            iceTouches[id] = IceTouch(began: now, last: screen, lastMoveAt: now)
             return
         }
         waveBitesIce(from: point)
@@ -617,9 +625,17 @@ final class GameController: ObservableObject, TouchInput {
 
     func touchMoved(id: Int, to screen: CGPoint, in screenBounds: CGSize) {
         screenTouches[id] = screen
-        if pinch != nil { updatePinch(moved: id); if pinch?.active == true { return } }
+        if pinch != nil {
+            updatePinch(moved: id)
+            // A finger that turned out to be half a pinch is no longer on the ice.
+            if pinch?.active == true {
+                if let t = iceTouches.removeValue(forKey: id), t.isSlide { haptics.slideEnd() }
+                return
+            }
+        }
         let point = worldPoint(screen)
         let size = viewSize
+        if iceTouches[id] != nil { slideIce(id: id, to: screen, world: point); return }
         if var stroke = edgeStrokes[id] {
             let dx = screen.x - stroke.last.x, dy = screen.y - stroke.last.y
             let dist = hypot(dx, dy)
@@ -648,6 +664,47 @@ final class GameController: ObservableObject, TouchInput {
         renderer?.touchMoved(id: id, to: point, in: size)
     }
 
+    /// A finger dragged over the sheet. Past ten points of travel, or a third
+    /// of a second, it is a slide: the surface answers under the hand, the
+    /// frost wipes off where it passes, and every crack it crosses clicks.
+    /// A slide never breaks the ice.
+    private func slideIce(id: Int, to screen: CGPoint, world point: CGPoint) {
+        guard var t = iceTouches[id], let field = iceField else { iceTouches.removeValue(forKey: id); return }
+        let now = CACurrentMediaTime()
+        let step = hypot(screen.x - t.last.x, screen.y - t.last.y)
+        t.travelled += step
+        if !t.isSlide, t.travelled > 10 || now - t.began > 0.28 {
+            t.isSlide = true
+            haptics.slideBegin()
+            t.lastCrackDist = field.crack(at: point).dist
+        }
+        if t.isSlide {
+            let dt = max(1.0 / 240, now - t.lastMoveAt)
+            let instant = Float(step / CGFloat(dt))
+            t.speed += (instant - t.speed) * 0.35
+            // Ice already wiped feels glassy; frost is grainy.
+            let grain = max(0, 1 - field.scuffValue(at: point) * 0.8)
+            haptics.slide(speed: t.speed, grain: grain, travel: Float(step))
+            t.sinceStamp += step
+            if t.sinceStamp >= 4 {
+                t.sinceStamp = 0
+                field.paintScuff(at: point, radius: 13, amount: 0.35)
+            }
+            let crossed = field.crack(at: point)
+            if t.lastCrackDist > 3, crossed.dist <= 3 { haptics.slideCrack(strength: crossed.strength) }
+            t.lastCrackDist = crossed.dist
+            // Off the edge of the sheet: the slide is spent, and nothing broke.
+            if field.ice(at: point) < 0.5 {
+                haptics.slideEnd()
+                iceTouches.removeValue(forKey: id)
+                return
+            }
+        }
+        t.last = screen
+        t.lastMoveAt = now
+        iceTouches[id] = t
+    }
+
     func touchEnded(id: Int, at screen: CGPoint, in screenBounds: CGSize) {
         screenTouches.removeValue(forKey: id)
         if let p = pinch, p.ids.contains(id) {
@@ -656,6 +713,16 @@ final class GameController: ObservableObject, TouchInput {
         }
         let point = worldPoint(screen)
         let size = viewSize
+        // The sheet: a quick lift with no travel is a tap that breaks ice, a
+        // slide just ends, and a still finger held there does nothing at all.
+        if let t = iceTouches.removeValue(forKey: id) {
+            if t.isSlide {
+                haptics.slideEnd()
+            } else if CACurrentMediaTime() - t.began < 0.3 {
+                tapIce(at: point)
+            }
+            return
+        }
         if let stroke = edgeStrokes.removeValue(forKey: id) {
             if stroke.isStroke {
                 sound.currentEnd(id: id)

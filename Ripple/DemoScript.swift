@@ -13,6 +13,8 @@ enum DemoScript {
     private static var holding = false
     private static var beats = 0
     private static var lastIceTap: CGPoint?
+    private static var lastFraction: Float = 1
+    private static var stalls = 0
     private static var attempts: [Int: Int] = [:]
 
     static var isEnabled: Bool {
@@ -25,6 +27,9 @@ enum DemoScript {
         beats = 0
         attempts = [:]
         holding = false
+        lastIceTap = nil
+        lastFraction = 1
+        stalls = 0
     }
 
     static func startIfRequested(controller: GameController) {
@@ -48,26 +53,40 @@ enum DemoScript {
         // from the holes with taps in the open water beside the edge.
         if let field = controller.iceField, field.fraction > 0.06 {
             // Finish what was started: a struck spot still on ice gets its second tap.
-            if let last = lastIceTap, field.ice(at: last) > 0.5, field.strike(containing: last) != nil {
+            if let last = lastIceTap, field.ice(at: last) > 0.5, field.strikeIndex(containing: last) != nil {
                 lastIceTap = nil
                 tap(controller, at: last, size: size)
                 return
             }
+            // Where to strike next: the middle of the pond while it is still
+            // frozen, then somewhere well inside what is left of the sheet, so
+            // the tap gets a whole ring of shards. When nothing is left but a
+            // fringe along the banks, any of it will do: a tap there bites a
+            // piece off at once.
             let centre = CGPoint(x: size.width / 2, y: size.height * 0.48)
-            if field.ice(at: centre) > 0.5 {
-                lastIceTap = centre
-                tap(controller, at: centre, size: size)     // strike, then break through
-            } else if let edge = field.nearestIce(to: centre, range: 2000) {
-                // Alternate: a tap on the fractured ice just inside the edge,
-                // and a tap in the open water beside it to send a wave at it.
-                let dx = centre.x - edge.x, dy = centre.y - edge.y
-                let len = max(1, hypot(dx, dy))
-                // Strike well inside the sheet, then break it, then move on.
-                let deep = CGPoint(x: edge.x - dx / len * 150, y: edge.y - dy / len * 150)
-                let target = field.ice(at: deep) > 0.5 ? deep : CGPoint(x: edge.x - dx / len * 20, y: edge.y - dy / len * 20)
-                lastIceTap = target
-                tap(controller, at: target, size: size)
+            var deep: CGPoint?
+            var anywhere: CGPoint?
+            if field.ice(at: centre) > 0.5, !field.isEdge(at: centre, within: 46) {
+                deep = centre
+            } else {
+                for _ in 0..<60 {
+                    let p = CGPoint(x: CGFloat.random(in: 0...size.width), y: CGFloat.random(in: 0...size.height))
+                    guard field.ice(at: p) > 0.5 else { continue }
+                    if anywhere == nil { anywhere = p }
+                    if !field.isEdge(at: p, within: 46) { deep = p; break }
+                }
             }
+            guard let target = deep ?? anywhere else { return }
+            // Every seventh beat the finger slides across the sheet instead:
+            // nothing breaks, the frost is wiped where it went.
+            if beats % 7 == 0, let start = deep {
+                let a = CGFloat.random(in: 0...(2 * .pi))
+                let end = CGPoint(x: start.x + cos(a) * 170, y: start.y + sin(a) * 170)
+                slide(controller, from: start, to: end, size: size)
+                return
+            }
+            lastIceTap = target
+            tap(controller, at: target, size: size)
             return
         }
         // A tidying level: push each piece toward its nearest bank.
@@ -125,6 +144,27 @@ enum DemoScript {
         controller.touchBegan(id: id, at: p, in: screen, weight: 0.4)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             controller.touchEnded(id: id, at: p, in: screen)
+        }
+    }
+
+    /// A finger drawn across the world from one point to another over 0.7s.
+    private static func slide(_ controller: GameController, from: CGPoint, to: CGPoint, size: CGSize) {
+        syntheticID += 1
+        let id = syntheticID
+        holding = true
+        let screen = screenSizeOf(controller) ?? size
+        controller.touchBegan(id: id, at: controller.screenPoint(from), in: screen, weight: 0.4)
+        let steps = 18
+        for k in 1...steps {
+            let t = CGFloat(k) / CGFloat(steps)
+            let w = CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7 * Double(t)) {
+                controller.touchMoved(id: id, to: controller.screenPoint(w), in: screen)
+                if k == steps {
+                    controller.touchEnded(id: id, at: controller.screenPoint(w), in: screen)
+                    holding = false
+                }
+            }
         }
     }
 

@@ -43,6 +43,14 @@ struct RenderParams {
     var world: SIMD4<Float>
 }
 
+/// Mirrors `IceBakeParams` in Shaders.metal.
+struct IceBakeParams {
+    var world: SIMD2<Float>        // world size in points
+    var tex: SIMD2<UInt32>         // crack texture size in texels
+    var strikeCount: UInt32
+    var pad0: Float = 0, pad1: Float = 0, pad2: Float = 0
+}
+
 struct FloorParams {
     var viewport: SIMD4<Float>
     var deep: SIMD4<Float>
@@ -189,6 +197,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private let probePipeline: MTLComputePipelineState
     private let siltPipeline: MTLComputePipelineState
     private let siltSumPipeline: MTLComputePipelineState
+    private let iceBakePipeline: MTLComputePipelineState
     private let drawPipeline: MTLRenderPipelineState
     private let floorBasePipeline: MTLRenderPipelineState
     private let floorComposePipeline: MTLRenderPipelineState
@@ -207,6 +216,15 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private var iceTexture: MTLTexture?
     private var blankIce: MTLTexture?
     private var blankMosaic: MTLTexture?
+    /// The crack distance field: rgba8, two texels per world point.
+    private var crackTexture: MTLTexture?
+    private var blankCracks: MTLTexture?
+    private var iceSeedBuffer: MTLBuffer?
+    private var iceStrikeBuffer: MTLBuffer?
+    private var iceRangeBuffer: MTLBuffer?
+    private var iceSeedCount = 0
+    private var iceStrikeCount = 0
+    private var cracksDirty = false
     private var needsFloorBake = true
     private var needsSiltReset = true
 
@@ -351,6 +369,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
               let probeFn = library.makeFunction(name: "sample_field"),
               let siltFn = library.makeFunction(name: "silt_erode"),
               let siltSumFn = library.makeFunction(name: "silt_rowsum"),
+              let iceBakeFn = library.makeFunction(name: "ice_bake"),
               let vertFn = library.makeFunction(name: "fullscreen_vertex"),
               let fragFn = library.makeFunction(name: "water_fragment"),
               let baseFn = library.makeFunction(name: "floor_base_fragment"),
@@ -361,6 +380,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             probePipeline = try device.makeComputePipelineState(function: probeFn)
             siltPipeline = try device.makeComputePipelineState(function: siltFn)
             siltSumPipeline = try device.makeComputePipelineState(function: siltSumFn)
+            iceBakePipeline = try device.makeComputePipelineState(function: iceBakeFn)
 
             let desc = MTLRenderPipelineDescriptor()
             desc.vertexFunction = vertFn
@@ -421,7 +441,20 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         blankIce = device.makeTexture(descriptor: iceDesc)
         var zeroBytes: UInt16 = 0
         blankIce?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zeroBytes, bytesPerRow: 2)
+        // No cracks anywhere: r = 1 is "far from any crack", g = 0 is "no edge".
+        let crackDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
+        crackDesc.usage = .shaderRead
+        blankCracks = device.makeTexture(descriptor: crackDesc)
+        var farBytes: UInt32 = 0x000000FF   // r = 255, gba = 0 (little endian)
+        blankCracks?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &farBytes, bytesPerRow: 4)
+        iceSeedBuffer = device.makeBuffer(length: MemoryLayout<IceSeedGPU>.stride * WaterRenderer.maxIceSeeds, options: .storageModeShared)
+        iceStrikeBuffer = device.makeBuffer(length: MemoryLayout<IceStrikeGPU>.stride * WaterRenderer.maxIceStrikes, options: .storageModeShared)
+        iceRangeBuffer = device.makeBuffer(length: MemoryLayout<SIMD2<UInt32>>.stride * WaterRenderer.maxIceStrikes, options: .storageModeShared)
     }
+
+    /// Caps on the fractured sheet: the bake buffers are sized for these.
+    static let maxIceSeeds = 4096
+    static let maxIceStrikes = 255
 
     // MARK: - Coordinates
 
@@ -558,6 +591,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         let screenPoints = screenPixels / pointScale
         if !viewCentreSet { viewCentre = pointsViewport * 0.5; viewCentreSet = true }
         var cam = cameraParams(screenPoints: screenPoints, worldPoints: pointsViewport)
+
+        // --- the crack field, only when the sheet has changed --------------------
+
+        bakeCracks(commands: commands, worldPoints: pointsViewport)
 
         // --- floor base, once ---------------------------------------------------
 
@@ -765,7 +802,9 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                               style: SIMD4(style == .woodblock ? 1 : 0, 0, 0, 0),
                               inkColour: SIMD4(0.106, 0.106, 0.106, 1),
                               view: SIMD4(zoom, viewCentre.x * pointScale, viewCentre.y * pointScale, 0),
-                              world: SIMD4(viewportSize.x, viewportSize.y, 0, 0))
+                              world: SIMD4(viewportSize.x, viewportSize.y,
+                                           (iceTexture != nil && iceStrikeCount > 0 && crackTexture != nil) ? 1 : 0,
+                                           Float(iceStrikeCount)))
 
         if let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) {
             encoder.setRenderPipelineState(drawPipeline)
@@ -774,8 +813,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(depthTexture, index: 2)
             encoder.setFragmentTexture(iceTexture ?? blankIce, index: 3)
             encoder.setFragmentTexture(iceTexture == nil ? blankMosaic : (textures.texture("ice_surface") ?? blankMosaic), index: 4)
+            encoder.setFragmentTexture(crackTexture ?? blankCracks, index: 5)
             encoder.setFragmentBytes(&rp, length: MemoryLayout<RenderParams>.stride, index: 0)
             encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
+            if let iceStrikeBuffer { encoder.setFragmentBuffer(iceStrikeBuffer, offset: 0, index: 2) }
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
             spriteParams.screen.w = 0
@@ -936,8 +977,93 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         reset()
     }
 
-    /// Uploads the ice (red) and fracture (green) masks over the world; nil clears them.
-    func setIce(_ cells: [Float]?, cracks: [Float]? = nil, width: Int, height: Int) {
+    /// Seconds since the renderer started: the clock the shaders run on.
+    var clock: Float { Float(CACurrentMediaTime() - startTime) }
+
+    /// The Voronoi seeds and strikes of the fractured sheet; the crack
+    /// distance field is re-baked from them before the next frame.
+    func setIceCracks(seeds: [IceSeedGPU], strikes: [IceStrikeGPU]) {
+        guard let seedBuf = iceSeedBuffer, let strikeBuf = iceStrikeBuffer, let rangeBuf = iceRangeBuffer else { return }
+        let strikeCount = min(strikes.count, WaterRenderer.maxIceStrikes)
+        guard strikeCount > 0 else {
+            iceSeedCount = 0
+            iceStrikeCount = 0
+            cracksDirty = true
+            return
+        }
+
+        // The bake walks one strike's seeds at a time, so group them by strike
+        // (a counting sort) and hand the kernel a first/count range per strike.
+        var counts = [Int](repeating: 0, count: strikeCount)
+        for s in seeds {
+            let i = Int(s.strike)
+            if i >= 0 && i < strikeCount && s.pos.x.isFinite && s.pos.y.isFinite { counts[i] += 1 }
+        }
+        var starts = [Int](repeating: 0, count: strikeCount)
+        var total = 0
+        for i in 0..<strikeCount {
+            starts[i] = total
+            total += counts[i]
+            if total > WaterRenderer.maxIceSeeds {          // clip the overflow away
+                counts[i] -= total - WaterRenderer.maxIceSeeds
+                total = WaterRenderer.maxIceSeeds
+            }
+        }
+        var cursor = starts
+        seedBuf.contents().withMemoryRebound(to: IceSeedGPU.self, capacity: WaterRenderer.maxIceSeeds) { ptr in
+            for s in seeds {
+                let i = Int(s.strike)
+                guard i >= 0, i < strikeCount, s.pos.x.isFinite, s.pos.y.isFinite else { continue }
+                guard cursor[i] < starts[i] + counts[i] else { continue }
+                ptr[cursor[i]] = s
+                cursor[i] += 1
+            }
+        }
+        strikeBuf.contents().withMemoryRebound(to: IceStrikeGPU.self, capacity: WaterRenderer.maxIceStrikes) { ptr in
+            for i in 0..<strikeCount { ptr[i] = strikes[i] }
+        }
+        rangeBuf.contents().withMemoryRebound(to: SIMD2<UInt32>.self, capacity: WaterRenderer.maxIceStrikes) { ptr in
+            for i in 0..<strikeCount { ptr[i] = SIMD2(UInt32(starts[i]), UInt32(max(0, counts[i]))) }
+        }
+        iceSeedCount = total
+        iceStrikeCount = strikeCount
+        cracksDirty = true
+    }
+
+    /// Re-bakes the crack distance field when the sheet has changed. Runs on
+    /// the render thread, into the frame's own command buffer, before the
+    /// water pass reads it.
+    private func bakeCracks(commands: MTLCommandBuffer, worldPoints: SIMD2<Float>) {
+        guard cracksDirty, worldPoints.x > 1, worldPoints.y > 1 else { return }
+        let w = max(2, Int((worldPoints.x * 2).rounded()))
+        let h = max(2, Int((worldPoints.y * 2).rounded()))
+        if crackTexture == nil || crackTexture!.width != w || crackTexture!.height != h {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: w, height: h, mipmapped: false)
+            d.usage = [.shaderRead, .shaderWrite]
+            d.storageMode = .private
+            crackTexture = device.makeTexture(descriptor: d)
+        }
+        guard let crackTexture, let seedBuf = iceSeedBuffer, let strikeBuf = iceStrikeBuffer,
+              let rangeBuf = iceRangeBuffer,
+              let encoder = commands.makeComputeCommandEncoder() else { return }
+        var params = IceBakeParams(world: worldPoints, tex: SIMD2(UInt32(w), UInt32(h)),
+                                   strikeCount: UInt32(iceSeedCount > 0 ? iceStrikeCount : 0))
+        encoder.setComputePipelineState(iceBakePipeline)
+        encoder.setTexture(crackTexture, index: 0)
+        encoder.setBuffer(seedBuf, offset: 0, index: 0)
+        encoder.setBuffer(strikeBuf, offset: 0, index: 1)
+        encoder.setBuffer(rangeBuf, offset: 0, index: 2)
+        encoder.setBytes(&params, length: MemoryLayout<IceBakeParams>.stride, index: 3)
+        let tw = iceBakePipeline.threadExecutionWidth
+        let th = max(1, iceBakePipeline.maxTotalThreadsPerThreadgroup / tw)
+        encoder.dispatchThreads(MTLSize(width: w, height: h, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: tw, height: th, depth: 1))
+        encoder.endEncoding()
+        cracksDirty = false
+    }
+
+    /// Uploads the ice (red) and finger-scuff (green) masks over the world; nil clears them.
+    func setIce(_ cells: [Float]?, scuff: [Float]? = nil, width: Int, height: Int) {
         guard let cells, width > 0, height > 0 else { iceTexture = nil; return }
         if iceTexture == nil || iceTexture!.width != width || iceTexture!.height != height {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg8Unorm, width: width, height: height, mipmapped: false)
@@ -948,7 +1074,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         var bytes = [UInt8](repeating: 0, count: width * height * 2)
         for i in 0..<(width * height) {
             bytes[i * 2] = UInt8(max(0, min(255, cells[i] * 255)))
-            if let c = cracks { bytes[i * 2 + 1] = UInt8(max(0, min(255, c[i] * 255))) }
+            if let c = scuff { bytes[i * 2 + 1] = UInt8(max(0, min(255, c[i] * 255))) }
         }
         bytes.withUnsafeBytes { raw in
             iceTexture?.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: raw.baseAddress!, bytesPerRow: width * 2)

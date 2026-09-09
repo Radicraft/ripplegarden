@@ -43,6 +43,31 @@ struct RenderParams {
     float4 world;          // xy world size in pixels
 };
 
+// One Voronoi seed of the fractured sheet: mirrors `IceSeedGPU` in
+// Game/IceTypes.swift byte for byte (32 bytes).
+struct IceSeed {
+    float2 pos;            // world points
+    float  strength;       // how visible this cell's edges are
+    float  reach;          // in ring multiples, before the edge tapers out
+    float  strike;         // index into the strikes array
+    float  broken;         // 1 when the shard has gone
+    float2 pad;
+};
+
+// One blow on the sheet: mirrors `IceStrikeGPU` (16 bytes).
+struct IceStrike {
+    float2 centre;         // world points
+    float  ring;           // radius of the breakable region, world points
+    float  time;           // renderer clock when it landed
+};
+
+struct IceBakeParams {
+    float2 world;          // world size in points
+    uint2  tex;            // crack texture size in texels
+    uint   strikeCount;
+    float  _pad0, _pad1, _pad2;
+};
+
 struct FloorParams {
     float4 viewport;
     float4 deep;
@@ -702,6 +727,100 @@ fragment float4 sprite_fragment(SpriteOut in                             [[stage
 // every crest, foam flecks, paper grain.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The fractured sheet, baked once per break into a distance field.
+//
+// The sheet is a Voronoi diagram of the strike seeds: every cell is a shard,
+// every cell edge is a crack. For a point p the nearest seed a is found first,
+// then the distance to the nearest crack is the smallest distance to any
+// bisector between a and another seed b -- exactly the Voronoi edge -- so the
+// line the shader draws IS the shard outline, sub-pixel crisp at any zoom.
+// Only VISIBLE edges count: an edge shows with strength max(sa, sb) (so an
+// edge between two rim seeds, both strength 0, is the open sheet and invisible)
+// and only inside ring x reach of the strike that owns the longer-reaching
+// seed, so runner cracks carry on past the hole and the rest stop short.
+//
+//   r = distance to that crack / 12pt, clamped
+//   g = its strength, tapered out over the last 15% of its reach
+//   b = radial fraction of 2.8 rings from the strike centre (the outward race)
+//   a = strike index / 255, so the fragment can read the strike's time
+//
+// Texels with no strike within ring x 3 write (1, 0, 0, 0) and cost nothing.
+// ---------------------------------------------------------------------------
+
+kernel void ice_bake(texture2d<float, access::write> outTex  [[texture(0)]],
+                     constant IceSeed   *seeds               [[buffer(0)]],
+                     constant IceStrike *strikes             [[buffer(1)]],
+                     constant uint2     *ranges              [[buffer(2)]],
+                     constant IceBakeParams &p               [[buffer(3)]],
+                     uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= p.tex.x || gid.y >= p.tex.y) return;
+    const float4 clear = float4(1.0, 0.0, 0.0, 0.0);
+    if (p.strikeCount == 0) { outTex.write(clear, gid); return; }
+
+    float2 pt = (float2(gid) + 0.5) / float2(p.tex) * p.world;
+
+    // Pass one: the nearest seed, over the strikes whose reach covers p.
+    int   best  = -1;
+    float bestD = 1e30;
+    for (uint s = 0; s < p.strikeCount; ++s) {
+        IceStrike st = strikes[s];
+        float far = st.ring * 3.0;
+        if (distance_squared(pt, st.centre) > far * far) continue;
+        uint2 r = ranges[s];
+        uint end = r.x + r.y;
+        for (uint i = r.x; i < end; ++i) {
+            float d = distance_squared(pt, seeds[i].pos);
+            if (d < bestD) { bestD = d; best = int(i); }
+        }
+    }
+    if (best < 0) { outTex.write(clear, gid); return; }
+
+    IceSeed   a  = seeds[best];
+    IceStrike sa = strikes[uint(a.strike)];
+
+    // Pass two: the nearest visible bisector between a and any other seed.
+    // The bisector of a and b is never nearer than (|pb| - |pa|) / 2, so a
+    // seed farther than |pa| + 2 x the best distance so far cannot win: that
+    // prunes almost the whole list once the first edge is found.
+    float minD  = 1e30;
+    float minG  = 0.0;
+    float pa    = sqrt(bestD);
+    for (uint s = 0; s < p.strikeCount; ++s) {
+        IceStrike st = strikes[s];
+        float far = st.ring * 3.0;
+        if (distance_squared(pt, st.centre) > far * far) continue;
+        uint2 r = ranges[s];
+        uint end = r.x + r.y;
+        for (uint i = r.x; i < end; ++i) {
+            if (int(i) == best) continue;
+            IceSeed b = seeds[i];
+            float strength = max(a.strength, b.strength);
+            if (strength <= 0.001) continue;         // sheet against sheet: no crack
+            float cut = pa + 2.0 * min(minD, 1.0e6);
+            if (distance_squared(pt, b.pos) > cut * cut) continue;
+            float2 ab = b.pos - a.pos;
+            float len = length(ab);
+            if (len < 1e-4) continue;
+            float d = dot(0.5 * (a.pos + b.pos) - pt, ab / len);
+            if (d >= minD) continue;
+            // Visible only within ring x reach of the strike behind the
+            // longer-reaching of the two seeds.
+            IceStrike host = (b.reach > a.reach) ? strikes[uint(b.strike)] : sa;
+            float lim = host.ring * max(a.reach, b.reach);
+            float rad = distance(pt, host.centre);
+            if (rad >= lim) continue;
+            minD = max(d, 0.0);
+            minG = strength * (1.0 - smoothstep(0.85, 1.0, rad / max(lim, 1e-3)));
+        }
+    }
+    if (minD > 1e29) { outTex.write(clear, gid); return; }
+
+    float radial = saturate(distance(pt, sa.centre) / max(sa.ring * 2.8, 1e-3));
+    outTex.write(float4(saturate(minD / 12.0), saturate(minG), radial, a.strike / 255.0), gid);
+}
+
 static float3 skyLook(float3 R, float3 L)
 {
     float up = saturate(R.z);
@@ -719,8 +838,10 @@ fragment float4 water_fragment(VertexOut in                              [[stage
                                texture2d<float, access::sample> depthTex  [[texture(2)]],
                                texture2d<float, access::sample> iceTex    [[texture(3)]],
                                texture2d<float, access::sample> iceLook   [[texture(4)]],
+                               texture2d<float, access::sample> crackTex  [[texture(5)]],
                                constant RenderParams &p                   [[buffer(0)]],
-                               constant CameraParams &cam                 [[buffer(1)]])
+                               constant CameraParams &cam                 [[buffer(1)]],
+                               constant IceStrike *iceStrikes             [[buffer(2)]])
 {
     constexpr sampler smp(filter::linear, address::clamp_to_edge);
 
@@ -845,7 +966,28 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // rim with the black water showing beneath it.
     float2 iceSample = iceTex.sample(smp, wuv).rg;
     float frozen = iceSample.r;
+    // The crack field and its screen footprint, read before the ice branch:
+    // `fwidth` wants the whole quad on the same path, and `p.world.z` is a
+    // constant for the draw, so this branch never splits one.
+    float4 crackF = float4(1.0, 0.0, 0.0, 0.0);
+    float crackDist = 12.0;                            // world points
+    float crackAA = 0.35;
+    float2 crackUV = wuv;
+    if (p.world.z > 0.5) {
+        // Real cracks are nearly straight, never ruled: the field is read
+        // through a small slow warp, about a point either way.
+        float2 q0 = wuv * float2(cam.world.x / cam.world.y, 1.0);
+        float2 warp = float2(fbm(q0 * 55.0 + 2.0, 2), fbm(q0 * 55.0 + 9.0, 2)) - 0.5;
+        crackUV = wuv + warp * (2.2 / cam.world.xy);
+        crackF = crackTex.sample(smp, crackUV);
+        crackDist = crackF.r * 12.0;
+        crackAA = max(fwidth(crackDist), 0.35);
+    }
     if (frozen > 0.02) {
+        // The sheet proper reads 1; a shard that has given way starts just
+        // under a half and slides to nothing as it goes under.
+        float solid = smoothstep(0.55, 0.65, frozen);
+        float sinkT = 1.0 - saturate((frozen - 0.02) / 0.47);
         float2 iceTexel = 1.0 / float2(iceTex.get_width(), iceTex.get_height());
         float fL = iceTex.sample(smp, wuv - float2(iceTexel.x, 0)).r, fR = iceTex.sample(smp, wuv + float2(iceTexel.x, 0)).r;
         float fD = iceTex.sample(smp, wuv - float2(0, iceTexel.y)).r, fU = iceTex.sample(smp, wuv + float2(0, iceTexel.y)).r;
@@ -862,23 +1004,77 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         float crystalBright = dot(crystals, float3(0.3, 0.59, 0.11));
         float patch = smoothstep(0.42, 0.68, fbm(q * 3.2 + 7.0, 4));
         float wisp = smoothstep(0.55, 0.85, fbm(q * 11.0 + 3.0, 3));
-        float frostHere = max(patch, wisp * 0.6);
+        // A finger dragged over the sheet wipes the frost and the snow dust
+        // off it and leaves a glassier streak behind.
+        float scuff = iceSample.g;
+        float frostHere = max(patch, wisp * 0.6) * (1.0 - 0.85 * scuff);
         float3 clearIce = col * 0.62 + float3(0.05, 0.08, 0.11);
         float3 frosted = mix(clearIce, crystals * float3(0.96, 0.98, 1.0), smoothstep(0.2, 0.7, crystalBright));
         float3 slab = mix(clearIce, frosted, frostHere);
-        float dust = smoothstep(0.66, 0.9, fbm(q * 40.0 + 9.0, 3)) * patch;
+        float dust = smoothstep(0.66, 0.9, fbm(q * 40.0 + 9.0, 3)) * patch * (1.0 - scuff);
         slab = mix(slab, float3(0.95, 0.97, 1.0), dust * 0.5);
-        // A glassy sheet reflects the winter sky: a pale, even lift.
-        slab = mix(slab, float3(0.58, 0.66, 0.74), 0.30);
+        // A glassy sheet reflects the winter sky: a pale, even lift, a little
+        // stronger where the frost has been wiped away.
+        slab = mix(slab, float3(0.58, 0.66, 0.74), 0.30 + 0.08 * scuff);
 
-        // Fractures are drawn as lines over the sheet, not from this mask.
-        (void)iceSample;
+        // The fractures: exact Voronoi shard edges out of the baked field.
+        // A crack races out from the blow in a fifth of a second, then creeps
+        // on for another six; it is a dark wet line with the water showing
+        // through, a pale frost halo, a thin bright line of air just outside
+        // the wet core, and a glint where the wet edge catches the light.
+        if (p.world.z > 0.5 && crackF.g > 0.004 && crackF.r < 0.999) {
+            // The strike index must not be interpolated: a blend of strikes
+            // 3 and 5 would read strike 4's clock. Take the nearest texel.
+            constexpr sampler nearestSmp(filter::nearest, address::clamp_to_edge);
+            float which = crackTex.sample(nearestSmp, crackUV).a;
+            uint strikeCount = uint(max(p.world.w, 1.0));
+            uint si = min(uint(which * 255.0 + 0.5), strikeCount - 1);
+            float age = p.time - iceStrikes[si].time;
+            float grown = smoothstep(0.0, 0.22, age) * 0.78 + smoothstep(0.3, 6.0, age) * 0.22;
+            float radial = crackF.b;
+            float live = 1.0 - smoothstep(max(grown - 0.06, 0.0), max(grown, 1e-3), radial);
+            float alpha = crackF.g * live;
+            if (alpha > 0.002) {
+                // 3.2pt at the blow tapering to 1.1pt at the tip, in world
+                // points: the zoom is screen points per world point.
+                // 2.6pt at the blow tapering to 1.0pt at the tip, in world
+                // points, swelling and pinching a little along its length.
+                float w = mix(2.6, 1.0, saturate(radial)) * (0.8 + 0.5 * fbm(q * 28.0 + 4.0, 2))
+                          / max(p.view.x, 0.05);
+                float core = 1.0 - smoothstep(w * 0.5 - crackAA, w * 0.5 + crackAA, crackDist);
+                float halo = 1.0 - smoothstep(w * 0.6, w * 2.4, crackDist);
+                float air  = smoothstep(w * 0.5, w * 0.75, crackDist)
+                             * (1.0 - smoothstep(w * 0.75, w * 1.15, crackDist));
+                // Cracks inside a shard that is going under flood with it.
+                alpha *= solid;
+                float3 wet = col * 0.40 + float3(0.01, 0.03, 0.06);
+                slab = mix(slab, float3(0.90, 0.94, 0.99), halo * 0.22 * alpha);
+                slab = mix(slab, wet, core * alpha);
+                slab = mix(slab, float3(0.96, 0.98, 1.00), air * 0.28 * alpha);
+                // The wall of the crack tilts away from it: the gradient of
+                // the distance field is its normal.
+                float2 ctexel = 1.0 / float2(crackTex.get_width(), crackTex.get_height());
+                float2 crackGrad = float2(crackTex.sample(smp, crackUV + float2(ctexel.x, 0)).r
+                                          - crackTex.sample(smp, crackUV - float2(ctexel.x, 0)).r,
+                                          crackTex.sample(smp, crackUV + float2(0, ctexel.y)).r
+                                          - crackTex.sample(smp, crackUV - float2(0, ctexel.y)).r);
+                float3 cn = normalize(float3(-crackGrad * 90.0, 0.55));
+                float glint = pow(saturate(dot(cn, L)), 22.0) * max(air, core * 0.4);
+                slab += float3(1.00, 0.99, 0.95) * glint * 0.35 * alpha;
+            }
+        }
 
         // The broken edge: a pale lip of thickness over black water.
         float rim = smoothstep(0.10, 0.5, edge);
         slab = mix(slab, float3(0.06, 0.09, 0.12), rim * 0.55 * (1.0 - smoothstep(0.75, 1.0, frozen)));
         slab = mix(slab, float3(0.96, 0.97, 0.99), smoothstep(0.5, 0.95, frozen) * rim * 0.6);
-        col = mix(col, slab, smoothstep(0.3, 0.55, frozen));
+        // A shard going under: it darkens as the water floods over it, the
+        // water's own light and ripples showing through more each moment,
+        // until only the water is left.
+        float3 sunk = mix(slab * float3(0.68, 0.74, 0.84), col, smoothstep(0.0, 1.0, sinkT) * 0.92);
+        float3 sheet = mix(sunk, slab, solid);
+        float presence = max(solid, (1.0 - solid) * (1.0 - sinkT * sinkT));
+        col = mix(col, sheet, presence);
     }
     return float4(col, 1.0);
 }

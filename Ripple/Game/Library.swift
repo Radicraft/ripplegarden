@@ -83,7 +83,7 @@ enum Hint: String {
     var text: String {
         switch self {
         case .tap: return "Tap the water. Ripples carry things to the bank."
-        case .ice: return "Tap the ice. Tap again to break it."
+        case .ice: return "Tap the ice to crack it. Tap again to break through. Slide to feel it."
         case .hold: return "Hold a finger down. A bigger swell can shift heavy things."
         case .swell: return "Two fingers together sweep a whole cluster."
         case .current: return "Drag along the bank to set a slow current."
