@@ -884,7 +884,7 @@ static inline float3 menuShade(float3 col, float2 wuv, constant RenderParams &p)
     float2 d = (wuv - p.menuRect.xy) / max(p.menuRect.zw, float2(0.001));
     float e = length(d);
     float inside = 1.0 - smoothstep(0.75, 1.25, e);
-    float amount = mix(0.62, 0.12, inside) * p.menuDim;
+    float amount = mix(0.82, 0.5, inside) * p.menuDim;
     return col * (1.0 - amount);
 }
 

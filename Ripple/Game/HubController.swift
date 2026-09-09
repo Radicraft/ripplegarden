@@ -494,6 +494,10 @@ final class HubController: ObservableObject, TouchInput {
                                     size: CGSize(width: side, height: side * 0.8), mode: .shadow, alpha: 0.5, z: -1.0))
             }
         }
+        if let m = menu, m.dim > 0.01 {
+            let keep = 1 - 0.9 * m.dim
+            for i in under.indices { under[i].gpu.alpha *= keep }
+        }
         under += menuArt?.submerged ?? []
         renderer.submergedSprites = under
 
@@ -600,7 +604,7 @@ final class HubController: ObservableObject, TouchInput {
         }
         over += garden.skySprites()
         if let m = menu, m.dim > 0.01 {
-            let keep = 1 - 0.75 * m.dim
+            let keep = 1 - 0.92 * m.dim
             for i in over.indices { over[i].gpu.alpha *= keep }
             for i in solids.indices { solids[i].alpha *= keep }
         }

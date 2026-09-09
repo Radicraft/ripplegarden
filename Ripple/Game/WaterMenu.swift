@@ -13,7 +13,7 @@ import simd
 /// How the words and the stones sit in the water once they are up.
 private enum Water {
     /// How far under the surface the ink rests, and where it starts.
-    static let restDepth: Float = 0.28
+    static let restDepth: Float = 0.10
     static let deepDepth: Float = 0.95
     static let restZ: Float = -0.30
     static let deepZ: Float = -0.95
@@ -302,12 +302,12 @@ final class WaterMenu {
             var m = Measured()
             switch row {
             case .title(let text):
-                let name = LabelSprites.caption(text, points: 30, textures: textures)
+                let name = LabelSprites.caption(text, points: 34, textures: textures)
                 let size = Water.size(name, textures: textures)
                 m.words = [(name, size)]
-                m.height = size.height + 14
+                m.height = size.height + 18
             case .words(let text):
-                let name = LabelSprites.words(text, points: 17, textures: textures,
+                let name = LabelSprites.words(text, points: 20, textures: textures,
                                               width: halfWidth * 2 / Water.labelScale / 2)
                 let size = Water.size(name, textures: textures)
                 m.words = [(name, size)]
@@ -399,7 +399,10 @@ final class WaterMenu {
     }
 
     private func ink(_ name: String, at point: CGPoint, size: CGSize, p: Float) -> Sprite {
-        Sprite(name, at: point, size: size, mode: .submerged, alpha: min(1, p * 1.6),
+        // Seen through the pitched camera, ink under the surface sits lower on
+        // the screen than the stones beside it; lift it so rows line up.
+        let lifted = CGPoint(x: point.x, y: point.y - 46 * CGFloat(p))
+        return Sprite(name, at: lifted, size: size, mode: .submerged, alpha: min(1, p * 1.6),
                depth: Water.deepDepth + (Water.restDepth - Water.deepDepth) * p,
                z: Water.deepZ + (Water.restZ - Water.deepZ) * p)
     }

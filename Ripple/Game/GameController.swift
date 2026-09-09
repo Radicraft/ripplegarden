@@ -679,6 +679,10 @@ final class GameController: ObservableObject, TouchInput {
             under.append(Sprite(art.rock, at: CGPoint(x: r.centre.x + 6, y: r.centre.y + 9),
                                 size: CGSize(width: side, height: side * rockAspect), mode: .shadow, alpha: 0.55, z: -1.0))
         }
+        if let m = menu, m.dim > 0.01 {
+            let keep = 1 - 0.9 * m.dim
+            for i in under.indices { under[i].gpu.alpha *= keep }
+        }
         under += menuArt?.submerged ?? []
         for line in words { under += line.sprites(textures: renderer.textures) }
         renderer.submergedSprites = under
@@ -779,7 +783,7 @@ final class GameController: ObservableObject, TouchInput {
         over += garden.skySprites()
         // While a menu is up the pond's own things fade back so the ink reads.
         if let m = menu, m.dim > 0.01 {
-            let keep = 1 - 0.75 * m.dim
+            let keep = 1 - 0.92 * m.dim
             for i in over.indices { over[i].gpu.alpha *= keep }
         }
         over += menuArt?.surface ?? []
