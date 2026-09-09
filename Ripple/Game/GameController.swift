@@ -683,6 +683,11 @@ final class GameController: ObservableObject, TouchInput {
         for s in garden.petalSprites() { paper(s) }
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
         over += garden.skySprites()
+        // While a menu is up the pond's own things fade back so the ink reads.
+        if let m = menu, m.dim > 0.01 {
+            let keep = 1 - 0.75 * m.dim
+            for i in over.indices { over[i].gpu.alpha *= keep }
+        }
         over += menuArt?.surface ?? []
         renderer.surfaceSprites = over
     }
@@ -1124,7 +1129,7 @@ final class GameController: ObservableObject, TouchInput {
             self.renderer?.addSplat(at: point, in: self.viewSize, radius: radius, amplitude: amplitude)
         }
         menu = m
-        m.open(at: worldAt(CGPoint(x: 0.5, y: 0.5)), world: viewSize)
+        m.open(at: worldAt(CGPoint(x: 0.5, y: 0.6)), world: viewSize)
     }
 
     func openSettings() { present(WaterMenus.settings(sound: sound, haptics: haptics)) }

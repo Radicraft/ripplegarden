@@ -598,6 +598,11 @@ final class HubController: ObservableObject, TouchInput {
                                rotation: f.phase, mode: .floater, alpha: 0.85, z: 0.5))
         }
         over += garden.skySprites()
+        if let m = menu, m.dim > 0.01 {
+            let keep = 1 - 0.75 * m.dim
+            for i in over.indices { over[i].gpu.alpha *= keep }
+            for i in solids.indices { solids[i].alpha *= keep }
+        }
         over += menuArt?.surface ?? []
         renderer.surfaceSprites = over
         renderer.contactShadows = []
@@ -632,8 +637,9 @@ final class HubController: ObservableObject, TouchInput {
             self.renderer?.addSplat(at: point, in: self.viewSize, radius: radius, amplitude: amplitude)
         }
         menu = m
-        let centre = renderer.map { CGPoint(x: CGFloat($0.viewCentre.x), y: CGFloat($0.viewCentre.y)) }
+        var centre = renderer.map { CGPoint(x: CGFloat($0.viewCentre.x), y: CGFloat($0.viewCentre.y)) }
             ?? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+        if let r = renderer { centre.y += CGFloat(Float(screenSize.height) * 0.08 / r.zoom) }
         m.open(at: centre, world: viewSize)
     }
 

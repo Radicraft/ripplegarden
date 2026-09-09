@@ -314,9 +314,10 @@ final class WaterMenu {
             case .toggle(let title, _, _):
                 let name = LabelSprites.caption(title, points: 19, textures: textures)
                 m.words = [(name, Water.size(name, textures: textures))]
-                m.height = 74
-            case .buttons:
                 m.height = 96
+            case .buttons:
+                // Room for the words above the stones and the stones themselves.
+                m.height = 160
             }
             measured.append(m)
         }
@@ -359,7 +360,7 @@ final class WaterMenu {
                 var x = centre.x - span / 2
                 for (k, b) in buttons.enumerated() {
                     x += radii[k]
-                    placed.append(PlacedStone(at: CGPoint(x: x, y: rowMiddle), radius: radii[k], dark: b.dark,
+                    placed.append(PlacedStone(at: CGPoint(x: x, y: rowMiddle + 26), radius: radii[k], dark: b.dark,
                                               label: b.label, row: i, key: key, action: b.action))
                     key += 1
                     x += radii[k] + gap
