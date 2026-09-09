@@ -1538,7 +1538,9 @@ final class GameController: ObservableObject, TouchInput {
                                     ice: ice)
         guard text != statusText else { return }
         statusText = text
-        status.replace(lines: [WaterWords.Line(text: text, points: 19)])
+        // Once nothing is left the completion says so; the status line sinks.
+        if alive.isEmpty, targets.allSatisfy(\.woke), ice < 0.06 { status.sink() }
+        else { status.replace(lines: [WaterWords.Line(text: text, points: 19)]) }
     }
 
     private func present(_ m: WaterMenu) {
