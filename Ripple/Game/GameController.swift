@@ -214,10 +214,13 @@ final class GameController: ObservableObject, TouchInput {
         guard let field = iceField, field.ice(at: point) > 0.5 else { return false }
         let now = renderer?.clock ?? 0
         if let index = field.strikeIndex(containing: point) {
-            afterBreak(at: point, shards: field.breakOut(index, time: renderer?.clock ?? 0))
+            afterBreak(at: point, shards: field.breakOut(index, time: now))
+        } else if let area = field.sinkIsland(at: point, maxArea: 30000, time: now) {
+            // A scrap already cut off from the sheet goes under whole.
+            afterBreak(at: point, shards: [(point, area)])
         } else if field.isEdge(at: point, within: 46) {
-            let index = field.strike(at: point, ring: CGFloat.random(in: 50...90), time: now)
-            afterBreak(at: point, shards: field.breakOut(index, time: renderer?.clock ?? 0))
+            let index = field.strike(at: point, ring: CGFloat.random(in: 90...150), time: now)
+            afterBreak(at: point, shards: field.breakOut(index, time: now))
         } else {
             field.strike(at: point, ring: CGFloat.random(in: 110...190), time: now)
             haptics.iceStrike()
@@ -234,15 +237,21 @@ final class GameController: ObservableObject, TouchInput {
         haptics.iceBreak(size: Float(min(1, total / 60000)))
         renderer?.addSplat(at: point, in: viewSize, radius: 22, amplitude: -0.45)
         // The shards themselves tip under the water; what floats afterwards
-        // is a few small pieces broken off the biggest of them.
-        let big = shards.filter { $0.area > 2500 }.sorted { $0.area > $1.area }.prefix(4)
+        // is a few pieces broken off the biggest of them, no two alike: a
+        // different cut-out each, turned any way, from a sliver to a slab.
+        let big = shards.filter { $0.area > 2500 }.sorted { $0.area > $1.area }.prefix(5)
+        var used: [String] = []
         for shard in big {
             let dx = shard.centre.x - point.x, dy = shard.centre.y - point.y
             let len = max(1, hypot(dx, dy))
-            let radius = min(22, max(10, sqrt(shard.area / .pi) * 0.35))
+            let fresh = art.iceFragments.filter { !used.contains($0) }
+            let name = (fresh.isEmpty ? art.iceFragments : fresh).randomElement() ?? "ice_1"
+            used.append(name)
+            let radius = min(30, max(8, sqrt(shard.area / .pi) * CGFloat.random(in: 0.2...0.5)))
             let d = Debris(id: 3000 + Int.random(in: 0...99999), cls: .light,
-                           sprite: art.iceFragments[Int.random(in: 0..<max(1, art.iceFragments.count))],
-                           position: shard.centre, radius: radius, scale: 1)
+                           sprite: name, position: shard.centre, radius: radius, scale: 1)
+            d.angle = CGFloat.random(in: 0...(2 * .pi))
+            d.spin = CGFloat.random(in: -0.3...0.3)
             d.velocity = SIMD2(Float(dx / len), Float(dy / len)) * Float.random(in: 4...12)
             let life = Float.random(in: 22...36)
             d.meltsIn = life

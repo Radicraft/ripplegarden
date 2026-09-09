@@ -380,7 +380,7 @@ final class IceField {
         }
         // Nothing small is left behind: any scrap of sheet the break has cut
         // off from the rest goes under with it.
-        sunk += orphans(near: st.centre, within: st.ring * 2.2, maxArea: 4200)
+        sunk += orphans(near: st.centre, within: st.ring * 2.4, maxArea: 12000)
         if !sunk.isEmpty { sinking.append((sunk, time)) }
         dirty = true
         cracksDirty = true
@@ -447,6 +447,35 @@ final class IceField {
             }
         }
         return out
+    }
+
+    /// A tap on a small island of ice, one already cut off from the sheet,
+    /// takes the whole island under in one go: it would be tedious to have
+    /// to crack every scrap. Returns the island's area, or nil if the ice
+    /// here is part of something larger than `maxArea`.
+    func sinkIsland(at p: CGPoint, maxArea: Int, time: Float) -> CGFloat? {
+        let x = Int(p.x / cellSize), y = Int(p.y / cellSize)
+        guard x >= 0, y >= 0, x < width, y < height, cells[y * width + x] >= 0.5 else { return nil }
+        var seen = Set<Int>()
+        var stack = [y * width + x]
+        var comp: [Int32] = []
+        seen.insert(y * width + x)
+        while let i = stack.popLast() {
+            comp.append(Int32(i))
+            if comp.count > maxArea { return nil }
+            let cx = i % width, cy = i / width
+            for (nx, ny) in [(cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)] {
+                guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
+                let j = ny * width + nx
+                if seen.contains(j) || cells[j] < 0.5 { continue }
+                seen.insert(j)
+                stack.append(j)
+            }
+        }
+        for i in comp { cells[Int(i)] = IceField.sinkStart }
+        sinking.append((comp, time))
+        dirty = true
+        return CGFloat(comp.count) * cellSize * cellSize
     }
 
     /// Once a frame: the broken shards go under. Their mask value falls

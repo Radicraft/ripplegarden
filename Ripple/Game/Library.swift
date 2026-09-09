@@ -144,7 +144,7 @@ enum Library {
             weeds: ["weed_w_1", "weed_w_2", "weed_w_3", "weed_w_4", "weed_w_5"],
             under: [], skaters: [], flyers: [],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
-            iceFragments: ["ice_1", "ice_2", "ice_3"],
+            iceFragments: ["ice_1", "ice_2", "ice_3", "ice_4", "ice_5", "ice_8", "ice_9", "ice_10"],
             ambientFall: "snow_2"),
         photographic: nil, rootNote: 440,
         tagline: "The pond sleeps under ice. Wake it gently.")
