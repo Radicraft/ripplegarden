@@ -424,6 +424,24 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             WaterRenderer.chosenPitch = pitchTarget
         }
     }
+    /// The tilt's own speed, in radians a second. While two fingers are down
+    /// the camera is put exactly where they put it; when they lift, this is
+    /// what is left in it, and the spring settles it.
+    private var pitchVelocity: Float = 0
+
+    /// The fingers are driving the tilt: the camera goes straight there, so
+    /// the pond turns under the hand with no lag at all.
+    func tiltDirect(to value: Float) {
+        pitchTarget = value
+        pitch = pitchTarget
+        pitchVelocity = 0
+    }
+
+    /// The fingers lift with the camera still turning: it carries on a
+    /// little and swings back, the way a thing on a hinge settles.
+    func tiltRelease(speed: Float) {
+        pitchVelocity = max(-4, min(4, speed))
+    }
 
     /// The camera for this frame, from the view centre, the zoom and the
     /// small orbit the breath and the phone's tilt give it.
@@ -743,7 +761,13 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         onFrame?(dt)
         // The tilt eases toward what the fingers asked for, and the day goes
         // quietly on.
-        pitch += (pitchTarget - pitch) * min(1, dt * 4)
+        // A spring, a touch under damped, so a released tilt overshoots by a
+        // hair and settles. Standing still it behaves as the old ease did.
+        pitchVelocity += (pitchTarget - pitch) * 90 * dt
+        pitchVelocity *= exp(-13 * dt)
+        pitch += pitchVelocity * dt
+        if pitch < WaterRenderer.minPitch { pitch = WaterRenderer.minPitch; pitchVelocity = max(0, pitchVelocity) }
+        if pitch > WaterRenderer.maxPitch { pitch = WaterRenderer.maxPitch; pitchVelocity = min(0, pitchVelocity) }
         advanceDay(dt: dt, now: now)
         accumulateHolds(dt: dt)
         accumulateSwell()

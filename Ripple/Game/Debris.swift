@@ -105,6 +105,50 @@ enum GameTuning {
     /// Radians of tilt per point of average vertical travel by two fingers.
     static let tiltPerPoint: Float = 0.0025
 
+    // MARK: - Tilting the view
+
+    /// Two fingers drawn the same way up or down the screen lay the camera
+    /// over. The pair is read early and leniently, because a player who
+    /// cannot find the gesture never learns it exists.
+    ///
+    /// Points the pair's middle must travel before the tilt is decided. It
+    /// is small, and once decided the touch stays a tilt to the end.
+    static let tiltTravel: CGFloat = 12
+    /// How much of that travel must be up or down rather than across: 0.6
+    /// is a 60/40 split, so a drag well off vertical still tilts.
+    static let tiltUpright: CGFloat = 0.6
+    /// The fingers may drift this far apart on the way without becoming a
+    /// pinch. Past it the hand is spreading, and that is a zoom.
+    static let tiltSpread: CGFloat = 25
+    /// Radians of pitch between the light ticks felt while tilting.
+    static let tiltHapticStep: Float = 0.035
+    /// How much of the tilt's own speed is left in the camera when the
+    /// fingers lift, so it settles rather than stopping dead.
+    static let tiltRelease: Float = 0.22
+
+    // MARK: - Reaching the bank
+
+    /// Bed depth at or under which a piece has met the water's edge and
+    /// rides up the bank, the depth under which the bank is properly dry,
+    /// and the shelving band a stalled piece counts as arrived in.
+    static let beachGround: Float = 0.55
+    static let dryGround: Float = 0.06
+    static let shoreBand: Float = 0.62
+    /// A piece dawdling in the shore band, barely moving, for this long has
+    /// arrived: it rides up the bank rather than bobbing there for ever.
+    static let shoreStillSeconds: Float = 2.0
+    static let shoreStillSpeed: Float = 10
+    /// The ride up the bank: how long it takes, how far up it goes, and how
+    /// far it rolls as it settles.
+    static let beachSeconds: Float = 0.8
+    static let beachRise: CGFloat = 46
+    static let beachRoll: CGFloat = 0.42
+    /// Points a piece of rubbish must move for the player to be getting
+    /// somewhere, and the wait before they are told how it is done.
+    static let rubbishStirred: CGFloat = 6
+    static let rubbishHintAfter: Float = 15
+    static let rubbishHintsPerLevel = 2
+
     /// Two taps this close in time and place drop a stone in.
     static let doubleTapSeconds: TimeInterval = 0.3
     static let doubleTapDistance: CGFloat = 30
@@ -167,6 +211,19 @@ final class Debris: Identifiable {
     /// Rotation about the long axis, for a piece drawn as a solid. A can
     /// that drifts sideways rolls; pushed end on, it slides.
     var roll: Float = 0
+
+    /// Rubbish that has reached the bank does not vanish: it rides up out of
+    /// the water and stays there, a solid resting on the ground, out of the
+    /// sim's reach. `beachT` runs 0 to 1 over the ride.
+    var beached = false
+    var beachFrom = CGPoint.zero
+    var beachTo = CGPoint.zero
+    var beachFromAngle: CGFloat = 0
+    var beachToAngle: CGFloat = 0
+    var beachT: Float = 0
+    var beachLanded = false
+    /// Seconds it has spent in the shore band going nowhere.
+    var shoreStill: Float = 0
 
     init(id: Int, cls: DebrisClass, sprite: String, position: CGPoint, radius: CGFloat, scale: CGFloat, kind: DebrisKind = .natural) {
         self.id = id

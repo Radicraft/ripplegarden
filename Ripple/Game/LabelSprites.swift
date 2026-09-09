@@ -1,74 +1,82 @@
 import CoreGraphics
 import UIKit
 
-/// The map's own labels. Level names are painted onto a scrap of washi and
-/// the season names and title straight onto the air in paper ink, each once,
-/// into a texture the sprite batch draws like anything else: they ride the
-/// surface and move with the camera. Menus and hints are not made here; they
-/// are set in real type over the pond.
+/// The map's own words. There is no paper on the water and nothing floats:
+/// a level's number, the season names and the title are set straight onto
+/// the scene in paper white, each drawn once into a texture the sprite batch
+/// carries like anything else, so they ride the surface, scroll with the
+/// pads and cost nothing at 120 frames a second.
+///
+/// Menus and hints are not made here; those are real type over the pond.
 enum LabelSprites {
 
-    private static let chipFace = "ShipporiMinchoB1-Medium"
-    private static let captionFace = "ShipporiMinchoB1-Regular"
-    private static let bodyFace = "ShipporiMincho-Regular"
-    private static let ink = UIColor(red: 0.106, green: 0.106, blue: 0.106, alpha: 1)
-    private static let paper = UIColor(red: 0.965, green: 0.945, blue: 0.900, alpha: 1)
-    private static let blossom = UIColor(red: 0.93, green: 0.55, blue: 0.65, alpha: 1)
+    /// Newsreader at weight 300, the face the whole interface reads in. If
+    /// it fails to load the system serif stands in at the same size.
+    private static let serifFace = "NewsreaderRoman-Light"
+    private static let paper = UIColor(red: 0.949, green: 0.937, blue: 0.902, alpha: 1)
+    private static let vermilion = UIColor(red: 0.776, green: 0.282, blue: 0.184, alpha: 1)
 
-    /// A washi chip carrying a level's name; a blossom dot when it is done.
-    /// Returns the texture name. Drawn at 2x for the retina.
-    static func chip(_ text: String, done: Bool, textures: TextureCache, wide: Bool = false) -> String {
-        let name = "label_chip_\(text)_\(done ? 1 : 0)_\(wide ? "w" : "n")"
-        if textures.has(name) { return name }
-        let size = wide ? CGSize(width: 320, height: 84) : CGSize(width: 180, height: 76)
-        let renderer = UIGraphicsImageRenderer(size: size, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; f.opaque = false; return f }())
-        let image = renderer.image { ctx in
-            if let washi = UIImage(named: "washi_card") ?? bundleImage("washi_card") {
-                washi.draw(in: CGRect(origin: .zero, size: size))
-            } else {
-                paper.setFill()
-                UIBezierPath(roundedRect: CGRect(origin: .zero, size: size).insetBy(dx: 4, dy: 4), cornerRadius: 10).fill()
-            }
-            let font = UIFont(name: chipFace, size: 30) ?? UIFont.systemFont(ofSize: 30, weight: .medium)
-            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
-            let s = NSAttributedString(string: text, attributes: attrs)
-            let b = s.size()
-            s.draw(at: CGPoint(x: (size.width - b.width) / 2, y: (size.height - b.height) / 2 - 1))
-            if done {
-                blossom.setFill()
-                UIBezierPath(ovalIn: CGRect(x: size.width - 34, y: 16, width: 12, height: 12)).fill()
-            }
-        }
-        if let cg = image.cgImage { textures.register(name, image: cg) }
-        return name
+    /// How a level's word is set: shut, the next one to play, or done.
+    enum MarkerState: String {
+        case locked, open, done
+        var alpha: CGFloat { self == .locked ? 0.45 : 1 }
+        var rule: Bool { self == .open }
     }
 
-    /// A caption in paper ink with a soft shadow, on nothing.
-    static func caption(_ text: String, points: CGFloat, textures: TextureCache) -> String {
-        let name = "label_cap_\(text)_\(Int(points))"
-        if textures.has(name) { return name }
-        let font = UIFont(name: chipFace, size: points * 2) ?? UIFont.systemFont(ofSize: points * 2, weight: .medium)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: paper]
+    private static func serif(_ points: CGFloat) -> UIFont {
+        UIFont(name: serifFace, size: points) ?? UIFont.systemFont(ofSize: points, weight: .light)
+    }
+
+    /// A word set on the scene, in paper white over a soft dark shade so it
+    /// holds over pale ice and over dark summer water alike. Drawn at twice
+    /// the size it is shown at, for the retina.
+    private static func words(_ text: String, points: CGFloat, alpha: CGFloat,
+                              rule: Bool, key: String, textures: TextureCache) -> String {
+        if textures.has(key) { return key }
+        let font = serif(points * 2)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: paper.withAlphaComponent(alpha)]
         let s = NSAttributedString(string: text, attributes: attrs)
-        let halo = NSAttributedString(string: text, attributes: [.font: font, .strokeColor: UIColor.black.withAlphaComponent(0.85),
-                                                                  .strokeWidth: 9.0, .foregroundColor: UIColor.clear])
         let b = s.size()
-        // Long words are cut rather than asking for a texture no device takes.
-        let size = CGSize(width: min(4096, ceil(b.width) + 40), height: min(4096, ceil(b.height) + 40))
-        let renderer = UIGraphicsImageRenderer(size: size, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; f.opaque = false; return f }())
-        let image = renderer.image { ctx in
-            // A dark halo round the letters so pale ink holds on a busy bed.
-            ctx.cgContext.setShadow(offset: CGSize(width: 0, height: 3), blur: 8, color: UIColor.black.withAlphaComponent(0.8).cgColor)
-            halo.draw(at: CGPoint(x: 20, y: 20))
+        let pad: CGFloat = 24
+        let ruleGap: CGFloat = rule ? 14 : 0
+        let size = CGSize(width: min(4096, ceil(b.width) + pad * 2),
+                          height: min(4096, ceil(b.height) + pad * 2 + ruleGap))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            // The same soft shade the gear carries, so pale ink holds on a
+            // busy bed without an outline round every letter. It is laid
+            // twice: once is not enough over bright mist or over ice.
+            ctx.cgContext.setShadow(offset: CGSize(width: 0, height: 3), blur: 10,
+                                    color: UIColor(red: 0.043, green: 0.086, blue: 0.071, alpha: 0.85).cgColor)
+            s.draw(at: CGPoint(x: pad, y: pad))
+            s.draw(at: CGPoint(x: pad, y: pad))
             ctx.cgContext.setShadow(offset: .zero, blur: 0, color: nil)
-            s.draw(at: CGPoint(x: 20, y: 20))
+            s.draw(at: CGPoint(x: pad, y: pad))
+            ctx.cgContext.setShadow(offset: CGSize(width: 0, height: 2), blur: 6,
+                                    color: UIColor(red: 0.043, green: 0.086, blue: 0.071, alpha: 0.7).cgColor)
+            if rule {
+                // The one accent in the whole game: a 2 pt rule under the
+                // pond the player is being invited into.
+                vermilion.setFill()
+                UIBezierPath(rect: CGRect(x: pad, y: pad + ceil(b.height) + 6,
+                                          width: ceil(b.width), height: 4)).fill()
+            }
         }
-        if let cg = image.cgImage { textures.register(name, image: cg) }
-        return name
+        if let cg = image.cgImage { textures.register(key, image: cg) }
+        return key
     }
 
-    private static func bundleImage(_ name: String) -> UIImage? {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "png") else { return nil }
-        return UIImage(contentsOfFile: url.path)
+    /// A level's number word under its pad: "one" ... "six".
+    static func marker(_ text: String, state: MarkerState, textures: TextureCache) -> String {
+        words(text, points: 22, alpha: state.alpha, rule: state.rule,
+              key: "label_mark_\(text)_\(state.rawValue)", textures: textures)
+    }
+
+    /// The season names and the title, on the mist, in the same face.
+    static func caption(_ text: String, points: CGFloat, textures: TextureCache) -> String {
+        words(text, points: points, alpha: 1, rule: false,
+              key: "label_cap_\(text)_\(Int(points))", textures: textures)
     }
 }

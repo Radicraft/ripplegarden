@@ -14,6 +14,7 @@ struct HubView: View {
             }
             .ignoresSafeArea()
 
+            words
             gear
             menu
         }
@@ -21,6 +22,19 @@ struct HubView: View {
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
         .onAppear { hub.onPlay = onPlay }
+    }
+
+    /// The one line the map ever shows: how to lay the view over.
+    @ViewBuilder private var words: some View {
+        ZStack {
+            if let w = hub.words, hub.presented == nil {
+                PondVeil(words: w)
+                    .transition(.opacity)
+                    .id(w)
+            }
+        }
+        .animation(Motion.scrim, value: hub.words)
+        .allowsHitTesting(false)
     }
 
     private var gear: some View {

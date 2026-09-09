@@ -341,6 +341,12 @@ final class SoundDirector {
         play("fx_pebbles", gain: 0.5, pitch: 0.9 + 0.35 * t)
     }
 
+    /// A piece of rubbish rides up onto the bank: gravel under it, low and
+    /// close, at the place on the shore where it landed.
+    func beach(x: Float) {
+        play("fx_pebbles", x: x, gain: 0.72, pitch: 0.78)
+    }
+
     func plop() { play(pick("fx_splash_small", 3), gain: 0.7) }
 
     func complete() {

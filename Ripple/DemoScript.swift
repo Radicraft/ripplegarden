@@ -141,8 +141,13 @@ enum DemoScript {
             controller.scriptedDusk(Float(arg) ?? 0.85)
         case "tilt":
             // Two fingers side by side, drawn up the screen: the camera lies
-            // over and the pond is seen more from its side.
-            tiltDrag(controller, by: CGFloat(Double(arg) ?? 120), seconds: 1.5, size: size)
+            // over and the pond is seen more from its side. "tilt:120:0.3"
+            // draws them the same way in a third of a second, to show that a
+            // brisk hand tilts as surely as a slow one.
+            let bits = arg.split(separator: ":")
+            let by = bits.isEmpty ? 120 : (Double(bits[0]) ?? 120)
+            let seconds = bits.count > 1 ? (Double(bits[1]) ?? 1.5) : 1.5
+            tiltDrag(controller, by: CGFloat(by), seconds: seconds, size: size)
         case "gust":
             let a = (ends.count == 2 ? point(ends[0]) : nil) ?? CGPoint(x: size.width * 0.15, y: size.height * 0.5)
             let b = (ends.count == 2 ? point(ends[1]) : nil) ?? CGPoint(x: size.width * 0.85, y: size.height * 0.5)

@@ -70,7 +70,7 @@ enum DebrisClass {
 /// rest is rubbish, and each kind sits on the water its own way: a can is
 /// heavy and low, a bottle skates on the smallest ripple, a bag goes
 /// wherever the current does. Rubbish never melts or blooms; at the bank
-/// it is simply gone.
+/// it rides up out of the water and stays there.
 enum DebrisKind {
     case natural, can, bottle, packet, bag
 
@@ -179,7 +179,7 @@ struct Shape {
 }
 
 enum Hint: String {
-    case tap, hold, swell, current, bounce, ice, target, twin, lens, order, tilt
+    case tap, hold, swell, current, bounce, ice, target, twin, lens, order, tilt, rubbish
 
     var text: String {
         switch self {
@@ -191,7 +191,8 @@ enum Hint: String {
         case .bounce: return "Ripples bounce off the stones. A curve of them throws a ripple back."
         case .target: return "Something sleeps among the pads. Only a wave through the gap will wake it."
         case .twin: return "Two ripples arriving together lift what one cannot."
-        case .tilt: return "Two fingers drawn slowly up the screen tilt the view. Pinch to zoom."
+        case .tilt: return "Drag up with two fingers to look across the water."
+        case .rubbish: return "Tap behind the rubbish. The ripple pushes it toward the bank."
         case .lens: return "Shallow water slows a ripple and bends it. A wave that crosses a sandbank still arrives tall."
         case .order: return "No water passes a log or a can. Move what is in the way first."
         }
@@ -232,10 +233,15 @@ struct LevelSpec: Identifiable {
         }
         let rubbish = debris.filter { $0.kind.isRubbish }.count
         let natural = debris.count - rubbish
-        if rubbish > 0 && natural > 0 { parts.append("Send the rubbish and the loose pieces to the banks.") }
-        else if rubbish > 0 { parts.append(rubbish == 1 ? "Send the rubbish to a bank." : "Send all the rubbish to the banks.") }
-        else if natural > 0 && !frozen { parts.append("Send everything floating to the banks.") }
-        else if natural > 0 { parts.append("Then send the pieces to the banks.") }
+        if rubbish > 0 && natural > 0 {
+            parts.append("Push the rubbish onto the bank with ripples. Send the loose pieces there too.")
+        } else if rubbish > 0 {
+            parts.append("Push the rubbish onto the bank with ripples.")
+        } else if natural > 0 && !frozen {
+            parts.append("Push everything floating onto the banks with ripples.")
+        } else if natural > 0 {
+            parts.append("Then push the pieces onto the banks.")
+        }
         for t in targets {
             switch t.kind {
             case .bud: parts.append("Wake the lily bud with a wave.")
@@ -245,16 +251,26 @@ struct LevelSpec: Identifiable {
         return parts.joined(separator: " ")
     }
 
-    /// What is left, for the line that stays on screen: counts by kind.
+    /// Small numbers in words, so the line that stays on screen reads as a
+    /// sentence and not as a scoreboard.
+    static func spelled(_ n: Int) -> String {
+        let words = ["no", "one", "two", "three", "four", "five", "six", "seven",
+                     "eight", "nine", "ten", "eleven", "twelve"]
+        return n >= 0 && n < words.count ? words[n] : "\(n)"
+    }
+
+    /// What is left, for the line that stays on screen. Plain sentences, and
+    /// the count of what is still on the water moves the moment a piece
+    /// lands on the bank.
     static func status(remaining debris: [DebrisKind], targetsAsleep: Int, ice: Float) -> String {
         var parts: [String] = []
-        if ice > 0.06 { parts.append("ice \(Int((ice * 100).rounded()))%") }
-        let rubbish = debris.filter { $0.isRubbish }.count
-        let natural = debris.count - rubbish
-        if natural > 0 { parts.append(natural == 1 ? "1 piece" : "\(natural) pieces") }
-        if rubbish > 0 { parts.append(rubbish == 1 ? "1 rubbish" : "\(rubbish) rubbish") }
-        if targetsAsleep > 0 { parts.append(targetsAsleep == 1 ? "one asleep" : "\(targetsAsleep) asleep") }
-        return parts.isEmpty ? "The pond is clear." : parts.joined(separator: ", ") + " left"
+        if ice > 0.06 { parts.append("Ice covers \(Int((ice * 100).rounded())) percent.") }
+        let afloat = debris.count
+        if afloat == 1 { parts.append("One piece still afloat.") }
+        else if afloat > 1 { parts.append("\(spelled(afloat).capitalized) pieces still afloat.") }
+        if targetsAsleep == 1 { parts.append("One still asleep.") }
+        else if targetsAsleep > 1 { parts.append("\(spelled(targetsAsleep).capitalized) still asleep.") }
+        return parts.isEmpty ? "The pond is clear." : parts.joined(separator: " ")
     }
 }
 

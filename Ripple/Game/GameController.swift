@@ -55,6 +55,10 @@ final class GameController: ObservableObject, TouchInput {
         /// Two fingers drawn the same way tilt the camera instead of zooming
         /// it. Once they are read as a tilt they stay one.
         var tilting = false
+        /// The pitch the last tick was felt at, and how fast the tilt was
+        /// going when the fingers last moved.
+        var tickedAt: Float = 0
+        var pitchSpeed: Float = 0
         /// Where each finger was last seen, how far it has come since the
         /// two went down, and how fast it is going now.
         var last: [Int: CGPoint] = [:]
@@ -63,6 +67,8 @@ final class GameController: ObservableObject, TouchInput {
         var lastAt: TimeInterval = 0
     }
     private var pinch: Pinch?
+    /// The tilt's own haptic surface, running while two fingers turn the view.
+    private var tiltTexturing = false
     private var screenTouches: [Int: CGPoint] = [:]
     private var art: ArtSet
 
@@ -106,6 +112,12 @@ final class GameController: ObservableObject, TouchInput {
     private var elapsed: Float = 0
     private var touchedYet = false
     private var hintsShown: Set<Hint> = []
+    /// The rubbish line has been offered this many times on this pond.
+    private var rubbishHintsShown = 0
+    /// When a piece of rubbish last actually went somewhere, and where each
+    /// piece was when it last did.
+    private var rubbishMovedAt: Float = 0
+    private var rubbishAnchor: [Int: CGPoint] = [:]
     private var lastProgressAt: Float = 0
     private var lastCleaned: Float = 0
 
@@ -292,6 +304,9 @@ final class GameController: ObservableObject, TouchInput {
         elapsed = 0
         touchedYet = false
         hintsShown = []
+        rubbishHintsShown = 0
+        rubbishMovedAt = 0
+        rubbishAnchor = [:]
         hint = nil
         current = .zero
         cleaned = 0
@@ -586,10 +601,31 @@ final class GameController: ObservableObject, TouchInput {
                 }
             }
             DebrisPhysics.separate(debris, dt: dt)
-            for d in debris where !d.cleared && (DebrisPhysics.hasReachedShore(d, in: viewSize) || isBeached(d)) {
-                clear(d)
+            for d in debris where !d.cleared {
+                // A piece dawdling in the shore band, going nowhere, has
+                // arrived: it need not find dry ground on its own.
+                let ground = groundUnder(d)
+                if ground < GameTuning.shoreBand, simd_length(d.velocity) < GameTuning.shoreStillSpeed {
+                    d.shoreStill += dt
+                } else {
+                    d.shoreStill = 0
+                }
+                let arrived = DebrisPhysics.hasReachedShore(d, in: viewSize)
+                    || d.shoreStill >= GameTuning.shoreStillSeconds
+                if d.kind.isRubbish {
+                    // Rubbish rides up the moment it meets the water's edge,
+                    // where the ride can still be seen.
+                    guard arrived || ground < GameTuning.beachGround else { continue }
+                    beach(d)
+                } else {
+                    guard arrived || ground < GameTuning.dryGround else { continue }
+                    clear(d)
+                }
             }
+            watchRubbish(dt: dt)
         }
+        // Rubbish already at the bank rides up out of the water and settles.
+        for d in debris where d.beached && d.beachT < 1 { rideUp(d, dt: dt) }
 
         // The garden lives regardless of the puzzle. Drips come off the
         // branches once the rain has passed, and on a spring morning while
@@ -782,7 +818,7 @@ final class GameController: ObservableObject, TouchInput {
         var underBodies = koiBodies.under
         underBodies += garden.bedStoneBodies(depthScale: WaterRenderer.depthScale, mossy: season.id != "winter")
         under += garden.reflectionSprites()
-        for d in debris where !d.cleared {
+        for d in debris where !d.cleared || d.beached {
             let s = spriteSize(d)
             under.append(Sprite(d.sprite, at: CGPoint(x: d.position.x + 7, y: d.position.y + 10), size: s,
                                 rotation: Float(d.angle), mode: .shadow, alpha: d.cls == .heavy ? 0.9 : 0.6, z: -1.0))
@@ -847,7 +883,9 @@ final class GameController: ObservableObject, TouchInput {
             }
         }
         solids += koiBodies.surface
-        for d in debris where !d.cleared {
+        // A beached piece is drawn like any other, but it is on the ground
+        // now: it does not bank with the water and nothing lifts it.
+        for d in debris where !d.cleared || d.beached {
             // Under unbroken ice a piece is a shape in the dark, not a thing
             // on the water: its floor shadow stays, the rest waits for the
             // sheet to open over it.
@@ -876,8 +914,11 @@ final class GameController: ObservableObject, TouchInput {
             }
             let radius = Float(d.radius * body.radius)
             let natural = d.kind.isRubbish ? nil : solidColours(d.sprite)
+            // On the bank it rests on the ground rather than in the plane of
+            // the water, so the whole body is above the shoreline.
+            let lift = radius * Float(body.lift) + (d.beached ? radius * 0.8 : 0)
             solids.append(SolidInstance(position: SIMD2(Float(d.position.x), Float(d.position.y)),
-                                        lift: radius * Float(body.lift),
+                                        lift: lift,
                                         yaw: Float(d.angle),
                                         roll: d.roll,
                                         tilt: d.slope,
@@ -967,14 +1008,6 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     /// Floaters cannot pass through a rock.
-    /// A piece left on ground this shallow is out of the water for good: no
-    /// ripple reaches it there, so it counts as landed rather than stuck.
-    private func isBeached(_ d: Debris) -> Bool {
-        guard viewSize.width > 0 else { return false }
-        let u = CGPoint(x: d.position.x / viewSize.width, y: d.position.y / viewSize.height)
-        return DepthPainter.ground(at: u, aspect: Float(viewSize.width / viewSize.height)) < 0.08
-    }
-
     private func keepOffRocks(_ d: Debris) {
         for r in rocks {
             let dx = Float(d.position.x - r.centre.x), dy = Float(d.position.y - r.centre.y)
@@ -1010,17 +1043,36 @@ final class GameController: ObservableObject, TouchInput {
     // MARK: - Hints
 
     private func show(_ h: Hint) {
-        guard !hintsShown.contains(h), !HintMemory.seen(h), hint == nil else { return }
+        guard !hintsShown.contains(h), hint == nil else { return }
+        if h == .tilt { guard !TiltMemory.hasTilted else { return } }
+        else if HintMemory.seen(h) { return }
         hintsShown.insert(h)
         hint = h
         hintAt = elapsed
     }
 
+    /// How the rubbish is moved, for a player who has stopped getting
+    /// anywhere. It is not remembered between levels, and it is offered
+    /// twice at most, because a line repeated is a line ignored.
+    private func showRubbishHint() {
+        guard hint == nil, rubbishHintsShown < GameTuning.rubbishHintsPerLevel else { return }
+        rubbishHintsShown += 1
+        hint = .rubbish
+        hintAt = elapsed
+        if diagnostics { NSLog("[rubbish] hint shown, time %d of %d", rubbishHintsShown, GameTuning.rubbishHintsPerLevel) }
+    }
+
     private func updateHints() {
         guard phase == .playing else { return }
         if let h = level.hint, !touchedYet, elapsed > 4.0 { show(h) }
-        // Once, a little way in: how to look at the pond from the side.
-        if elapsed > 30, touchedYet, !HintMemory.seen(.tilt), hint == nil { show(.tilt) }
+        // How to look across the water, on the first pond opened after the
+        // words that start it, and on every pond until it has been done once.
+        if elapsed > 7, !TiltMemory.hasTilted, hint == nil { show(.tilt) }
+        // Rubbish that has not stirred for a while: say how it is shifted.
+        if !liveRubbish.isEmpty, elapsed - rubbishMovedAt > GameTuning.rubbishHintAfter {
+            rubbishMovedAt = elapsed
+            showRubbishHint()
+        }
         if level.hint == .ice, touchedYet, let f = iceField, f.fraction > 0.97, elapsed > 12 { show(.ice) }
         // The tile is mostly clean but a heavy piece still shades it, and the
         // player has stalled: they need the hold.
@@ -1029,7 +1081,10 @@ final class GameController: ObservableObject, TouchInput {
 
     private func dismissHint() {
         guard let h = hint else { return }
-        HintMemory.markSeen(h)
+        // The tilt line stands until the tilt is done, and the rubbish line
+        // keeps its own count: a finger touching the water is not an answer
+        // to either of them.
+        if h != .tilt, h != .rubbish { HintMemory.markSeen(h) }
         hint = nil
     }
 
@@ -1067,10 +1122,10 @@ final class GameController: ObservableObject, TouchInput {
         let now = CACurrentMediaTime()
         let here = id == p.ids[0] ? a : b
         var step = CGPoint.zero
+        let stepDT = Float(max(1.0 / 240, now - p.lastAt))
         if let was = p.last[id] {
             step = CGPoint(x: here.x - was.x, y: here.y - was.y)
-            let elapsedSince = max(1.0 / 240, now - p.lastAt)
-            p.speed[id] = hypot(step.x, step.y) / CGFloat(elapsedSince)
+            p.speed[id] = hypot(step.x, step.y) / CGFloat(stepDT)
             var t = p.travel[id] ?? .zero
             t.x += step.x
             t.y += step.y
@@ -1080,27 +1135,47 @@ final class GameController: ObservableObject, TouchInput {
         p.lastAt = now
         let dist = hypot(a.x - b.x, a.y - b.y)
 
-        // A tilt, read before the pinch so a hand that spreads a little on
-        // the way does not zoom instead: both fingers going much the same
-        // way, both mostly up or down the screen, and neither of them fast
-        // enough to be half a gust.
+        // A tilt, read before the pinch and read leniently: both fingers
+        // going the same way, the pair's middle travelling more up or down
+        // than across, and the two of them not spreading. Speed says
+        // nothing, so a brisk drag tilts as surely as a slow one, and the
+        // whole thing is decided inside the first few points of travel.
         if !p.active, !p.tilting,
            let ta = p.travel[p.ids[0]], let tb = p.travel[p.ids[1]] {
+            let mid = CGPoint(x: (ta.x + tb.x) / 2, y: (ta.y + tb.y) / 2)
             let sameWay = ta.y * tb.y > 0
-            let upright = abs(ta.y) > abs(ta.x) * 1.2 && abs(tb.y) > abs(tb.x) * 1.2
-            let gentle = max(p.speed[p.ids[0]] ?? 0, p.speed[p.ids[1]] ?? 0) < CGFloat(GameTuning.gustSpeed)
-            let far = min(hypot(ta.x, ta.y), hypot(tb.x, tb.y))
-            if sameWay, upright, gentle, far > 10 {
+            let upright = abs(mid.y) > (abs(mid.x) + abs(mid.y)) * GameTuning.tiltUpright
+            let held = abs(dist - p.startDistance) < GameTuning.tiltSpread
+            if sameWay, upright, held, hypot(mid.x, mid.y) > GameTuning.tiltTravel {
                 p.tilting = true
+                p.tickedAt = r.pitchTarget
                 r.cancelAll()
                 for pid in p.ids { forgetWaterTouch(pid) }
+                beginTiltTexture()
+                if diagnostics { NSLog("[tilt] latched at pitch %.3f", r.pitchTarget) }
             }
         }
 
         if p.tilting {
             // Half the step from each of the two fingers is their average.
-            // Drawn up the screen the camera lies down toward the water.
-            r.pitchTarget -= Float(step.y) * 0.5 * GameTuning.tiltPerPoint
+            // Drawn up the screen the camera lies down toward the water, and
+            // it goes exactly where the hand puts it: no easing, no lag.
+            let before = r.pitchTarget
+            r.tiltDirect(to: before - Float(step.y) * 0.5 * GameTuning.tiltPerPoint)
+            let moved = r.pitchTarget - before
+            p.pitchSpeed += (moved / stepDT - p.pitchSpeed) * 0.35
+            // The surface of the water under the hand, and a tick every small
+            // step of pitch, so the view is felt coming round as well as seen.
+            haptics.slide(speed: Float(abs(step.y)) / stepDT, grain: 0.12, travel: Float(abs(step.y)))
+            if abs(r.pitchTarget - p.tickedAt) >= GameTuning.tiltHapticStep {
+                p.tickedAt = r.pitchTarget
+                haptics.currentTick()
+            }
+            if !TiltMemory.hasTilted, abs(moved) > 0 {
+                TiltMemory.markTilted()
+                if hint == .tilt { hint = nil }
+            }
+            if diagnostics, diagFrames % 12 == 0 { NSLog("[tilt] pitch=%.3f step=%.1f", r.pitchTarget, step.y) }
             pinch = p
             return
         }
@@ -1120,6 +1195,33 @@ final class GameController: ObservableObject, TouchInput {
         let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
         centreTarget = p.anchorWorld - SIMD2(Float(mid.x - screenSize.width / 2), Float(mid.y - screenSize.height / 2)) / z
         pinch = p
+    }
+
+    /// The hand is on the view, not the water: the continuous player runs so
+    /// the tilt has a surface to it.
+    private func beginTiltTexture() {
+        guard !tiltTexturing else { return }
+        tiltTexturing = true
+        haptics.slideBegin()
+    }
+
+    private func endTiltTexture() {
+        guard tiltTexturing else { return }
+        tiltTexturing = false
+        haptics.slideEnd()
+    }
+
+    /// True while two fingers are on their way to being a tilt: they are
+    /// going the same way and more up or down than across, but have not
+    /// travelled far enough to be sure. The water does not hear them until
+    /// the pair is decided, so a tilt never leaves a wake or a slosh behind.
+    private func maybeTilting(_ id: Int) -> Bool {
+        guard let p = pinch, p.ids.contains(id), !p.active else { return false }
+        if p.tilting { return true }
+        guard let ta = p.travel[p.ids[0]], let tb = p.travel[p.ids[1]] else { return false }
+        guard ta.y * tb.y > 0 else { return false }
+        let mid = CGPoint(x: (ta.x + tb.x) / 2, y: (ta.y + tb.y) / 2)
+        return abs(mid.y) > (abs(mid.x) + abs(mid.y)) * GameTuning.tiltUpright
     }
 
     /// A finger that turned out to belong to the camera and not the water:
@@ -1144,6 +1246,8 @@ final class GameController: ObservableObject, TouchInput {
 
     /// Stops any gesture voice still running, and forgets the whirl.
     private func hushGestures() {
+        endTiltTexture()
+        pinch = nil
         for id in Array(wakeSounding) { sound.wakeEnd(id: id) }
         wakeSounding.removeAll()
         if whirl != nil { sound.whirlEnd(id: whirlSoundID) }
@@ -1178,6 +1282,15 @@ final class GameController: ObservableObject, TouchInput {
         }
         t.path.removeAll { now - $0.at > GameTuning.stirWindow }
 
+        // Two fingers on their way to a tilt: their speed and heading are
+        // still tracked, so a real gust is still found, but nothing of them
+        // reaches the water until the pair has been decided.
+        if maybeTilting(id) {
+            t.last = point
+            t.lastAt = now
+            pondTouches[id] = t
+            return
+        }
         if !t.isWake, !t.spent, t.speed > GameTuning.wakeSpeed {
             if !t.isSlosh { beginStroke(id: id) }
             t.isWake = true
@@ -1346,7 +1459,7 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     private func checkGust() {
-        guard gust == nil, pinch?.active != true,
+        guard gust == nil, pinch?.active != true, pinch?.tilting != true,
               CACurrentMediaTime() - lastGustAt > GameTuning.gustCooldown,
               let pair = gustPair() else { return }
         startGust(direction: pair.direction, ids: pair.ids)
@@ -1673,6 +1786,13 @@ final class GameController: ObservableObject, TouchInput {
         if presented != nil { return }
         if let p = pinch, p.ids.contains(id) {
             pinch = nil
+            if p.tilting {
+                // The camera carries on a hair and swings back.
+                renderer?.tiltRelease(speed: p.pitchSpeed * GameTuning.tiltRelease)
+                endTiltTexture()
+                TiltMemory.markTilted()
+                if hint == .tilt { hint = nil }
+            }
             if p.active || p.tilting { renderer?.touchUp(id: id); pondTouches.removeValue(forKey: id); return }
         }
         let point = worldPoint(screen)
@@ -1729,6 +1849,113 @@ final class GameController: ObservableObject, TouchInput {
         d.cleared = true
         haptics.clear()
         sound.clearNote(index: debris.filter(\.cleared).count, of: debris.count)
+    }
+
+    /// The bed under a piece: 1 in the deep, 0 on dry ground.
+    private func groundUnder(_ d: Debris) -> Float {
+        guard viewSize.width > 0 else { return 1 }
+        let u = CGPoint(x: d.position.x / viewSize.width, y: d.position.y / viewSize.height)
+        return DepthPainter.ground(at: u, aspect: Float(viewSize.width / viewSize.height))
+    }
+
+    /// A piece of rubbish has reached the bank. It does not vanish: it slides
+    /// up out of the water, rolls once as it settles, and lies there for the
+    /// rest of the level, a thing on the ground the water no longer reaches.
+    private func beach(_ d: Debris) {
+        guard !d.beached else { return }
+        d.beached = true
+        d.velocity = .zero
+        d.spin = 0
+        d.beachFrom = d.position
+        d.beachTo = bankSpot(from: d.position, radius: d.radius)
+        d.beachFromAngle = d.angle
+        d.beachToAngle = d.angle + (d.id % 2 == 0 ? 1 : -1) * GameTuning.beachRoll
+        d.beachT = 0
+        d.beachLanded = false
+        sound.beach(x: Float(d.position.x / max(1, viewSize.width)))
+        haptics.tap(weight: 0.45)
+        // It is off the water: the count moves this instant.
+        clear(d)
+        if diagnostics {
+            NSLog("[rubbish] beached at (%.0f,%.0f) -> (%.0f,%.0f), %d still afloat",
+                  d.beachFrom.x, d.beachFrom.y, d.beachTo.x, d.beachTo.y,
+                  debris.filter { !$0.cleared && $0.meltsIn == nil }.count)
+        }
+    }
+
+    /// Where up the bank a piece comes to rest: outward from the middle of
+    /// the pond until the ground is properly dry, and a little further.
+    private func bankSpot(from p: CGPoint, radius: CGFloat) -> CGPoint {
+        guard viewSize.width > 0 else { return p }
+        let aspect = Float(viewSize.width / viewSize.height)
+        var dir = CGVector(dx: p.x - viewSize.width / 2, dy: p.y - viewSize.height / 2)
+        let len = max(1, hypot(dir.dx, dir.dy))
+        dir = CGVector(dx: dir.dx / len, dy: dir.dy / len)
+        var out = p
+        var step: CGFloat = 0
+        while step < GameTuning.beachRise {
+            step += 4
+            let q = CGPoint(x: p.x + dir.dx * step, y: p.y + dir.dy * step)
+            let u = CGPoint(x: q.x / viewSize.width, y: q.y / viewSize.height)
+            out = q
+            if DepthPainter.ground(at: u, aspect: aspect) <= GameTuning.dryGround { break }
+        }
+        return onScreen(out, from: p, radius: radius)
+    }
+
+    /// The pond's world runs a little past what the camera shows, and the
+    /// camera does not follow a piece to the bank. A thing that lands where
+    /// it cannot be seen has not been seen to land, so the resting place is
+    /// walked back down the bank until the whole piece is in the frame.
+    private func onScreen(_ p: CGPoint, from: CGPoint, radius: CGFloat) -> CGPoint {
+        guard let r = renderer, screenSize != .zero else { return p }
+        let margin = radius * CGFloat(r.zoom) * 0.5 + 6
+        var out = p
+        for _ in 0..<14 {
+            let s = screenPoint(out)
+            if s.x >= margin, s.y >= margin,
+               s.x <= screenSize.width - margin, s.y <= screenSize.height - margin { break }
+            out = CGPoint(x: out.x + (from.x - out.x) * 0.16, y: out.y + (from.y - out.y) * 0.16)
+        }
+        return out
+    }
+
+    /// The ride up the bank: quick out of the water, slowing as the ground
+    /// takes it, with the roll finishing a beat before the slide does.
+    private func rideUp(_ d: Debris, dt: Float) {
+        d.beachT = min(1, d.beachT + dt / GameTuning.beachSeconds)
+        let t = d.beachT
+        let ease = 1 - pow(1 - t, 3)
+        d.position = CGPoint(x: d.beachFrom.x + (d.beachTo.x - d.beachFrom.x) * CGFloat(ease),
+                             y: d.beachFrom.y + (d.beachTo.y - d.beachFrom.y) * CGFloat(ease))
+        let roll = 1 - pow(1 - min(1, t * 1.25), 2)
+        d.angle = d.beachFromAngle + (d.beachToAngle - d.beachFromAngle) * CGFloat(roll)
+        d.roll += Float(GameTuning.beachRoll) * dt / GameTuning.beachSeconds
+        d.slope = .zero
+        d.height = 0
+        if t >= 1, !d.beachLanded {
+            d.beachLanded = true
+            haptics.tap(weight: 0.22)
+        }
+    }
+
+    /// Rubbish that has not stirred for a while means the player has not
+    /// found how it is moved. Keeps the clock the hint runs on.
+    private var liveRubbish: [Debris] { debris.filter { !$0.cleared && $0.kind.isRubbish } }
+
+    private func watchRubbish(dt: Float) {
+        let live = liveRubbish
+        guard !live.isEmpty else { rubbishMovedAt = elapsed; return }
+        for d in live {
+            guard let was = rubbishAnchor[d.id] else {
+                rubbishAnchor[d.id] = d.position
+                continue
+            }
+            if hypot(d.position.x - was.x, d.position.y - was.y) > GameTuning.rubbishStirred {
+                rubbishAnchor[d.id] = d.position
+                rubbishMovedAt = elapsed
+            }
+        }
     }
 
     private func finish() {
@@ -1887,6 +2114,18 @@ enum HintMemory {
         return UserDefaults.standard.bool(forKey: "hint.seen.\(h.rawValue)")
     }
     static func markSeen(_ h: Hint) { UserDefaults.standard.set(true, forKey: "hint.seen.\(h.rawValue)") }
+}
+
+/// Whether the player has ever laid the view over. Until they have, the pond
+/// and the map both offer to tell them how; after it, neither mentions it
+/// again. A gesture nobody finds may as well not be in the game.
+enum TiltMemory {
+    private static let key = "gesture.hasTilted"
+    static var hasTilted: Bool {
+        if ProcessInfo.processInfo.arguments.contains("-resetHints") { return false }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+    static func markTilted() { UserDefaults.standard.set(true, forKey: key) }
 }
 
 /// Smooth value noise in 0...1. The pond and the stream both wander their

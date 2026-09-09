@@ -69,10 +69,16 @@ final class HubController: ObservableObject, TouchInput {
         var last: [Int: CGPoint]
         var travel: [Int: CGPoint] = [:]
         var speed: [Int: CGFloat] = [:]
+        var startDistance: CGFloat = 0
         var lastAt: TimeInterval
         var on = false
+        var tickedAt: Float = 0
+        var pitchSpeed: Float = 0
     }
     private var tilt: Tilt?
+    private var tiltTexturing = false
+    /// The words low on the map: only ever the offer to lay the view over.
+    @Published private(set) var words: PondWords?
     private var lastMarksAt: TimeInterval = 0
     private var opening: (level: LevelSpec, at: TimeInterval)?
     private var elapsed: Float = 0
@@ -417,6 +423,11 @@ final class HubController: ObservableObject, TouchInput {
         guard let renderer else { return }
         elapsed += dt
         let now = CACurrentMediaTime()
+        // The one thing the map ever says: how to look across the water. It
+        // waits for the stream to settle, and goes once it has been done.
+        let offerTilt = !TiltMemory.hasTilted && presented == nil && elapsed > 3.5 && elapsed < 16
+        let wanted: PondWords? = offerTilt ? PondWords(title: nil, line: Hint.tilt.text) : nil
+        if wanted != words { words = wanted }
         if viewSize == .zero, let world = renderer.worldSizePoints, let screen = renderer.viewSizePoints, world.width > 0 {
             viewSize = world
             screenSize = screen
@@ -571,37 +582,44 @@ final class HubController: ObservableObject, TouchInput {
                 }
             }
         }
-        // Words: a washi chip beside each pool, the season's name on the line
-        // where its stretch is entered, the title at the mouth. Paper on
-        // the water, so they tilt with it and move with the camera.
+        // Words: the level's number under its pad, the season's name on the
+        // line where its stretch is entered, the title at the mouth. Nothing
+        // is on paper and nothing floats: they are set on the scene itself.
+        var words: [Sprite] = []
         if let tex = renderer.textures as TextureCache? {
+            /// A word laid on the scene at a height in points, sized off the
+            /// texture so nothing is stretched. They are kept back and laid
+            /// on last, over the mist: the map's words are the one thing on
+            /// it that has to be read.
+            func setWords(_ name: String, at p: CGPoint, points: CGFloat, z: Float) {
+                let t = tex.size(name)
+                let h = points * 1.9
+                words.append(Sprite(name, at: p, size: CGSize(width: h * t.width / max(1, t.height), height: h),
+                                    mode: .floater, alpha: 1, z: z))
+            }
+            // The one pond the player is being invited into: the only place
+            // the vermilion rule is spent.
+            let nextID = pools.first { progress.isUnlocked(level: $0.level) && !progress.isComplete(levelID: $0.level.id) }?.level.id
             for pool in pools {
                 let idx = Library.levels(in: pool.season).firstIndex { $0.id == pool.level.id } ?? 0
-                let words = ["one", "two", "three", "four", "five", "six"]
-                let word = idx < words.count ? words[idx] : "\(idx + 1)"
-                let done = progress.isComplete(levelID: pool.level.id)
-                let unlocked = progress.isUnlocked(level: pool.level)
-                let name = LabelSprites.chip(word, done: done, textures: tex)
-                let at = CGPoint(x: pool.centre.x - pool.radius * 0.3, y: pool.centre.y + pool.radius * 0.95)
-                let tip = Float(sin(Double(pool.centre.y) * 0.013 + Double(idx))) * 0.11
-                paper(Sprite(name, at: at, size: CGSize(width: 86, height: 36), rotation: tip,
-                             mode: .floater, alpha: unlocked ? 1 : 0.55, z: 0.1))
+                let numbers = ["one", "two", "three", "four", "five", "six"]
+                let word = idx < numbers.count ? numbers[idx] : "\(idx + 1)"
+                let state: LabelSprites.MarkerState = !progress.isUnlocked(level: pool.level) ? .locked
+                    : (pool.level.id == nextID ? .open : .done)
+                let name = LabelSprites.marker(word, state: state, textures: tex)
+                // Under the pad, which stays the marker the eye reads first.
+                let pad = CGPoint(x: pool.centre.x - pool.radius * 0.55, y: pool.centre.y + pool.radius * 0.5)
+                setWords(name, at: CGPoint(x: pad.x, y: pad.y + 64), points: 22, z: 0.1)
             }
             for e in entries {
-                let name = LabelSprites.caption(e.name, points: 26, textures: tex)
-                let t = tex.size(name)
-                let h: CGFloat = 26 * 1.9
-                over.append(Sprite(name, at: CGPoint(x: viewSize.width / 2, y: e.y), size: CGSize(width: h * t.width / max(1, t.height), height: h),
-                                   mode: .floater, alpha: 1, z: 0.25))
+                setWords(LabelSprites.caption(e.name, points: Size.word, textures: tex),
+                         at: CGPoint(x: viewSize.width / 2, y: e.y), points: Size.word, z: 0.25)
             }
             // Beyond autumn, at the source, a note about the seasons to come.
-            let note = LabelSprites.chip("Seasons to come", done: false, textures: tex, wide: true)
-            paper(Sprite(note, at: storeNote, size: CGSize(width: 150, height: 40), rotation: 0.05, mode: .floater, alpha: 1, z: 0.1))
-            let title = LabelSprites.caption("Ripple Garden", points: 32, textures: tex)
-            let ts = tex.size(title)
-            let th: CGFloat = 32 * 1.9
-            over.append(Sprite(title, at: CGPoint(x: viewSize.width / 2, y: mouthY), size: CGSize(width: th * ts.width / max(1, ts.height), height: th),
-                               mode: .floater, alpha: 1, z: 0.3))
+            setWords(LabelSprites.caption("Seasons to come", points: 22, textures: tex),
+                     at: storeNote, points: 22, z: 0.1)
+            setWords(LabelSprites.caption("Ripple Garden", points: Size.display, textures: tex),
+                     at: CGPoint(x: viewSize.width / 2, y: mouthY), points: Size.display, z: 0.3)
         }
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
@@ -628,6 +646,8 @@ final class HubController: ObservableObject, TouchInput {
         }
         over += garden.skySprites()
         over += garden.mistSprites()
+        // The words go on last, so the weather never swallows them.
+        over += words
         renderer.surfaceSprites = over
         renderer.contactShadows = []
         renderer.solids = solids
@@ -655,7 +675,8 @@ final class HubController: ObservableObject, TouchInput {
         if scroll == nil { scroll = (id, screen.y, now, false, screen.y) }
         // A second finger down beside the first: they may be a tilt.
         if tilt == nil, let other = touches.keys.first(where: { $0 != id }), let op = touches[other] {
-            tilt = Tilt(ids: [other, id], last: [other: op, id: screen], lastAt: now)
+            tilt = Tilt(ids: [other, id], last: [other: op, id: screen],
+                        startDistance: hypot(op.x - screen.x, op.y - screen.y), lastAt: now)
         }
         momentum = 0
     }
@@ -715,10 +736,10 @@ final class HubController: ObservableObject, TouchInput {
         guard var t = tilt, let r = renderer else { return false }
         let now = CACurrentMediaTime()
         var step = CGPoint.zero
+        let stepDT = Float(max(1.0 / 240, now - t.lastAt))
         if let was = t.last[id] {
             step = CGPoint(x: screen.x - was.x, y: screen.y - was.y)
-            let dt = max(1.0 / 240, now - t.lastAt)
-            t.speed[id] = hypot(step.x, step.y) / CGFloat(dt)
+            t.speed[id] = hypot(step.x, step.y) / CGFloat(stepDT)
             var travel = t.travel[id] ?? .zero
             travel.x += step.x
             travel.y += step.y
@@ -726,20 +747,33 @@ final class HubController: ObservableObject, TouchInput {
         }
         t.last[id] = screen
         t.lastAt = now
-        if !t.on, let ta = t.travel[t.ids[0]], let tb = t.travel[t.ids[1]] {
+        if !t.on, let ta = t.travel[t.ids[0]], let tb = t.travel[t.ids[1]],
+           let a = touches[t.ids[0]], let b = touches[t.ids[1]] {
+            let mid = CGPoint(x: (ta.x + tb.x) / 2, y: (ta.y + tb.y) / 2)
             let sameWay = ta.y * tb.y > 0
-            let upright = abs(ta.y) > abs(ta.x) * 1.2 && abs(tb.y) > abs(tb.x) * 1.2
-            let gentle = max(t.speed[t.ids[0]] ?? 0, t.speed[t.ids[1]] ?? 0) < CGFloat(GameTuning.gustSpeed)
-            let far = min(hypot(ta.x, ta.y), hypot(tb.x, tb.y))
-            if sameWay, upright, gentle, far > 10 {
+            let upright = abs(mid.y) > (abs(mid.x) + abs(mid.y)) * GameTuning.tiltUpright
+            let held = abs(hypot(a.x - b.x, a.y - b.y) - t.startDistance) < GameTuning.tiltSpread
+            if sameWay, upright, held, hypot(mid.x, mid.y) > GameTuning.tiltTravel {
                 t.on = true
+                t.tickedAt = r.pitchTarget
                 scroll = nil
                 momentum = 0
+                if !tiltTexturing { tiltTexturing = true; haptics.slideBegin() }
             }
         }
         if t.on {
-            // Half a step from each finger is the pair's average.
-            r.pitchTarget -= Float(step.y) * 0.5 * GameTuning.tiltPerPoint
+            // Half a step from each finger is the pair's average, and the
+            // camera goes exactly where the hand puts it.
+            let before = r.pitchTarget
+            r.tiltDirect(to: before - Float(step.y) * 0.5 * GameTuning.tiltPerPoint)
+            t.pitchSpeed += ((r.pitchTarget - before) / stepDT - t.pitchSpeed) * 0.35
+            haptics.slide(speed: Float(abs(step.y)) / stepDT, grain: 0.12, travel: Float(abs(step.y)))
+            if abs(r.pitchTarget - t.tickedAt) >= GameTuning.tiltHapticStep {
+                t.tickedAt = r.pitchTarget
+                haptics.currentTick()
+            }
+            TiltMemory.markTilted()
+            if words != nil { words = nil }
         }
         tilt = t
         return t.on
@@ -748,6 +782,10 @@ final class HubController: ObservableObject, TouchInput {
     func touchEnded(id: Int, at screen: CGPoint, in size: CGSize) {
         touches.removeValue(forKey: id)
         let wasTilt = tilt?.ids.contains(id) == true && tilt?.on == true
+        if wasTilt, let t = tilt {
+            renderer?.tiltRelease(speed: t.pitchSpeed * GameTuning.tiltRelease)
+            if tiltTexturing { tiltTexturing = false; haptics.slideEnd() }
+        }
         if tilt?.ids.contains(id) == true { tilt = nil }
         if wasTilt {
             pending.removeValue(forKey: id)
