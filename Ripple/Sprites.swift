@@ -83,9 +83,15 @@ final class TextureCache {
     /// edge and a little body without anyone having to paint one.
     func normal(_ name: String) -> MTLTexture? {
         if let t = normals[name] { return t }
-        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
-              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let cg: CGImage
+        if let drawn = registered[name] {
+            cg = drawn
+        } else {
+            guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
+                  let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let loaded = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+            cg = loaded
+        }
         let w = cg.width, h = cg.height
         var alpha = [UInt8](repeating: 0, count: w * h)
         alpha.withUnsafeMutableBytes { raw in
@@ -153,6 +159,21 @@ final class TextureCache {
         }
         return dst
     }
+
+    /// Images drawn at run time (labels on washi), kept for their normals.
+    private var registered: [String: CGImage] = [:]
+
+    /// Puts an image drawn at run time into the cache under a name, so it
+    /// is drawn like any sprite, relief and all.
+    func register(_ name: String, image: CGImage) {
+        guard let t = try? loader.newTexture(cgImage: image, options: [.SRGB: false, .generateMipmaps: true]) else { return }
+        cache[name] = t
+        sizes[name] = CGSize(width: t.width, height: t.height)
+        registered[name] = image
+        normals[name] = nil
+    }
+
+    func has(_ name: String) -> Bool { cache[name] != nil }
 
     func texture(_ name: String) -> MTLTexture? {
         if let t = cache[name] { return t }

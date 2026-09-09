@@ -78,6 +78,7 @@ struct FloorParams {
     float4 camera;         // xy lateral camera offset in points, z height, w shift gain
     float4 bed;            // x bed strength, y bed depth (positive, below the surface)
     float4 view;           // xy view centre in world pixels (the perspective centre)
+    float4 bank;           // x on, y mouth (fraction of height), z stretch (fraction of height)
 };
 
 struct SiltParams {
@@ -420,8 +421,10 @@ fragment float4 floor_compose_fragment(VertexOut in                             
                                        texture2d<float, access::sample> depth   [[texture(3)]],
                                        texture2d<float, access::sample> bed     [[texture(4)]],
                                        texture2d<float, access::sample> field   [[texture(5)]],
-                                       texture2d<float, access::sample> bank    [[texture(6)]],
-                                       texture2d<float, access::sample> bankSnow [[texture(7)]],
+                                       texture2d<float, access::sample> bank0   [[texture(6)]],
+                                       texture2d<float, access::sample> bank1   [[texture(7)]],
+                                       texture2d<float, access::sample> bank2   [[texture(8)]],
+                                       texture2d<float, access::sample> bank3   [[texture(9)]],
                                        constant FloorParams &p                  [[buffer(0)]],
                                        constant CameraParams &cam               [[buffer(1)]])
 {
@@ -524,16 +527,21 @@ fragment float4 floor_compose_fragment(VertexOut in                             
     // near nothing) the floor is earth: moss, grass and pebbles from a
     // seamless tile, under snow above the snow line; a dark damp margin
     // where the water laps it.
-    if (p.view.z > 0.5) {
+    if (p.bank.x > 0.5) {
         constexpr sampler rep(filter::linear, address::repeat);
         float bankness = 1.0 - smoothstep(0.05, 0.15, d);
         if (bankness > 0.001) {
-            float2 tuv = float2(in.uv.x * aspect, in.uv.y) * (p.viewport.y / 1400.0);
-            float3 earth = bank.sample(rep, tuv).rgb;
-            float3 snow = bankSnow.sample(rep, tuv * 1.1 + 0.3).rgb;
-            float snowy = p.view.w >= 0.0 ? 1.0 - smoothstep(p.view.w - 0.03, p.view.w + 0.03, in.uv.y)
-                                          : smoothstep(-p.view.w - 0.03, -p.view.w + 0.03, in.uv.y);
-            float3 ground = mix(earth, snow, snowy);
+            // Which stretch this is, counted up from the mouth, and where in
+            // it: each stretch wears one painting of its season's ground,
+            // never repeated, the seams feathered by the paintings themselves.
+            float up = (p.bank.y - in.uv.y) / max(p.bank.z, 0.001);
+            int si = clamp(int(floor(up)), 0, 3);
+            float v = 1.0 - fract(clamp(up, 0.0, 3.999));
+            float2 tuv = float2(in.uv.x, v);
+            float3 ground = si == 0 ? bank0.sample(rep, tuv).rgb
+                          : si == 1 ? bank1.sample(rep, tuv).rgb
+                          : si == 2 ? bank2.sample(rep, tuv).rgb
+                                    : bank3.sample(rep, tuv).rgb;
             // Damp and dark right at the water, drying out up the bank.
             float damp = 1.0 - smoothstep(0.0, 0.12, d);
             ground *= mix(1.0, 0.62, damp * 0.9);

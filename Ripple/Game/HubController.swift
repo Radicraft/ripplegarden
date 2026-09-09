@@ -29,11 +29,6 @@ final class HubController: ObservableObject, TouchInput {
         let first: Bool          // the season's first pool carries its name
     }
 
-    @Published private(set) var marks: [Mark] = []
-    /// Season names on the line where each stretch is entered, and the
-    /// title at the mouth, all in screen points.
-    @Published private(set) var seasonMarks: [(name: String, screen: CGPoint)] = []
-    @Published private(set) var titleScreen: CGPoint = .zero
     private var entries: [(name: String, y: CGFloat)] = []
     private var mouthY: CGFloat = 0
     /// The level a splash is opening, once the water has closed over the tap.
@@ -69,6 +64,7 @@ final class HubController: ObservableObject, TouchInput {
     /// The lips between seasons: a shelf of stones the stream pours over.
     private var lips: [CGFloat] = []
     private var foam: [(x: CGFloat, y: CGFloat, phase: Float, size: CGFloat)] = []
+    private var shoreStones: [SolidInstance] = []
 
     init() {
         // Spring dresses the stream; the seasons show in what sits at each
@@ -93,7 +89,7 @@ final class HubController: ObservableObject, TouchInput {
         renderer.style = .woodblock
         var look = art.floor
         look.mosaicRadius = 0
-        renderer.bank = SIMD2(1, -0.70)
+        renderer.bank = SIMD3(1, 0.915, (0.915 - 0.06) / 4)
         renderer.floorLook = look
         renderer.depthPainter = { [weak self] w, h in self?.paintDepth(width: w, height: h) ?? Array(repeating: 1, count: w * h) }
         renderer.rebuildDepth()
@@ -144,6 +140,7 @@ final class HubController: ObservableObject, TouchInput {
     private func dress(bottom: CGFloat, stretch: CGFloat) {
         dressing = []
         stretchBranches = []
+        shoreStones = []
         var rng = SystemRandomNumberGenerator()
         let w = viewSize.width
         for (si, season) in Library.seasons.enumerated() {
@@ -218,9 +215,12 @@ final class HubController: ObservableObject, TouchInput {
             let dx = x - Float(pool.centre.x), dy = y - Float(pool.centre.y)
             let r = Float(pool.radius)
             let dist = (dx * dx + dy * dy).squareRoot()
-            if dist < r * 1.45 {
-                // A soft bowl: the bed shelves gently up to the bank.
-                let t = max(0, min(1, (r * 1.45 - dist) / (r * 0.9)))
+            if dist < r * 1.6 {
+                // A soft bowl with a ragged rim: the bed shelves gently up to
+                // a bank that is never a circle.
+                let ang = atan2(dy, dx)
+                let rim = r * (1.45 + (noise(ang * 1.4 + 20, Float(pool.centre.y) * 0.01) - 0.5) * 0.36)
+                let t = max(0, min(1, (rim - dist) / (r * 0.9)))
                 poolD = max(poolD, 0.3 + 0.7 * t * t * (3 - 2 * t))
             }
             // Nearby pools bend the channel toward them.
@@ -230,7 +230,11 @@ final class HubController: ObservableObject, TouchInput {
                 pull += (Float(pool.centre.x) - w / 2) * wgt
             }
         }
-        half = w * 0.16
+        // The shore wanders: a slow swell of width and a finer raggedness,
+        // different on each side.
+        let side: Float = x < w / 2 ? 0 : 7
+        let wander = (noise(y / 190 + side, 3.1) - 0.5) * 60 + (noise(y / 48 + side, 9.7) - 0.5) * 18
+        half = w * 0.16 + wander
         let centreX = w / 2 + pull * 0.6
         let off = abs(x - centreX)
         let channel: Float = 0.42 * (1 - smooth(half - 70, half + 50, off))
@@ -249,6 +253,20 @@ final class HubController: ObservableObject, TouchInput {
             }
         }
         return max(0.05, d)
+    }
+
+    /// Smooth value noise in 0...1, for a shoreline that wanders like one.
+    private func noise(_ x: Float, _ y: Float) -> Float {
+        func hash(_ i: Int, _ j: Int) -> Float {
+            var h = UInt32(truncatingIfNeeded: i) &* 374761393 &+ UInt32(truncatingIfNeeded: j) &* 668265263
+            h = (h ^ (h >> 13)) &* 1274126177
+            return Float(h & 0xFFFF) / 65535
+        }
+        let ix = Int(floor(x)), iy = Int(floor(y))
+        let fx = x - floor(x), fy = y - floor(y)
+        let ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy)
+        let a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), dd = hash(ix + 1, iy + 1)
+        return (a + (b - a) * ux) + ((c + (dd - c) * ux) - (a + (b - a) * ux)) * uy
     }
 
     private func smooth(_ a: Float, _ b: Float, _ x: Float) -> Float {
@@ -291,6 +309,32 @@ final class HubController: ObservableObject, TouchInput {
                 let flip = side == 1
                 let roll = CGFloat.random(in: 0...1, using: &rng)
                 sinceRoot[side] += 55
+                // The waterline itself: pebbles, gravel and mud at the edge,
+                // some half in the water, and now and then a stone sitting in it.
+                for _ in 0..<Int.random(in: 1...3, using: &rng) {
+                    let kind = Int.random(in: 0...9, using: &rng)
+                    let name = kind < 5 ? "stone_a_\(Int.random(in: 1...8, using: &rng))"
+                             : kind < 8 ? "gravel_\(Int.random(in: 1...4, using: &rng))"
+                                        : "sand_\(Int.random(in: 1...3, using: &rng))"
+                    let sz = kind < 5 ? CGFloat.random(in: 12...26, using: &rng) : CGFloat.random(in: 30...50, using: &rng)
+                    let along = CGFloat.random(in: -26...26, using: &rng)
+                    let inOut = CGFloat.random(in: -10...16, using: &rng)   // minus: into the water
+                    let at = CGPoint(x: edge.x + (flip ? -inOut : inOut), y: edge.y + along)
+                    dressing.append(Sprite(name, at: at, size: CGSize(width: sz, height: sz * 0.8),
+                                           rotation: Float.random(in: 0...(2 * .pi), using: &rng), mode: .floater,
+                                           alpha: kind < 5 ? 1 : 0.8, tint: kind < 5 ? [1, 1, 1, 1] : [0.62, 0.6, 0.55, 1], z: 0.015 + (inOut > 0 ? 0.06 : 0)))
+                }
+                if CGFloat.random(in: 0...1, using: &rng) < 0.12 {
+                    // A stone in the shallows, half out of the water.
+                    let r: Float = Float.random(in: 14...24, using: &rng)
+                    let at = CGPoint(x: edge.x + (flip ? -CGFloat(r) * 0.9 : CGFloat(r) * 0.9), y: edge.y)
+                    let cold = winter
+                    shoreStones.append(SolidInstance(position: SIMD2(Float(at.x), Float(at.y)), lift: r * 0.3,
+                                                     yaw: Float.random(in: 0...3, using: &rng), roll: Float(at.x * 0.13 + at.y * 0.07),
+                                                     tilt: .zero, length: r * 1.4, radius: r, shape: 2, alpha: 1,
+                                                     colourA: cold ? [0.6, 0.63, 0.68, 1] : [0.52, 0.53, 0.5, 1],
+                                                     colourB: cold ? [0.6, 0.63, 0.68, 1] : [0.38, 0.5, 0.3, 1]))
+                }
                 if sinceRoot[side] > CGFloat.random(in: 380...640, using: &rng) {
                     sinceRoot[side] = 0
                     let name = "root_\(Int.random(in: 1...2, using: &rng))"
@@ -300,10 +344,12 @@ final class HubController: ObservableObject, TouchInput {
                                            rotation: Float.random(in: -0.25...0.25, using: &rng), mode: .floater, alpha: 1, flipX: flip, z: 0.075))
                 } else if roll < 0.5 {
                     let name = "tuft_\(Int.random(in: 1...3, using: &rng))"
-                    let sz = CGFloat.random(in: 34...56, using: &rng)
-                    let at = CGPoint(x: edge.x + (flip ? sz * 0.35 : -sz * 0.35), y: edge.y)
+                    let sz = CGFloat.random(in: 36...60, using: &rng)
+                    // Rooted on the bank, leaning a little out over the water.
+                    let at = CGPoint(x: edge.x + (flip ? sz * 0.18 : -sz * 0.18), y: edge.y + CGFloat.random(in: -12...12, using: &rng))
+                    let lean: Float = flip ? .pi : 0
                     dressing.append(Sprite(name, at: at, size: CGSize(width: sz, height: sz * 0.55),
-                                           rotation: Float.random(in: 0...(2 * .pi), using: &rng), mode: .floater, alpha: winter ? 0.7 : 1, z: 0.09))
+                                           rotation: lean + Float.random(in: -0.5...0.5, using: &rng), mode: .floater, alpha: winter ? 0.75 : 1, z: 0.09))
                 } else if roll < 0.78, !reedSet.isEmpty {
                     let name = reedSet.randomElement(using: &rng)!
                     let ht = CGFloat.random(in: 70...110, using: &rng)
@@ -373,18 +419,6 @@ final class HubController: ObservableObject, TouchInput {
             sound.stopAmbience()
             onPlay?(o.level)
         }
-        if now - lastMarksAt > 0.08 {
-            lastMarksAt = now
-            seasonMarks = entries.map { ($0.name, renderer.screenPoint(world: CGPoint(x: viewSize.width / 2, y: $0.y))) }
-            titleScreen = renderer.screenPoint(world: CGPoint(x: viewSize.width / 2, y: mouthY))
-            marks = pools.map { pool in
-                let idx = Library.levels(in: pool.season).firstIndex { $0.id == pool.level.id } ?? 0
-                return Mark(id: pool.level.id, level: pool.level, season: pool.season,
-                            screen: renderer.screenPoint(world: pool.centre), radius: pool.radius * CGFloat(renderer.zoom),
-                            unlocked: progress.isUnlocked(level: pool.level), complete: progress.isComplete(levelID: pool.level.id),
-                            first: idx == 0)
-            }
-        }
     }
 
     private func feed(_ renderer: WaterRenderer) {
@@ -422,7 +456,7 @@ final class HubController: ObservableObject, TouchInput {
         }
         // Each pool: a stone at its shoulder, a lily pad with the bud that
         // opens once the level is done; a sleeping season lies under mist.
-        var solids: [SolidInstance] = []
+        var solids: [SolidInstance] = shoreStones
         for s in dressing { paper(s) }
         for pool in pools {
             let unlocked = progress.isUnlocked(level: pool.level)
@@ -449,6 +483,34 @@ final class HubController: ObservableObject, TouchInput {
                                        mode: .floater, alpha: 0.28, z: 0.3))
                 }
             }
+        }
+        // Words: a washi chip beside each pool, the season's name on the line
+        // where its stretch is entered, the title at the mouth. Paper on
+        // the water, so they tilt with it and move with the camera.
+        if let tex = renderer.textures as TextureCache? {
+            for pool in pools {
+                let idx = Library.levels(in: pool.season).firstIndex { $0.id == pool.level.id } ?? 0
+                let word = ["one", "two", "three", "four", "five", "six"][idx]
+                let done = progress.isComplete(levelID: pool.level.id)
+                let unlocked = progress.isUnlocked(level: pool.level)
+                let name = LabelSprites.chip(word, done: done, textures: tex)
+                let at = CGPoint(x: pool.centre.x - pool.radius * 0.3, y: pool.centre.y - pool.radius * 0.95)
+                let tip = Float(sin(Double(pool.centre.y) * 0.013 + Double(idx))) * 0.11
+                paper(Sprite(name, at: at, size: CGSize(width: 86, height: 36), rotation: tip,
+                             mode: .floater, alpha: unlocked ? 1 : 0.55, z: 0.1))
+            }
+            for e in entries {
+                let name = LabelSprites.caption(e.name, points: 26, textures: tex)
+                let t = tex.size(name)
+                let h: CGFloat = 26 * 1.9
+                over.append(Sprite(name, at: CGPoint(x: viewSize.width / 2, y: e.y), size: CGSize(width: h * t.width / max(1, t.height), height: h),
+                                   mode: .floater, alpha: 1, z: 0.25))
+            }
+            let title = LabelSprites.caption("Ripple Garden", points: 32, textures: tex)
+            let ts = tex.size(title)
+            let th: CGFloat = 32 * 1.9
+            over.append(Sprite(title, at: CGPoint(x: viewSize.width / 2, y: mouthY), size: CGSize(width: th * ts.width / max(1, ts.height), height: th),
+                               mode: .floater, alpha: 1, z: 0.3))
         }
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }

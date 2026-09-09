@@ -61,6 +61,9 @@ struct FloorParams {
     var camera: SIMD4<Float>
     var bed: SIMD4<Float>
     var view: SIMD4<Float>
+    /// x bank on, y the world-height fraction where the first stretch is
+    /// entered (the mouth), z one stretch as a fraction of the height.
+    var bank: SIMD4<Float> = .zero
 }
 
 struct SiltParams {
@@ -301,9 +304,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     var onFrame: ((Float) -> Void)?
     var depthPainter: ((Int, Int) -> [Float])?
 
-    /// The bank on the floor: x = on/off, y = the snow line as a fraction of
-    /// the world's height (snow above it). Levels have none; the map does.
-    var bank = SIMD2<Float>(0, 0)
+    /// The bank on the floor: x = on/off, y = the fraction of the world's
+    /// height where the first stretch is entered, z = one stretch's height
+    /// as a fraction. Each stretch wears its season's painted bank.
+    var bank = SIMD3<Float>(0, 0, 0)
+    /// The paintings, in season order from the mouth.
+    var bankPaintings: [String] = ["bank_winter", "bank_spring", "bank_summer", "bank_autumn"]
 
     var floorLook = FloorLook.plain {
         didSet {
@@ -823,8 +829,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(depthTexture, index: 3)
                 encoder.setFragmentTexture(bedTexture ?? blankMosaic, index: 4)
                 encoder.setFragmentTexture(read, index: 5)
-                encoder.setFragmentTexture(bank.x > 0 ? (textures.texture("bank_tile") ?? blankMosaic) : blankMosaic, index: 6)
-                encoder.setFragmentTexture(bank.x > 0 ? (textures.texture("bank_snow_tile") ?? blankMosaic) : blankMosaic, index: 7)
+                for (k, name) in bankPaintings.prefix(4).enumerated() {
+                    let tex = bank.x > 0 ? (textures.texture(name) ?? textures.texture("bank_tile") ?? blankMosaic) : blankMosaic
+                    encoder.setFragmentTexture(tex, index: 6 + k)
+                }
                 encoder.setFragmentBytes(&fp, length: MemoryLayout<FloorParams>.stride, index: 0)
                 encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -896,7 +904,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                            siltColour: SIMD4(look.siltColour, 1),
                            camera: SIMD4(camera.x * scale, camera.y * scale, WaterRenderer.cameraHeight, WaterRenderer.cameraShiftGain),
                            bed: SIMD4(bedTexture == nil ? 0 : 0.9, 1.0, Float(CACurrentMediaTime() - startTime), 0),
-                           view: SIMD4(viewCentre.x * scale, viewCentre.y * scale, bank.x, bank.y))
+                           view: SIMD4(viewCentre.x * scale, viewCentre.y * scale, bank.x, 0),
+                           bank: SIMD4(bank.x, bank.y, bank.z, 0))
     }
 
     private func siltParams(dt: Float) -> SiltParams {

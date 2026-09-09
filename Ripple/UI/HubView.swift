@@ -15,42 +15,6 @@ struct HubView: View {
             }
             .ignoresSafeArea()
 
-            GeometryReader { geo in
-                ZStack {
-                    ForEach(hub.marks) { mark in
-                        if mark.screen.y > -80, mark.screen.y < geo.size.height + 80 {
-                            label(mark)
-                                .position(x: mark.screen.x - mark.radius * 0.3, y: mark.screen.y - mark.radius * 0.95)
-                        }
-                    }
-                }
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-
-            GeometryReader { geo in
-                ZStack {
-                    ForEach(Array(hub.seasonMarks.enumerated()), id: \.offset) { _, m in
-                        if m.screen.y > -60, m.screen.y < geo.size.height + 60 {
-                            Text(m.name)
-                                .font(Ink.title(26))
-                                .foregroundStyle(Ink.paper)
-                                .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
-                                .position(x: geo.size.width / 2, y: m.screen.y)
-                        }
-                    }
-                    if hub.titleScreen.y > -60, hub.titleScreen.y < geo.size.height + 60 {
-                        Text("Ripple Garden")
-                            .font(Ink.title(32))
-                            .foregroundStyle(Ink.paper)
-                            .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
-                            .position(x: geo.size.width / 2, y: hub.titleScreen.y)
-                    }
-                }
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-
             header
         }
         .statusBarHidden(true)
@@ -61,7 +25,10 @@ struct HubView: View {
                 SettingsCard { showSettings = false }
             }
         }
-        .onAppear { hub.onPlay = onPlay }
+        .onAppear {
+            hub.onPlay = onPlay
+            if ProcessInfo.processInfo.arguments.contains("-showSettings") { showSettings = true }
+        }
     }
 
     private func label(_ mark: HubController.Mark) -> some View {
