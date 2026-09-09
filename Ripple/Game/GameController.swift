@@ -539,6 +539,10 @@ final class GameController: ObservableObject, TouchInput {
             }
         }
         for d in debris where !d.cleared {
+            // Under unbroken ice a piece is a shape in the dark, not a thing
+            // on the water: its floor shadow stays, the rest waits for the
+            // sheet to open over it.
+            if let f = iceField, f.ice(at: d.position) > 0.5 { continue }
             let s = spriteSize(d)
             let melt = d.meltsIn.map { CGFloat(max(0.35, $0 / max(1, d.meltTotal))) } ?? 1
             guard let body = d.solid else {

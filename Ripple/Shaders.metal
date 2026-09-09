@@ -409,6 +409,8 @@ fragment float4 floor_compose_fragment(VertexOut in                             
                                        texture2d<float, access::sample> depth   [[texture(3)]],
                                        texture2d<float, access::sample> bed     [[texture(4)]],
                                        texture2d<float, access::sample> field   [[texture(5)]],
+                                       texture2d<float, access::sample> bank    [[texture(6)]],
+                                       texture2d<float, access::sample> bankSnow [[texture(7)]],
                                        constant FloorParams &p                  [[buffer(0)]],
                                        constant CameraParams &cam               [[buffer(1)]])
 {
@@ -506,6 +508,25 @@ fragment float4 floor_compose_fragment(VertexOut in                             
         float film = smoothstep(0.03, 0.70, s * patch) * p.mosaic.w * rim;
         float3 under = mix(tile, siltCol, film);
         col = mix(col, under, m.a);
+    }
+    // The bank. Where the bed rises out of the water (p.view.z on, depth
+    // near nothing) the floor is earth: moss, grass and pebbles from a
+    // seamless tile, under snow above the snow line; a dark damp margin
+    // where the water laps it.
+    if (p.view.z > 0.5) {
+        constexpr sampler rep(filter::linear, address::repeat);
+        float bankness = 1.0 - smoothstep(0.05, 0.15, d);
+        if (bankness > 0.001) {
+            float2 tuv = float2(in.uv.x * aspect, in.uv.y) * (p.viewport.y / 1400.0);
+            float3 earth = bank.sample(rep, tuv).rgb;
+            float3 snow = bankSnow.sample(rep, tuv * 1.1 + 0.3).rgb;
+            float snowy = 1.0 - smoothstep(p.view.w - 0.03, p.view.w + 0.03, in.uv.y);
+            float3 ground = mix(earth, snow, snowy);
+            // Damp and dark right at the water, drying out up the bank.
+            float damp = 1.0 - smoothstep(0.0, 0.12, d);
+            ground *= mix(1.0, 0.62, damp * 0.9);
+            col = mix(col, ground, bankness);
+        }
     }
     return float4(col, 1.0);
 }
@@ -891,6 +912,8 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // Focus sits on the surface. The deeper the bed below this point, the
     // softer it is drawn: a small cross blur that grows with the depth.
     float dHere = depthTex.sample(smp, wuv).r;
+    // Bank: above the waterline there is no water to draw, just the ground.
+    float dry = 1.0 - smoothstep(0.05, 0.11, dHere);
     // Only the deep bed goes soft; anything over the shelves, and the fish,
     // stay crisp.
     float blur = smoothstep(0.7, 1.0, dHere) * 1.1 / float(p.size.y);
@@ -959,6 +982,11 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // Paper grain over everything.
     float paper = fbm(in.uv * p.viewport / 6.0, 2);
     col *= 0.92 + 0.14 * paper;
+
+    if (dry > 0.001) {
+        float3 ground = floorTex.sample(smp, wuv).rgb;
+        col = mix(col, ground, dry);
+    }
 
     // The frozen sheet. Where the mask says ice, the water is under a slab:
     // frosted white, the dark water only ghosting through, feathered frost

@@ -1,12 +1,5 @@
 import SwiftUI
 
-/// Paper and ink, the two colours the interface is allowed.
-enum Ink {
-    static let paper = Color(red: 0.965, green: 0.945, blue: 0.900)
-    static let ink = Color(red: 0.106, green: 0.106, blue: 0.106)
-    static let blossom = Color(red: 0.93, green: 0.55, blue: 0.65)
-}
-
 struct LevelView: View {
 
     @ObservedObject var controller: GameController
@@ -24,25 +17,23 @@ struct LevelView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showSettings) { SettingsSheet() }
+        .overlay {
+            PondOverlay(isPresented: $showSettings) {
+                SettingsCard { showSettings = false }
+            }
+        }
     }
 
     private var hud: some View {
         VStack {
             HStack(alignment: .top) {
-                Button(action: onExit) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Ink.ink)
-                        .frame(width: 34, height: 34)
-                        .background(Ink.paper.opacity(0.85), in: Circle())
-                }
-                .padding(.leading, 18)
-                .padding(.top, 8)
-                .opacity(controller.phase == .playing ? 0.8 : 0)
+                StoneIconButton(symbol: "chevron.left", action: onExit)
+                    .padding(.leading, 18)
+                    .padding(.top, 8)
+                    .opacity(controller.phase == .playing ? 0.9 : 0)
                 if controller.showTitle {
                     Text(controller.level.title)
-                        .font(.system(size: 22, weight: .regular, design: .serif))
+                        .font(Ink.title(22))
                         .foregroundStyle(Ink.paper)
                         .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
                         .padding(.leading, 22)
@@ -50,18 +41,10 @@ struct LevelView: View {
                         .transition(.opacity.combined(with: .offset(y: -6)))
                 }
                 Spacer()
-                Button {
-                    showSettings = true
-                } label: {
-                    Image(systemName: "leaf")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Ink.ink)
-                        .frame(width: 34, height: 34)
-                        .background(Ink.paper.opacity(0.85), in: Circle())
-                }
-                .padding(.trailing, 18)
-                .padding(.top, 8)
-                .opacity(controller.phase == .playing ? 0.8 : 0)
+                StoneIconButton(symbol: "leaf") { showSettings = true }
+                    .padding(.trailing, 18)
+                    .padding(.top, 8)
+                    .opacity(controller.phase == .playing ? 0.9 : 0)
             }
             .animation(.easeInOut(duration: 0.8), value: controller.showTitle)
 
@@ -112,19 +95,18 @@ extension View {
     func floatingPaper(seed: Double) -> some View { modifier(FloatingPaper(seed: seed)) }
 }
 
+/// A smaller cut of the same paper, for a word of help.
 struct HintBubble: View {
     let text: String
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 16, design: .serif))
-            .foregroundStyle(Ink.ink)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(Ink.paper.opacity(0.94), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Ink.ink.opacity(0.35), lineWidth: 1))
-            .padding(.horizontal, 40)
+        PaperCard(inset: 22) {
+            Text(text)
+                .font(Ink.body(16))
+                .foregroundStyle(Ink.ink)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 40)
     }
 }
 
@@ -135,84 +117,25 @@ struct CompletionCard: View {
     let garden: () -> Void
 
     var body: some View {
-        VStack(spacing: 14) {
-            Text("The pond is clear.")
-                .font(.system(size: 22, weight: .regular, design: .serif))
-                .foregroundStyle(Ink.ink)
-            Text("The garden blooms a little further.")
-                .font(.system(size: 15, design: .serif))
-                .foregroundStyle(Ink.ink.opacity(0.75))
-            HStack(spacing: 14) {
-                Button(action: garden) {
-                    Text("Garden")
-                        .font(.system(size: 17, weight: .medium, design: .serif))
-                        .foregroundStyle(Ink.ink)
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 10)
-                        .overlay(Capsule().stroke(Ink.ink.opacity(0.5), lineWidth: 1))
-                }
-                if hasNext {
-                    Button(action: next) {
-                        Text("Next")
-                            .font(.system(size: 17, weight: .medium, design: .serif))
-                            .foregroundStyle(Ink.paper)
-                            .padding(.horizontal, 34)
-                            .padding(.vertical, 10)
-                            .background(Ink.ink, in: Capsule())
+        PaperCard(inset: 30) {
+            VStack(spacing: 14) {
+                Text("The pond is clear.")
+                    .font(Ink.title(22))
+                    .foregroundStyle(Ink.ink)
+                Text("The garden blooms a little further.")
+                    .font(Ink.body(15))
+                    .foregroundStyle(Ink.ink.opacity(0.75))
+                HStack(spacing: 14) {
+                    Button("Garden", action: garden)
+                        .buttonStyle(.stone(size: 17, hPad: 22, vPad: 10))
+                    if hasNext {
+                        Button("Next", action: next)
+                            .buttonStyle(.stone(dark: true, size: 17, hPad: 30, vPad: 10))
                     }
                 }
+                .padding(.top, 4)
             }
-            .padding(.top, 4)
         }
-        .padding(.horizontal, 30)
-        .padding(.vertical, 24)
-        .background(Ink.paper.opacity(0.96), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Ink.ink.opacity(0.4), lineWidth: 1))
         .padding(.horizontal, 44)
-    }
-}
-
-struct SettingsSheet: View {
-    @ObservedObject private var settings = Settings.shared
-    @ObservedObject private var store = Store.shared
-    @Environment(\.dismiss) private var dismiss
-    @State private var restoring = false
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Toggle("Sound", isOn: $settings.soundOn)
-                    Toggle("Haptics", isOn: $settings.hapticsOn)
-                }
-                Section {
-                    Button {
-                        restoring = true
-                        Task { await store.restore(); restoring = false }
-                    } label: {
-                        HStack {
-                            Text("Restore purchases")
-                            Spacer()
-                            if restoring { ProgressView() }
-                        }
-                    }
-                    .disabled(restoring)
-                }
-                Section {
-                    Text("Ripple Garden is a calm puzzle about water. Every level is a pond, every ripple is yours, and nothing can go wrong.")
-                        .font(.system(size: 15, design: .serif))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-        .presentationDetents([.medium])
-        .preferredColorScheme(.light)
     }
 }

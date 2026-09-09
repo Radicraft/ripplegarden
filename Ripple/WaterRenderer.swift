@@ -301,6 +301,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     var onFrame: ((Float) -> Void)?
     var depthPainter: ((Int, Int) -> [Float])?
 
+    /// The bank on the floor: x = on/off, y = the snow line as a fraction of
+    /// the world's height (snow above it). Levels have none; the map does.
+    var bank = SIMD2<Float>(0, 0)
+
     var floorLook = FloorLook.plain {
         didSet {
             loadMosaic(named: floorLook.mosaicImage)
@@ -819,6 +823,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(depthTexture, index: 3)
                 encoder.setFragmentTexture(bedTexture ?? blankMosaic, index: 4)
                 encoder.setFragmentTexture(read, index: 5)
+                encoder.setFragmentTexture(bank.x > 0 ? (textures.texture("bank_tile") ?? blankMosaic) : blankMosaic, index: 6)
+                encoder.setFragmentTexture(bank.x > 0 ? (textures.texture("bank_snow_tile") ?? blankMosaic) : blankMosaic, index: 7)
                 encoder.setFragmentBytes(&fp, length: MemoryLayout<FloorParams>.stride, index: 0)
                 encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -890,7 +896,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                            siltColour: SIMD4(look.siltColour, 1),
                            camera: SIMD4(camera.x * scale, camera.y * scale, WaterRenderer.cameraHeight, WaterRenderer.cameraShiftGain),
                            bed: SIMD4(bedTexture == nil ? 0 : 0.9, 1.0, Float(CACurrentMediaTime() - startTime), 0),
-                           view: SIMD4(viewCentre.x * scale, viewCentre.y * scale, 0, 0))
+                           view: SIMD4(viewCentre.x * scale, viewCentre.y * scale, bank.x, bank.y))
     }
 
     private func siltParams(dt: Float) -> SiltParams {

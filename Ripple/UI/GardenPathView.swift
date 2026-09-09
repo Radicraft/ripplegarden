@@ -28,23 +28,21 @@ struct GardenPathView: View {
             }
         }
         .statusBarHidden(true)
-        .sheet(isPresented: $showSettings) { SettingsSheet() }
+        .overlay {
+            PondOverlay(isPresented: $showSettings) {
+                SettingsCard { showSettings = false }
+            }
+        }
     }
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             Text("Ripple Garden")
-                .font(.system(size: 30, weight: .regular, design: .serif))
+                .font(Ink.title(30))
                 .foregroundStyle(Ink.paper)
                 .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
             Spacer()
-            Button { showSettings = true } label: {
-                Image(systemName: "leaf")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Ink.ink)
-                    .frame(width: 34, height: 34)
-                    .background(Ink.paper.opacity(0.85), in: Circle())
-            }
+            StoneIconButton(symbol: "leaf") { showSettings = true }
         }
         .padding(.horizontal, 24)
         .padding(.top, 58)
@@ -52,45 +50,42 @@ struct GardenPathView: View {
     }
 
     private var comingSoon: some View {
-        VStack(spacing: 10) {
-            Text("Seasons to come")
-                .font(.system(size: 20, design: .serif))
-                .foregroundStyle(Ink.ink)
-            Text("New seasons, new levels and new looks for the garden arrive with the Seasons pass. The first year is yours to keep.")
-                .font(.system(size: 14, design: .serif))
-                .foregroundStyle(Ink.ink.opacity(0.75))
-                .multilineTextAlignment(.center)
-            if store.isSubscribed {
-                Text("You have the Seasons pass. Thank you.")
-                    .font(.system(size: 14, weight: .medium, design: .serif))
+        PaperCard(inset: 26) {
+            VStack(spacing: 10) {
+                Text("Seasons to come")
+                    .font(Ink.title(20))
                     .foregroundStyle(Ink.ink)
-            } else if store.products.isEmpty {
-                Text("Coming soon")
-                    .font(.system(size: 14, weight: .medium, design: .serif))
-                    .foregroundStyle(Ink.ink.opacity(0.6))
-            } else {
-                HStack(spacing: 12) {
-                    ForEach(store.products, id: \.id) { product in
-                        Button {
-                            Task { await store.purchase(product) }
-                        } label: {
-                            VStack(spacing: 2) {
-                                Text(product.id == Store.annualID ? "Yearly" : "Monthly")
-                                    .font(.system(size: 14, weight: .medium, design: .serif))
-                                Text(product.displayPrice)
-                                    .font(.system(size: 13, design: .serif))
+                Text("New seasons, new levels and new looks for the garden arrive with the Seasons pass. The first year is yours to keep.")
+                    .font(Ink.body(14))
+                    .foregroundStyle(Ink.ink.opacity(0.75))
+                    .multilineTextAlignment(.center)
+                if store.isSubscribed {
+                    Text("You have the Seasons pass. Thank you.")
+                        .font(Ink.label(14))
+                        .foregroundStyle(Ink.ink)
+                } else if store.products.isEmpty {
+                    Text("Coming soon")
+                        .font(Ink.label(14))
+                        .foregroundStyle(Ink.ink.opacity(0.6))
+                } else {
+                    HStack(spacing: 12) {
+                        ForEach(store.products, id: \.id) { product in
+                            Button {
+                                Task { await store.purchase(product) }
+                            } label: {
+                                VStack(spacing: 2) {
+                                    Text(product.id == Store.annualID ? "Yearly" : "Monthly")
+                                    Text(product.displayPrice)
+                                        .font(Ink.body(13))
+                                }
                             }
-                            .foregroundStyle(Ink.paper)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 8)
-                            .background(Ink.ink, in: Capsule())
+                            .buttonStyle(.stone(dark: true, size: 14, hPad: 18, vPad: 8))
                         }
                     }
                 }
             }
         }
-        .padding(22)
-        .background(Ink.paper.opacity(0.92), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .floatingPaper(seed: 3)
         .padding(.horizontal, 28)
     }
 }
@@ -108,13 +103,13 @@ private struct SeasonStretch: View {
         let levels = Library.levels(in: season)
         VStack(alignment: .leading, spacing: 4) {
             Text(season.name)
-                .font(.system(size: 24, weight: .regular, design: .serif))
+                .font(Ink.title(24))
                 .foregroundStyle(Ink.paper)
                 .shadow(color: .black.opacity(0.3), radius: 5, y: 2)
                 .padding(.horizontal, 28)
                 .padding(.top, 26)
             Text(unlocked ? season.tagline : "This season sleeps until the one before is done.")
-                .font(.system(size: 14, design: .serif))
+                .font(Ink.body(14))
                 .foregroundStyle(Ink.paper.opacity(0.85))
                 .padding(.horizontal, 28)
                 .padding(.bottom, 8)
@@ -151,9 +146,10 @@ private struct LevelStone: View {
 
     var body: some View {
         ZStack {
-            Circle()
-                .fill(Ink.paper)
-                .overlay(Circle().stroke(Ink.ink.opacity(0.5), lineWidth: 1.5))
+            StoneFace(dark: false)
+                .scaledToFill()
+                .frame(width: 78, height: 78)
+                .clipShape(Circle())
                 .shadow(color: .black.opacity(0.25), radius: 6, y: 4)
             if done, let image = Art.image(season.woodblock.mosaic) {
                 Image(uiImage: image)
@@ -162,8 +158,9 @@ private struct LevelStone: View {
                     .padding(6)
             } else {
                 Text("\(level.index)")
-                    .font(.system(size: 24, weight: .regular, design: .serif))
-                    .foregroundStyle(Ink.ink.opacity(open ? 1 : 0.35))
+                    .font(Ink.title(24))
+                    .foregroundStyle(Ink.ink.opacity(open ? 0.9 : 0.35))
+                    .shadow(color: .white.opacity(0.6), radius: 0.7, y: 0.8)
             }
         }
         .frame(width: 78, height: 78)

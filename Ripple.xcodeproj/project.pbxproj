@@ -25,11 +25,11 @@
 			isa = PBXGroup;
 			children = (
 				A1000301 /* Ripple */,
-				A1000302 /* Products */,
+				A10003020000000000000001 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		A1000302 /* Products */ = {
+		A10003020000000000000001 /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				A1000010 /* Ripple.app */,
@@ -93,7 +93,7 @@
 				Base,
 			);
 			mainGroup = A1000300;
-			productRefGroup = A1000302 /* Products */;
+			productRefGroup = A10003020000000000000001 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -177,6 +177,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Ripple Garden";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -207,6 +208,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Ripple Garden";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

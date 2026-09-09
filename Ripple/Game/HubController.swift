@@ -85,6 +85,7 @@ final class HubController: ObservableObject, TouchInput {
         renderer.style = .woodblock
         var look = art.floor
         look.mosaicRadius = 0
+        renderer.bank = SIMD2(1, 0.30)
         renderer.floorLook = look
         renderer.depthPainter = { [weak self] w, h in self?.paintDepth(width: w, height: h) ?? Array(repeating: 1, count: w * h) }
         renderer.rebuildDepth()
@@ -183,6 +184,7 @@ final class HubController: ObservableObject, TouchInput {
                  Float.random(in: 0...(2 * .pi), using: &rng), CGFloat.random(in: 26...46, using: &rng))
             }
         }
+        plantBanks(&rng)
         snow = (0..<60).map { _ in
             (CGFloat.random(in: 0...w, using: &rng), CGFloat.random(in: winterBand, using: &rng),
              Float.random(in: 0...(2 * .pi), using: &rng), CGFloat.random(in: 6...13, using: &rng))
@@ -252,6 +254,56 @@ final class HubController: ObservableObject, TouchInput {
             }
         }
         return map
+    }
+
+    /// Tufts of grass, roots reaching into the water, reeds and the odd
+    /// stone along both banks, found by walking down the stream and looking
+    /// for where the bed comes out of the water.
+    private func plantBanks(_ rng: inout SystemRandomNumberGenerator) {
+        let w = viewSize.width, h = viewSize.height
+        var y: CGFloat = h * 0.03
+        var sinceRoot: [CGFloat] = [400, 250]
+        while y < h * 0.985 {
+            for side in 0..<2 {
+                // Walk in from the edge until the water starts.
+                var x: CGFloat = side == 0 ? 4 : w - 4
+                let step: CGFloat = side == 0 ? 6 : -6
+                var found: CGPoint?
+                for _ in 0..<80 {
+                    if depth(at: CGPoint(x: x / w, y: y / h)) > 0.1 { found = CGPoint(x: x - step * 2.5, y: y); break }
+                    x += step
+                }
+                guard let edge = found else { continue }
+                let winter = y < winterBand.upperBound
+                let seasonIndex = min(3, max(0, Int((y / h - 0.085) / ((0.94 - 0.085) / 4))))
+                let reedSet = Library.seasons[seasonIndex].woodblock.reeds
+                let flip = side == 1
+                let roll = CGFloat.random(in: 0...1, using: &rng)
+                sinceRoot[side] += 55
+                if sinceRoot[side] > CGFloat.random(in: 380...640, using: &rng) {
+                    sinceRoot[side] = 0
+                    let name = "root_\(Int.random(in: 1...2, using: &rng))"
+                    let len = CGFloat.random(in: 110...170, using: &rng)
+                    let at = CGPoint(x: edge.x + (flip ? -len * 0.28 : len * 0.28), y: edge.y)
+                    dressing.append(Sprite(name, at: at, size: CGSize(width: len, height: len * 0.38),
+                                           rotation: Float.random(in: -0.25...0.25, using: &rng), mode: .floater, alpha: 1, flipX: flip, z: 0.05))
+                } else if roll < 0.5 {
+                    let name = "tuft_\(Int.random(in: 1...3, using: &rng))"
+                    let sz = CGFloat.random(in: 34...56, using: &rng)
+                    let at = CGPoint(x: edge.x + (flip ? sz * 0.35 : -sz * 0.35), y: edge.y)
+                    dressing.append(Sprite(name, at: at, size: CGSize(width: sz, height: sz * 0.55),
+                                           rotation: Float.random(in: 0...(2 * .pi), using: &rng), mode: .floater, alpha: winter ? 0.7 : 1, z: 0.06))
+                } else if roll < 0.78, !reedSet.isEmpty {
+                    let name = reedSet.randomElement(using: &rng)!
+                    let ht = CGFloat.random(in: 70...110, using: &rng)
+                    let t = garden.textureSize(name)
+                    let at = CGPoint(x: edge.x + (flip ? 14 : -14), y: edge.y - ht * 0.42)
+                    dressing.append(Sprite(name, at: at, size: CGSize(width: ht * t.width / max(1, t.height), height: ht),
+                                           rotation: Float.random(in: -0.2...0.2, using: &rng), mode: .floater, alpha: 1, flipX: flip, z: 0.3))
+                }
+            }
+            y += 55
+        }
     }
 
     // MARK: - Per frame
