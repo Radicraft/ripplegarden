@@ -102,14 +102,50 @@ enum DebrisKind {
     var threshold: Float { switch self { case .natural: return 1; case .can: return 0.8; default: return 1 } }
     var currentPush: Float { switch self { case .natural: return 1; case .can: return 0.6; case .bottle: return 1.2; case .packet: return 1.1; case .bag: return 1.8 } }
 
-    /// Rubbish drawn as a body rather than a cut-out, and how fat and how
-    /// long that body is as fractions of the piece's radius. Everything else
-    /// is paper and returns nil.
-    var solid: (shape: UInt32, radius: CGFloat, length: CGFloat)? {
+    /// Rubbish drawn as a body rather than a cut-out. Everything else is
+    /// paper and returns nil.
+    var solid: SolidBody? {
         switch self {
-        case .can: return (0, 0.5, 1.1)
-        case .bottle: return (1, 0.36, 1.9)
+        case .can: return SolidBody(shape: 0, radius: 0.5, length: 1.1)
+        case .bottle: return SolidBody(shape: 1, radius: 0.36, length: 1.9)
         default: return nil
+        }
+    }
+}
+
+/// A body drawn as a mesh rather than a cut-out: which shape it is, how fat
+/// and how long as fractions of the piece's radius, how far above the water
+/// its axis sits as a fraction of its own, and whether it rolls when the
+/// water shoves it sideways.
+struct SolidBody {
+    var shape: UInt32
+    var radius: CGFloat
+    var length: CGFloat
+    var lift: CGFloat = 0.55
+    var rolls: Bool = true
+}
+
+/// A heavy natural piece is a body too, and which one is written on the
+/// sprite the season handed it: driftwood is a log, the stones are stones.
+/// The photographic set prefixes its names, so the prefix comes off first.
+enum NaturalSolid {
+    case log, stone, mossyStone
+
+    static func forSprite(_ name: String) -> NaturalSolid? {
+        let n = name.hasPrefix("p_") ? String(name.dropFirst(2)) : name
+        if n.hasPrefix("driftwood") { return .log }
+        if n.hasPrefix("mossstone") { return .mossyStone }
+        if n.hasPrefix("stone") { return .stone }
+        return nil
+    }
+
+    /// A log rolls under the water the way a barrel does. A stone sits low
+    /// and does not roll at all, so its roll slot carries the seed of its
+    /// lumps instead.
+    var body: SolidBody {
+        switch self {
+        case .log: return SolidBody(shape: 3, radius: 0.33, length: 2.1, lift: 0.45)
+        case .stone, .mossyStone: return SolidBody(shape: 2, radius: 0.95, length: 1.35, lift: 0.35, rolls: false)
         }
     }
 }

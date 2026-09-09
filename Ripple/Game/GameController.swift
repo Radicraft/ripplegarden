@@ -511,12 +511,14 @@ final class GameController: ObservableObject, TouchInput {
             over.append(edge)
             over.append(s)
         }
+        // Rubbish and stone that is a body is not cut paper: it goes through
+        // the solids pass, and only its shadows are sprites.
+        var shadows: [Sprite] = []
+        var solids: [SolidInstance] = []
+        // A stone in the bed is a body, sat low in the water. Nothing of it
+        // is drawn flat any more; only its shadow on the floor stays.
         for r in rocks {
-            let side = r.radius * 2.3
-            // A wet dark ring where the stone meets the water.
-            over.append(Sprite(art.rock, at: CGPoint(x: r.centre.x, y: r.centre.y + 3),
-                               size: CGSize(width: side * 1.12, height: side * rockAspect * 1.12), mode: .shadow, alpha: 0.2, z: 0))
-            paper(Sprite(art.rock, at: r.centre, size: CGSize(width: side, height: side * rockAspect), z: 0.15))
+            solids.append(stone(at: r.centre, radius: r.radius, sprite: art.rock, tilt: .zero, alpha: 1))
         }
         for p in pads {
             let side = p.radius * 2.2
@@ -536,25 +538,33 @@ final class GameController: ObservableObject, TouchInput {
                 paper(Sprite("bell_float", at: t.position, size: CGSize(width: side, height: side), rotation: Float(swing), mode: .floater, alpha: 1))
             }
         }
-        // Rubbish that is a body is not cut paper: it goes through the solids
-        // pass, and only its shadows are sprites.
-        var shadows: [Sprite] = []
-        var solids: [SolidInstance] = []
         for d in debris where !d.cleared {
             let s = spriteSize(d)
             let melt = d.meltsIn.map { CGFloat(max(0.35, $0 / max(1, d.meltTotal))) } ?? 1
-            guard let body = d.kind.solid else {
+            guard let body = d.solid else {
                 paper(Sprite(d.sprite, at: d.position, size: CGSize(width: s.width * melt, height: s.height * melt),
                              rotation: Float(d.angle), mode: .floater, alpha: d.fade))
                 continue
             }
-            // A soft ring where the body meets the water, like a rock's.
-            shadows.append(Sprite(d.sprite, at: CGPoint(x: d.position.x + 3, y: d.position.y + 5),
-                                  size: CGSize(width: s.width * 1.1, height: s.height * 1.1),
-                                  rotation: Float(d.angle), mode: .shadow, alpha: 0.34 * d.fade, z: 0))
+            if body.shape == 2 {
+                // A drifting stone, seeded off the piece so its lumps stay
+                // its own as it moves.
+                solids.append(stone(at: d.position, radius: d.radius, sprite: d.sprite,
+                                    tilt: d.slope, alpha: d.fade, seed: Float(d.id) * 7.3 + 1.9, yaw: Float(d.angle)))
+                continue
+            }
+            // A soft ring where the body meets the water. Rubbish only: a log
+            // and a stone already have their shadow on the floor, and a
+            // second dark patch is what made them read as pasted cut-outs.
+            if d.kind.isRubbish {
+                shadows.append(Sprite(d.sprite, at: CGPoint(x: d.position.x + 3, y: d.position.y + 5),
+                                      size: CGSize(width: s.width * 1.1, height: s.height * 1.1),
+                                      rotation: Float(d.angle), mode: .shadow, alpha: 0.34 * d.fade, z: 0))
+            }
             let radius = Float(d.radius * body.radius)
+            let natural = d.kind.isRubbish ? nil : solidColours(d.sprite)
             solids.append(SolidInstance(position: SIMD2(Float(d.position.x), Float(d.position.y)),
-                                        lift: radius * 0.55,
+                                        lift: radius * Float(body.lift),
                                         yaw: Float(d.angle),
                                         roll: d.roll,
                                         tilt: d.slope,
@@ -562,8 +572,8 @@ final class GameController: ObservableObject, TouchInput {
                                         radius: radius,
                                         shape: body.shape,
                                         alpha: d.fade,
-                                        colourA: d.kind == .can ? [0.86, 0.16, 0.14, 1] : [0.72, 0.86, 0.92, 1],
-                                        colourB: d.kind == .can ? [0.93, 0.93, 0.95, 1] : [0.18, 0.42, 0.72, 1]))
+                                        colourA: natural?.a ?? (d.kind == .can ? [0.86, 0.16, 0.14, 1] : [0.72, 0.86, 0.92, 1]),
+                                        colourB: natural?.b ?? (d.kind == .can ? [0.93, 0.93, 0.95, 1] : [0.18, 0.42, 0.72, 1])))
         }
         renderer.contactShadows = shadows
         renderer.solids = solids
@@ -572,6 +582,52 @@ final class GameController: ObservableObject, TouchInput {
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
         over += garden.skySprites()
         renderer.surfaceSprites = over
+    }
+
+    /// A stone body in place of a cut-out. One in the bed lays out the same
+    /// every run: the point it sits at decides which way it lies and which
+    /// lumps it has. A drifting one keeps its own lumps and turns as it goes.
+    private func stone(at p: CGPoint, radius: CGFloat, sprite: String, tilt: SIMD2<Float>,
+                       alpha: Float, seed: Float? = nil, yaw: Float? = nil) -> SolidInstance {
+        let body = NaturalSolid.stone.body
+        let r = Float(radius * body.radius)
+        let colours = solidColours(sprite)
+        return SolidInstance(position: SIMD2(Float(p.x), Float(p.y)),
+                             lift: r * Float(body.lift),
+                             yaw: yaw ?? placementHash(p, salt: 1) * 2 * .pi,
+                             roll: seed ?? placementHash(p, salt: 2) * 64,
+                             tilt: tilt,
+                             length: Float(radius * body.length),
+                             radius: r,
+                             shape: body.shape,
+                             alpha: alpha,
+                             colourA: colours.a,
+                             colourB: colours.b)
+    }
+
+    /// What a natural body is coloured. Winter's stones are a colder grey and
+    /// wear no moss; a bare stone takes the same grey twice, so the moss the
+    /// shader lays on the upper side of it changes nothing.
+    private func solidColours(_ sprite: String) -> (a: SIMD4<Float>, b: SIMD4<Float>) {
+        let kind = NaturalSolid.forSprite(sprite)
+        if kind == .log { return ([0.42, 0.30, 0.20, 1], [0.78, 0.66, 0.48, 1]) }
+        if season.id == "winter" {
+            let grey: SIMD4<Float> = [0.62, 0.66, 0.72, 1]
+            return (grey, grey)
+        }
+        if kind == .mossyStone { return ([0.50, 0.53, 0.52, 1], [0.36, 0.55, 0.30, 1]) }
+        let grey: SIMD4<Float> = [0.56, 0.58, 0.60, 1]
+        return (grey, grey)
+    }
+
+    /// A steady number from a point, so what it decides does not change from
+    /// one run to the next.
+    private func placementHash(_ p: CGPoint, salt: UInt32) -> Float {
+        var x = UInt32(truncatingIfNeeded: Int(p.x * 8)) &* 73856093
+        x ^= UInt32(truncatingIfNeeded: Int(p.y * 8)) &* 19349663
+        x ^= salt &* 83492791
+        x = (x ^ (x >> 13)) &* 1274126177
+        return Float((x ^ (x >> 16)) & 0xFFFF) / 65535
     }
 
     private var rockAspect: CGFloat {

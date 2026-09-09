@@ -86,6 +86,15 @@ final class Debris: Identifiable {
         self.angle = CGFloat.random(in: 0...(2 * .pi))
     }
 
+    /// The body this piece is drawn as, if it is not paper. Rubbish knows
+    /// from its kind; a heavy natural piece knows from the sprite the season
+    /// handed it, so driftwood is a log and a stone is a stone.
+    var solid: SolidBody? {
+        if let body = kind.solid { return body }
+        guard cls == .heavy else { return nil }
+        return NaturalSolid.forSprite(sprite)?.body
+    }
+
     var mass: Float { (cls == .light ? GameTuning.lightMass : GameTuning.heavyMass) * kind.mass }
     var drag: Float { (cls == .light ? GameTuning.lightDrag : GameTuning.heavyDrag) * kind.drag }
 }
@@ -138,8 +147,9 @@ enum DebrisPhysics {
 
         // A body rolls on the water the way a barrel rolls on a floor: only
         // the travel across its own axis turns it, so a can shoved end on
-        // just slides.
-        if let solid = d.kind.solid {
+        // just slides. A stone does not roll: it is dragged, and its roll
+        // slot is the seed of its lumps.
+        if let solid = d.solid, solid.rolls {
             let axis = SIMD2<Float>(Float(cos(d.angle)), Float(sin(d.angle)))
             let across = d.velocity.x * -axis.y + d.velocity.y * axis.x
             d.roll += across / Float(max(1, d.radius * solid.radius)) * dt

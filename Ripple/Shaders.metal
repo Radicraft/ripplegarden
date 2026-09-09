@@ -1080,10 +1080,11 @@ fragment float4 water_fragment(VertexOut in                              [[stage
 }
 
 // ---------------------------------------------------------------------------
-// Solids. A few pieces of rubbish are bodies, not paper: a can has to spin
-// about its own axis and stay rigid while the water tips it. They are real
-// meshes turned on a lathe, toon shaded in three bands with an ink rim, so
-// they read as the same print as everything else on the pond.
+// Solids. A few things on the pond are bodies, not paper: a can has to spin
+// about its own axis and stay rigid while the water tips it, and a stone
+// drawn flat reads as a disc pasted on the water. They are real meshes,
+// toon shaded in three bands with an ink rim, so they read as the same print
+// as everything else on the pond.
 //
 // The mesh is normalised: x runs -0.5 to 0.5 along the long axis and y, z sit
 // on the unit circle. The vertex shader scales it by the instance's length
@@ -1095,14 +1096,14 @@ struct SolidInstance {
     float2 position;       // world points on the water plane
     float  lift;           // points above the plane the axis sits
     float  yaw;            // heading of the long axis on the plane
-    float  roll;           // rotation about the long axis
+    float  roll;           // rotation about the long axis, or a stone's lump seed
     float2 tilt;           // surface slope under it
     float  length;         // points
     float  radius;         // points
-    uint   shape;          // 0 can, 1 bottle
+    uint   shape;          // 0 can, 1 bottle, 2 stone, 3 log
     float  alpha;
     float4 colourA;        // main body colour
-    float4 colourB;        // band / cap colour
+    float4 colourB;        // band / cap / moss / cut wood colour
 };
 
 struct SolidParams {
@@ -1118,6 +1119,7 @@ struct SolidVertexIn {
     float  ang      [[attribute(3)]];
     float  part     [[attribute(4)]];
     float  rad      [[attribute(5)]];
+    float  bump     [[attribute(6)]];
 };
 
 struct SolidOut {
@@ -1125,16 +1127,68 @@ struct SolidOut {
     float3 normal;         // world space
     float3 view;           // world space, toward the camera
     float3 light;          // world space, toward the light
+    float3 lp;             // position on the normalised body, for speckle
     float4 colourA;
     float4 colourB;
     float  v;              // 0 to 1 along the axis
     float  ang;            // around the axis
     float  part;
     float  rad;
+    float  bump;           // how far out of the smooth shape, -1 to 1
     float  alpha;
     float  wz;             // height above the water plane, in radii
     uint   shape;
 };
+
+// Hash noise for the bodies that are not smooth. A stone's lumps are worked
+// out here rather than baked into the mesh, because every stone wants its
+// own and they all share the one buffer.
+static float hash31(float3 p)
+{
+    p = fract(p * 0.3183099 + float3(0.71, 0.113, 0.419));
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+static float valueNoise3(float3 p)
+{
+    float3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float n000 = hash31(i + float3(0, 0, 0)), n100 = hash31(i + float3(1, 0, 0));
+    float n010 = hash31(i + float3(0, 1, 0)), n110 = hash31(i + float3(1, 1, 0));
+    float n001 = hash31(i + float3(0, 0, 1)), n101 = hash31(i + float3(1, 0, 1));
+    float n011 = hash31(i + float3(0, 1, 1)), n111 = hash31(i + float3(1, 1, 1));
+    float x00 = mix(n000, n100, f.x), x10 = mix(n010, n110, f.x);
+    float x01 = mix(n001, n101, f.x), x11 = mix(n011, n111, f.x);
+    return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
+}
+
+/// Where a stone's surface stands relative to a smooth one, -1 to 1. Three
+/// octaves: the shape of the stone, its corners, and a little grit.
+static float stoneBump(float3 u, float seed)
+{
+    float3 o = float3(seed * 1.7, seed * 0.9 + 4.2, seed * 2.3 + 11.5);
+    float n = valueNoise3(u * 1.7 + o) * 0.60
+            + valueNoise3(u * 3.9 + o.yzx) * 0.28
+            + valueNoise3(u * 8.1 + o.zxy) * 0.12;
+    return n * 2.0 - 1.0;
+}
+
+/// The direction on the unit sphere a stone vertex came from. Rebuilt from
+/// the ring and the angle so the seam lands on exactly the same point.
+static float3 stoneDir(float v, float ang)
+{
+    float phi = v * M_PI_F;
+    float ring = sin(phi);
+    return float3(-cos(phi), cos(ang) * ring, sin(ang) * ring);
+}
+
+/// That direction pushed out by its lumps and squashed into the stone's
+/// ellipsoid: x half as long, the up axis flattened.
+static float3 stonePoint(float3 u, float bump)
+{
+    return float3(0.5, 1.0, 0.65) * u * (1.0 + 0.12 * bump);
+}
 
 vertex SolidOut solid_vertex(SolidVertexIn vin                  [[stage_in]],
                              constant SolidInstance *instances  [[buffer(1)]],
@@ -1154,17 +1208,42 @@ vertex SolidOut solid_vertex(SolidVertexIn vin                  [[stage_in]],
     ax = (length(ax) < 1e-4) ? float3(1.0, 0.0, 0.0) : normalize(ax);
     float3 side = normalize(cross(up, ax));
 
-    // Roll turns the cross-section about the long axis.
-    float cr = cos(s.roll), sr = sin(s.roll);
+    // Roll turns the cross-section about the long axis. A stone does not
+    // roll: it sits where it fell, and its roll slot is the seed of its lumps.
+    bool isStone = (s.shape == 2u);
+    float cr = isStone ? 1.0 : cos(s.roll);
+    float sr = isStone ? 0.0 : sin(s.roll);
     float3 bY =  side * cr + up * sr;
     float3 bZ = -side * sr + up * cr;
 
-    float3 local = float3(vin.position.x * s.length, vin.position.y * s.radius, vin.position.z * s.radius);
+    float3 mesh = vin.position;
+    float3 normal = vin.normal;
+    float bump = vin.bump;
+    if (isStone) {
+        // Push the vertex out along the sphere's own normal, then take the
+        // normal of what that made. A face average is not on offer a vertex
+        // at a time, so it comes off two steps across the same field, which
+        // is the surface normal of the lumpy body itself.
+        float3 u = stoneDir(vin.v, vin.ang);
+        bump = stoneBump(u, s.roll);
+        mesh = stonePoint(u, bump);
+        float3 ref = abs(u.x) < 0.8 ? float3(1, 0, 0) : float3(0, 1, 0);
+        float3 t1 = normalize(cross(u, ref));
+        float3 t2 = cross(u, t1);
+        const float e = 0.035;
+        float3 ua = normalize(u + t1 * e), ub = normalize(u + t2 * e);
+        float3 pa = stonePoint(ua, stoneBump(ua, s.roll));
+        float3 pb = stonePoint(ub, stoneBump(ub, s.roll));
+        normal = normalize(cross(pa - mesh, pb - mesh));
+        if (dot(normal, mesh) < 0.0) normal = -normal;
+    }
+
+    float3 local = float3(mesh.x * s.length, mesh.y * s.radius, mesh.z * s.radius);
     float3 P = float3(s.position, s.lift) + ax * local.x + bY * local.y + bZ * local.z;
 
-    float3 nm = normalize(float3(vin.normal.x / max(s.length, 1e-3),
-                                 vin.normal.y / max(s.radius, 1e-3),
-                                 vin.normal.z / max(s.radius, 1e-3)));
+    float3 nm = normalize(float3(normal.x / max(s.length, 1e-3),
+                                 normal.y / max(s.radius, 1e-3),
+                                 normal.z / max(s.radius, 1e-3)));
     float3 N = ax * nm.x + bY * nm.y + bZ * nm.z;
 
     float2 clip = projectToScreen(P, cam) / cam.focal.zw;
@@ -1184,6 +1263,8 @@ vertex SolidOut solid_vertex(SolidVertexIn vin                  [[stage_in]],
     out.ang = vin.ang;
     out.part = vin.part;
     out.rad = vin.rad;
+    out.lp = mesh;
+    out.bump = bump;
     out.alpha = s.alpha;
     out.wz = P.z / max(s.radius, 1e-3);
     out.shape = s.shape;
@@ -1214,6 +1295,35 @@ fragment float4 solid_fragment(SolidOut in [[stage_in]],
             // A thin pale stripe round the middle of the label.
             base = mix(base, float3(0.97, 0.96, 0.92), (1.0 - smoothstep(0.010, 0.020, abs(in.v - 0.5))) * labelBand);
             spec = 0.55;
+        }
+    } else if (in.shape == 2u) {
+        // A stone: grey with a fine speckle in it, and moss on whatever side
+        // of it faces the sky. A bare stone is handed the same colour twice,
+        // so the moss lands on it and changes nothing.
+        float speck = hash31(in.lp * 210.0);
+        base = in.colourA.rgb * (0.93 + 0.14 * speck);
+        // A little dirt down in the hollows of the lumps.
+        base *= 1.0 + in.bump * 0.09;
+        float mossy = saturate(length(in.colourB.rgb - in.colourA.rgb) * 3.0);
+        // The moss takes the upper side, feathered, and follows the lumps.
+        float moss = smoothstep(0.28, 0.55, N.z + in.bump * 0.16) * mossy;
+        base = mix(base, in.colourB.rgb, moss);
+        // Where the moss runs out the print puts a darker edge on it.
+        float edge = moss * (1.0 - moss) * 4.0;
+        base = mix(base, in.colourB.rgb * 0.60, edge * 0.5);
+        spec = 0.12;
+    } else if (in.shape == 3u) {
+        // A log: bark down the length of it, the grain showing on the cuts.
+        if (in.part > 0.5) {
+            float rings = 0.5 + 0.5 * sin(in.rad * 44.0 + 1.7);
+            base = mix(in.colourB.rgb, in.colourB.rgb * 0.72, rings * 0.55);
+            // Heartwood a shade warmer, and the bark closes the rim.
+            base = mix(base * float3(1.02, 0.98, 0.94), in.colourA.rgb, smoothstep(0.86, 1.0, in.rad));
+            spec = 0.15;
+        } else {
+            // The ridges catch the light, the crevices between them hold shade.
+            base = in.colourA.rgb * (0.80 + 0.32 * saturate(in.bump * 0.5 + 0.5));
+            spec = 0.08;
         }
     } else {
         // A bottle: glass you can half see through, with a solid cap.
