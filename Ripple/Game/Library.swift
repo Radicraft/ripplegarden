@@ -107,7 +107,7 @@ enum DebrisKind {
     /// is paper and returns nil.
     var solid: (shape: UInt32, radius: CGFloat, length: CGFloat)? {
         switch self {
-        case .can: return (0, 0.42, 1.6)
+        case .can: return (0, 0.5, 1.1)
         case .bottle: return (1, 0.36, 1.9)
         default: return nil
         }

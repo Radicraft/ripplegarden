@@ -72,6 +72,9 @@ struct WaterView: UIViewRepresentable {
         let device = MTLCreateSystemDefaultDevice()
         let view = TouchMetalView(frame: .zero, device: device)
         view.colorPixelFormat = .bgra8Unorm
+        // The solid bodies on the water sort against each other, so the
+        // drawable pass carries depth. Everything else ignores it.
+        view.depthStencilPixelFormat = .depth32Float
         view.framebufferOnly = true
         view.isOpaque = true
         view.preferredFramesPerSecond = 120

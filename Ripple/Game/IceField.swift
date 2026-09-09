@@ -478,6 +478,18 @@ final class IceField {
         return CGFloat(comp.count) * cellSize * cellSize
     }
 
+    /// The level is done: whatever ice is left goes under with it.
+    func sinkAll(time: Float) {
+        var comp: [Int32] = []
+        for i in 0..<cells.count where cells[i] >= 0.5 {
+            cells[i] = IceField.sinkStart
+            comp.append(Int32(i))
+        }
+        guard !comp.isEmpty else { return }
+        sinking.append((comp, time))
+        dirty = true
+    }
+
     /// Once a frame: the broken shards go under. Their mask value falls
     /// from `sinkStart` to nothing over `sinkSeconds`, then they are gone.
     func settle(clock: Float) {

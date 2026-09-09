@@ -453,9 +453,9 @@ final class GameController: ObservableObject, TouchInput {
             }
             if diagFrames % 60 == 0 {
                 let heavy = debris.first { $0.cls == .heavy }
-                NSLog("[garden] silt=%.3f cleaned=%.3f debris=%d heavy@tile=%d heavyLift=%.3f heavyPos=(%.0f,%.0f)",
-                      renderer.siltRemaining, cleaned, probeOrder.count, heavyOverTile().count, diagHeavyLift,
-                      heavy?.position.x ?? 0, heavy?.position.y ?? 0)
+                NSLog("[garden] ice=%.3f targets=%d/%d debris=%d heavyLift=%.3f heavyPos=(%.0f,%.0f) phase=%@",
+                      iceField?.fraction ?? 0, targets.filter(\.woke).count, targets.count, probeOrder.count, diagHeavyLift,
+                      heavy?.position.x ?? 0, heavy?.position.y ?? 0, String(describing: phase))
                 diagHeavyLift = 0
             }
         }
@@ -489,7 +489,7 @@ final class GameController: ObservableObject, TouchInput {
         for r in rocks {
             let side = r.radius * 2.3
             under.append(Sprite(art.rock, at: CGPoint(x: r.centre.x + 6, y: r.centre.y + 9),
-                                size: CGSize(width: side, height: side * rockAspect), mode: .shadow, alpha: 1, z: -1.0))
+                                size: CGSize(width: side, height: side * rockAspect), mode: .shadow, alpha: 0.55, z: -1.0))
         }
         renderer.submergedSprites = under
 
@@ -515,7 +515,7 @@ final class GameController: ObservableObject, TouchInput {
             let side = r.radius * 2.3
             // A wet dark ring where the stone meets the water.
             over.append(Sprite(art.rock, at: CGPoint(x: r.centre.x, y: r.centre.y + 3),
-                               size: CGSize(width: side * 1.12, height: side * rockAspect * 1.12), mode: .shadow, alpha: 0.35, z: 0))
+                               size: CGSize(width: side * 1.12, height: side * rockAspect * 1.12), mode: .shadow, alpha: 0.2, z: 0))
             paper(Sprite(art.rock, at: r.centre, size: CGSize(width: side, height: side * rockAspect), z: 0.15))
         }
         for p in pads {
@@ -536,12 +536,37 @@ final class GameController: ObservableObject, TouchInput {
                 paper(Sprite("bell_float", at: t.position, size: CGSize(width: side, height: side), rotation: Float(swing), mode: .floater, alpha: 1))
             }
         }
+        // Rubbish that is a body is not cut paper: it goes through the solids
+        // pass, and only its shadows are sprites.
+        var shadows: [Sprite] = []
+        var solids: [SolidInstance] = []
         for d in debris where !d.cleared {
             let s = spriteSize(d)
             let melt = d.meltsIn.map { CGFloat(max(0.35, $0 / max(1, d.meltTotal))) } ?? 1
-            paper(Sprite(d.sprite, at: d.position, size: CGSize(width: s.width * melt, height: s.height * melt),
-                         rotation: Float(d.angle), mode: .floater, alpha: d.fade))
+            guard let body = d.kind.solid else {
+                paper(Sprite(d.sprite, at: d.position, size: CGSize(width: s.width * melt, height: s.height * melt),
+                             rotation: Float(d.angle), mode: .floater, alpha: d.fade))
+                continue
+            }
+            // A soft ring where the body meets the water, like a rock's.
+            shadows.append(Sprite(d.sprite, at: CGPoint(x: d.position.x + 3, y: d.position.y + 5),
+                                  size: CGSize(width: s.width * 1.1, height: s.height * 1.1),
+                                  rotation: Float(d.angle), mode: .shadow, alpha: 0.34 * d.fade, z: 0))
+            let radius = Float(d.radius * body.radius)
+            solids.append(SolidInstance(position: SIMD2(Float(d.position.x), Float(d.position.y)),
+                                        lift: radius * 0.55,
+                                        yaw: Float(d.angle),
+                                        roll: d.roll,
+                                        tilt: d.slope,
+                                        length: Float(d.radius * body.length),
+                                        radius: radius,
+                                        shape: body.shape,
+                                        alpha: d.fade,
+                                        colourA: d.kind == .can ? [0.86, 0.16, 0.14, 1] : [0.72, 0.86, 0.92, 1],
+                                        colourB: d.kind == .can ? [0.93, 0.93, 0.95, 1] : [0.18, 0.42, 0.72, 1]))
         }
+        renderer.contactShadows = shadows
+        renderer.solids = solids
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
@@ -609,6 +634,12 @@ final class GameController: ObservableObject, TouchInput {
     // MARK: - Touches
 
     /// Screen point to world point through the current view.
+    /// Pull back until the whole pond is on screen (the demo uses it on
+    /// frozen levels, where the sheet runs beyond the default view).
+    func showWholePond() {
+        zoomTarget = Float(1 / WaterRenderer.worldScale)
+    }
+
     func worldPoint(_ p: CGPoint) -> CGPoint {
         renderer?.worldPoint(screen: p) ?? p
     }
@@ -824,6 +855,7 @@ final class GameController: ObservableObject, TouchInput {
 
     private func finish() {
         phase = .celebrating
+        iceField?.sinkAll(time: renderer?.clock ?? 0)
         let target = level.bloomTarget
         progress.markComplete(levelID: level.id, seasonID: season.id, bloomStage: target)
         Task { @MainActor [weak self] in

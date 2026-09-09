@@ -186,7 +186,8 @@ final class SpriteBatch {
     let textures: TextureCache
     private var cursor = 0
 
-    init?(device: MTLDevice, library: MTLLibrary, pixelFormat: MTLPixelFormat, textures: TextureCache) {
+    init?(device: MTLDevice, library: MTLLibrary, pixelFormat: MTLPixelFormat,
+          depthFormat: MTLPixelFormat, textures: TextureCache) {
         guard let vfn = library.makeFunction(name: "sprite_vertex"),
               let ffn = library.makeFunction(name: "sprite_fragment") else { return nil }
 
@@ -208,8 +209,11 @@ final class SpriteBatch {
         desc.colorAttachments[0].sourceAlphaBlendFactor = .one
         desc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
         desc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        guard let p = try? device.makeRenderPipelineState(descriptor: desc) else { return nil }
-        pipeline = p
+        // Sprites never sort by depth, but the pass they draw into has a depth
+        // attachment for the solids, so the pipeline has to name its format.
+        desc.depthAttachmentPixelFormat = depthFormat
+        do { pipeline = try device.makeRenderPipelineState(descriptor: desc) }
+        catch { print("sprite pipeline failed: \(error)"); return nil }
 
         // A strip of quads: two columns, segments + 1 rows.
         var verts: [SIMD2<Float>] = []

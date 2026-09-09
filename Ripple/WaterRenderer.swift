@@ -174,6 +174,15 @@ enum Tuning {
     static let floaterWetThreshold: Float = 0.05
     static let floaterBob: Float = 0.9
 
+    /// Solids. `solidBank` turns the slope under a body into a bank: a slope
+    /// of 0.02 per point tips it about fifteen degrees. `solidFarPlane` is how
+    /// far the depth buffer reaches, in points, and `solidRim` how wide a face
+    /// has to turn from the eye before the print puts an ink line on it.
+    static let solidBank: Float = 14
+    static let solidFarPlane: Float = 4500
+    static let solidSpec: Float = 0.65
+    static let solidRim: Float = 0.28
+
     static let maxSplatsPerFrame = 96
     static let maxProbes = 96
     static let maxWalls = 16
@@ -203,6 +212,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private let floorComposePipeline: MTLRenderPipelineState
     private let floorBatch: SpriteBatch
     private let surfaceBatch: SpriteBatch
+    /// Nil if the solids pipeline could not be built. The pond still draws:
+    /// the paper pieces are the app, the bodies are an addition to it.
+    private let solidBatch: SolidBatch?
+    private let flatDepthState: MTLDepthStencilState
     let textures: TextureCache
 
     private var fieldA: MTLTexture?
@@ -350,7 +363,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     var siltCovers: [SIMD4<Float>] = []
     /// Sprites drawn into the floor (under the water) and over it, per frame.
     var submergedSprites: [Sprite] = []
+    /// Drawn on the water before the solid bodies, so a body stands on its
+    /// own contact shadow rather than under it.
+    var contactShadows: [Sprite] = []
     var surfaceSprites: [Sprite] = []
+    /// Rubbish that is a body rather than a cut-out: cans, bottles.
+    var solids: [SolidInstance] = []
     /// 13 points per spined sprite: xy position in points, zw unit tangent
     /// toward the head; row 12 is the head.
     var spines: [SIMD4<Float>] = []
@@ -386,18 +404,22 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             desc.vertexFunction = vertFn
             desc.fragmentFunction = fragFn
             desc.colorAttachments[0].pixelFormat = view.colorPixelFormat
+            desc.depthAttachmentPixelFormat = view.depthStencilPixelFormat
             drawPipeline = try device.makeRenderPipelineState(descriptor: desc)
 
             let baseDesc = MTLRenderPipelineDescriptor()
             baseDesc.vertexFunction = vertFn
             baseDesc.fragmentFunction = baseFn
             baseDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+            // The floor is drawn into its own texture, which has no depth.
+            baseDesc.depthAttachmentPixelFormat = .invalid
             floorBasePipeline = try device.makeRenderPipelineState(descriptor: baseDesc)
 
             let composeDesc = MTLRenderPipelineDescriptor()
             composeDesc.vertexFunction = vertFn
             composeDesc.fragmentFunction = composeFn
             composeDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+            composeDesc.depthAttachmentPixelFormat = .invalid
             floorComposePipeline = try device.makeRenderPipelineState(descriptor: composeDesc)
         } catch {
             print("pipeline creation failed: \(error)")
@@ -405,11 +427,23 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         }
 
         textures = TextureCache(device: device)
-        guard let fs = SpriteBatch(device: device, library: library, pixelFormat: .bgra8Unorm, textures: textures),
-              let ss = SpriteBatch(device: device, library: library, pixelFormat: view.colorPixelFormat, textures: textures)
+        guard let fs = SpriteBatch(device: device, library: library, pixelFormat: .bgra8Unorm,
+                                   depthFormat: .invalid, textures: textures),
+              let ss = SpriteBatch(device: device, library: library, pixelFormat: view.colorPixelFormat,
+                                   depthFormat: view.depthStencilPixelFormat, textures: textures)
         else { return nil }
         floorBatch = fs
         surfaceBatch = ss
+        solidBatch = SolidBatch(device: device, library: library, pixelFormat: view.colorPixelFormat,
+                                depthFormat: view.depthStencilPixelFormat)
+
+        // Everything but the solids ignores depth: it is painted in the order
+        // the game hands it over, back to front.
+        let flat = MTLDepthStencilDescriptor()
+        flat.depthCompareFunction = .always
+        flat.isDepthWriteEnabled = false
+        guard let fd = device.makeDepthStencilState(descriptor: flat) else { return nil }
+        flatDepthState = fd
 
         guard let buf = device.makeBuffer(length: MemoryLayout<Splat>.stride * Tuning.maxSplatsPerFrame, options: .storageModeShared),
               let pbuf = device.makeBuffer(length: MemoryLayout<SIMD2<Float>>.stride * Tuning.maxProbes, options: .storageModeShared),
@@ -808,6 +842,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
         if let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) {
             encoder.setRenderPipelineState(drawPipeline)
+            encoder.setDepthStencilState(flatDepthState)
             encoder.setFragmentTexture(read, index: 0)
             encoder.setFragmentTexture(floorTexture, index: 1)
             encoder.setFragmentTexture(depthTexture, index: 2)
@@ -821,12 +856,25 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
             spriteParams.screen.w = 0
             surfaceBatch.beginFrame()
+            surfaceBatch.draw(contactShadows, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam, ice: iceTexture ?? blankIce)
+            if descriptor.depthAttachment.texture != nil {
+                solidBatch?.draw(solids, encoder: encoder, params: solidParams(), camera: &cam)
+                encoder.setDepthStencilState(flatDepthState)
+            }
             surfaceBatch.draw(surfaceSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam, ice: iceTexture ?? blankIce)
             encoder.endEncoding()
         }
 
         commands.present(drawable)
         commands.commit()
+    }
+
+    /// The solids borrow the sprites' light so the whole pond is lit once,
+    /// and the water's own ink colour so the rim is the same line.
+    private func solidParams() -> SolidParams {
+        SolidParams(light: SIMD4(-0.40, -0.56, 0.72, 0),
+                    ink: SIMD4(0.08, 0.07, 0.09, 1),
+                    gains: SIMD4(Tuning.solidBank, Tuning.solidFarPlane, Tuning.solidSpec, Tuning.solidRim))
     }
 
     private func floorParams() -> FloorParams {

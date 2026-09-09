@@ -69,6 +69,11 @@ final class Debris: Identifiable {
     var meltTotal: Float = 1
     /// Last known water height under the piece, for the bob.
     var height: Float = 0
+    /// Last known surface slope under the piece. A solid body banks with it.
+    var slope = SIMD2<Float>(0, 0)
+    /// Rotation about the long axis, for a piece drawn as a solid. A can
+    /// that drifts sideways rolls; pushed end on, it slides.
+    var roll: Float = 0
 
     init(id: Int, cls: DebrisClass, sprite: String, position: CGPoint, radius: CGFloat, scale: CGFloat, kind: DebrisKind = .natural) {
         self.id = id
@@ -94,6 +99,7 @@ enum DebrisPhysics {
 
         if let s = sample {
             d.height = s.height
+            d.slope = s.slope
             // Downhill is minus the gradient. Gate on the surface rising so the
             // front of a wave shoves harder than its back drags.
             let rising: Float = s.velocity > 0 ? 1.0 : GameTuning.trailingPull
@@ -129,6 +135,15 @@ enum DebrisPhysics {
         let speed = simd_length(d.velocity)
         d.spin += (CGFloat(speed) * 0.004 * (d.id % 2 == 0 ? 1 : -1) - d.spin) * CGFloat(min(1, dt * 4))
         d.angle += d.spin * CGFloat(dt) * 60
+
+        // A body rolls on the water the way a barrel rolls on a floor: only
+        // the travel across its own axis turns it, so a can shoved end on
+        // just slides.
+        if let solid = d.kind.solid {
+            let axis = SIMD2<Float>(Float(cos(d.angle)), Float(sin(d.angle)))
+            let across = d.velocity.x * -axis.y + d.velocity.y * axis.x
+            d.roll += across / Float(max(1, d.radius * solid.radius)) * dt
+        }
     }
 
     /// Keeps pieces from occupying the same spot.

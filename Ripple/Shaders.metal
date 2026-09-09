@@ -1078,3 +1078,182 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     }
     return float4(col, 1.0);
 }
+
+// ---------------------------------------------------------------------------
+// Solids. A few pieces of rubbish are bodies, not paper: a can has to spin
+// about its own axis and stay rigid while the water tips it. They are real
+// meshes turned on a lathe, toon shaded in three bands with an ink rim, so
+// they read as the same print as everything else on the pond.
+//
+// The mesh is normalised: x runs -0.5 to 0.5 along the long axis and y, z sit
+// on the unit circle. The vertex shader scales it by the instance's length
+// and radius, and divides the normal by that same scale, which is what turns
+// a normalised normal into the normal of the real body.
+// ---------------------------------------------------------------------------
+
+struct SolidInstance {
+    float2 position;       // world points on the water plane
+    float  lift;           // points above the plane the axis sits
+    float  yaw;            // heading of the long axis on the plane
+    float  roll;           // rotation about the long axis
+    float2 tilt;           // surface slope under it
+    float  length;         // points
+    float  radius;         // points
+    uint   shape;          // 0 can, 1 bottle
+    float  alpha;
+    float4 colourA;        // main body colour
+    float4 colourB;        // band / cap colour
+};
+
+struct SolidParams {
+    float4 light;          // xyz direction toward the light, sprite screen frame
+    float4 ink;            // rgb woodblock line colour
+    float4 gains;          // x slope to bank, y far plane in points, z specular, w rim width
+};
+
+struct SolidVertexIn {
+    float3 position [[attribute(0)]];
+    float3 normal   [[attribute(1)]];
+    float  v        [[attribute(2)]];
+    float  ang      [[attribute(3)]];
+    float  part     [[attribute(4)]];
+    float  rad      [[attribute(5)]];
+};
+
+struct SolidOut {
+    float4 position [[position]];
+    float3 normal;         // world space
+    float3 view;           // world space, toward the camera
+    float3 light;          // world space, toward the light
+    float4 colourA;
+    float4 colourB;
+    float  v;              // 0 to 1 along the axis
+    float  ang;            // around the axis
+    float  part;
+    float  rad;
+    float  alpha;
+    float  wz;             // height above the water plane, in radii
+    uint   shape;
+};
+
+vertex SolidOut solid_vertex(SolidVertexIn vin                  [[stage_in]],
+                             constant SolidInstance *instances  [[buffer(1)]],
+                             constant SolidParams &p            [[buffer(2)]],
+                             constant CameraParams &cam         [[buffer(4)]],
+                             uint iid                           [[instance_id]])
+{
+    SolidInstance s = instances[iid];
+
+    // The body sits on the water, so its up is the surface normal under it.
+    // A floater sprite shifts sideways by the same slope; here the slope
+    // becomes a bank instead, so a passing crest rolls the can over.
+    float2 sl = s.tilt * p.gains.x;
+    float3 up = normalize(float3(-sl.x, -sl.y, 1.0));
+    float3 heading = float3(cos(s.yaw), sin(s.yaw), 0.0);
+    float3 ax = heading - up * dot(heading, up);
+    ax = (length(ax) < 1e-4) ? float3(1.0, 0.0, 0.0) : normalize(ax);
+    float3 side = normalize(cross(up, ax));
+
+    // Roll turns the cross-section about the long axis.
+    float cr = cos(s.roll), sr = sin(s.roll);
+    float3 bY =  side * cr + up * sr;
+    float3 bZ = -side * sr + up * cr;
+
+    float3 local = float3(vin.position.x * s.length, vin.position.y * s.radius, vin.position.z * s.radius);
+    float3 P = float3(s.position, s.lift) + ax * local.x + bY * local.y + bZ * local.z;
+
+    float3 nm = normalize(float3(vin.normal.x / max(s.length, 1e-3),
+                                 vin.normal.y / max(s.radius, 1e-3),
+                                 vin.normal.z / max(s.radius, 1e-3)));
+    float3 N = ax * nm.x + bY * nm.y + bZ * nm.z;
+
+    float2 clip = projectToScreen(P, cam) / cam.focal.zw;
+    float depth = dot(P - cam.position.xyz, cam.forward.xyz);
+
+    SolidOut out;
+    out.position = float4(clip.x * 2.0 - 1.0, 1.0 - clip.y * 2.0,
+                          clamp(depth / p.gains.y, 0.0, 0.999), 1.0);
+    out.normal = N;
+    out.view = normalize(cam.position.xyz - P);
+    // The sprites give their light in the screen frame. The same vector, put
+    // back through the camera basis, is the world direction it means.
+    out.light = normalize(p.light.x * cam.right.xyz + p.light.y * cam.down.xyz - p.light.z * cam.forward.xyz);
+    out.colourA = s.colourA;
+    out.colourB = s.colourB;
+    out.v = vin.v;
+    out.ang = vin.ang;
+    out.part = vin.part;
+    out.rad = vin.rad;
+    out.alpha = s.alpha;
+    out.wz = P.z / max(s.radius, 1e-3);
+    out.shape = s.shape;
+    return out;
+}
+
+fragment float4 solid_fragment(SolidOut in [[stage_in]],
+                               constant SolidParams &p [[buffer(0)]])
+{
+    float3 N = normalize(in.normal);
+    float3 V = normalize(in.view);
+    float3 L = normalize(in.light);
+    float alpha = in.alpha;
+
+    float3 base;
+    float spec = 0.0;
+    if (in.shape == 0u) {
+        // A can: a printed body between two silver lids.
+        if (in.part > 0.5) {
+            base = float3(0.78, 0.80, 0.84);
+            // The lid is a disc with a darker ring pressed round its edge.
+            base *= mix(1.0, 0.62, smoothstep(0.80, 0.97, in.rad));
+            spec = 1.0;
+        } else {
+            float labelBand = smoothstep(0.17, 0.19, in.v) * (1.0 - smoothstep(0.81, 0.83, in.v));
+            // The printed label is the body colour; the bare metal shows at the ends.
+            base = mix(in.colourB.rgb * float3(0.86, 0.87, 0.9), in.colourA.rgb, labelBand);
+            // A thin pale stripe round the middle of the label.
+            base = mix(base, float3(0.97, 0.96, 0.92), (1.0 - smoothstep(0.010, 0.020, abs(in.v - 0.5))) * labelBand);
+            spec = 0.55;
+        }
+    } else {
+        // A bottle: glass you can half see through, with a solid cap.
+        if (in.part > 2.5) {
+            base = in.colourB.rgb;
+            spec = 0.6;
+        } else if (in.part > 1.5) {
+            base = mix(in.colourA.rgb, float3(0.94, 0.97, 0.98), 0.6);
+            alpha *= 0.40;
+            spec = 0.8;
+        } else {
+            base = in.colourA.rgb;
+            // Glass is only really there at a glancing angle.
+            float fres = 1.0 - abs(dot(N, V));
+            alpha *= 0.55 * mix(0.75, 1.9, fres * fres);
+            spec = 0.9;
+        }
+    }
+
+    // Toon shading: three flat steps, the way the print cuts a curve.
+    float d = max(0.0, dot(N, L));
+    float band = d < 0.30 ? 0.55 : (d < 0.66 ? 0.80 : 1.0);
+    float3 col = base * band;
+
+    float3 H = normalize(L + V);
+    col += float3(1.0, 0.98, 0.92) * pow(max(0.0, dot(N, H)), 34.0) * spec * p.gains.z;
+
+    // The waterline: the body goes dark and wet where it dips into the pond.
+    float wet = 1.0 - smoothstep(0.02, 0.10, in.wz);
+    col *= mix(1.0, 0.75, wet);
+    // Below the surface the water takes it: it does not sit on top of the pond.
+    float under = smoothstep(0.0, -0.45, in.wz);
+    col = mix(col, col * float3(0.42, 0.58, 0.66), under);
+    alpha *= 1.0 - under * 0.85;
+
+    // The ink rim. Where the surface turns away from the eye the print puts a
+    // line, and that line is what makes it a drawn object rather than a model.
+    float rim = 1.0 - smoothstep(p.gains.w * 0.6, p.gains.w, abs(dot(N, V)));
+    col = mix(col, p.ink.rgb, rim);
+    alpha = mix(alpha, max(alpha, in.alpha * (1.0 - under * 0.85)), rim);
+
+    return float4(col * alpha, alpha);
+}

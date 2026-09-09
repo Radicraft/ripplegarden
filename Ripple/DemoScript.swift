@@ -16,6 +16,7 @@ enum DemoScript {
     private static var lastFraction: Float = 1
     private static var stalls = 0
     private static var attempts: [Int: Int] = [:]
+    private static var lastPiecePos: [Int: CGPoint] = [:]
 
     static var isEnabled: Bool {
         let args = ProcessInfo.processInfo.arguments
@@ -26,6 +27,7 @@ enum DemoScript {
     static func reset() {
         beats = 0
         attempts = [:]
+        lastPiecePos = [:]
         holding = false
         lastIceTap = nil
         lastFraction = 1
@@ -69,50 +71,72 @@ enum DemoScript {
         let r = controller.level.mosaicRadius * size.height
         let live = controller.debris.filter { !$0.cleared }
 
-        // Ice first: tap a spot twice to break through, then work outward
-        // from the holes with taps in the open water beside the edge.
-        if let field = controller.iceField, field.fraction > 0.06 {
-            // Finish what was started: a struck spot still on ice gets its second tap.
+        // Ice first. A struck spot gets its second tap next beat; otherwise
+        // the sheet is worked in a grid, the cell with the most ice left
+        // first, well in from any open water so a tap gets a whole ring of
+        // shards. Small scraps go under with one tap, so late on any ice
+        // will do. A piece that is stuck beside ice gets that ice tapped.
+        if let field = controller.iceField {
+            if beats == 3 { controller.showWholePond() }
             if let last = lastIceTap, field.ice(at: last) > 0.5, field.strikeIndex(containing: last) != nil {
                 lastIceTap = nil
                 tap(controller, at: last, size: size)
                 return
             }
-            // Where to strike next: the middle of the pond while it is still
-            // frozen, then somewhere well inside what is left of the sheet, so
-            // the tap gets a whole ring of shards. When nothing is left but a
-            // fringe along the banks, any of it will do: a tap there bites a
-            // piece off at once.
-            let centre = CGPoint(x: size.width / 2, y: size.height * 0.48)
-            var deep: CGPoint?
-            var anywhere: CGPoint?
-            if field.ice(at: centre) > 0.5, !field.isEdge(at: centre, within: 46) {
-                deep = centre
-            } else {
-                for _ in 0..<60 {
-                    let p = CGPoint(x: CGFloat.random(in: 0...size.width), y: CGFloat.random(in: 0...size.height))
-                    guard field.ice(at: p) > 0.5 else { continue }
-                    if anywhere == nil { anywhere = p }
-                    if !field.isEdge(at: p, within: 46) { deep = p; break }
+            if field.fraction > 0.004 {
+                // No progress for a few beats: the chosen spot is not taking
+                // taps (the bank band, a pad); pick somewhere else at random.
+                if abs(field.fraction - lastFraction) < 0.001 { stalls += 1 } else { stalls = 0 }
+                lastFraction = field.fraction
+                var best: (CGPoint, Int)?
+                let cols = 4, rows = 7
+                let inset: CGFloat = 90
+                for r in 0..<rows {
+                    for c in 0..<cols {
+                        let cx = inset + (size.width - 2 * inset) * (CGFloat(c) + 0.5) / CGFloat(cols)
+                        let cy = inset + (size.height - 2 * inset) * (CGFloat(r) + 0.5) / CGFloat(rows)
+                        var icy = 0
+                        var deep: CGPoint?
+                        for (dx, dy) in [(0, 0), (-30, -30), (30, -30), (-30, 30), (30, 30), (0, -45), (0, 45)] {
+                            let p = CGPoint(x: cx + CGFloat(dx), y: cy + CGFloat(dy))
+                            if field.ice(at: p) > 0.5 {
+                                icy += 1
+                                if deep == nil, !field.isEdge(at: p, within: 46) { deep = p }
+                            }
+                        }
+                        // Prefer solid cells; among equals, ones with a deep
+                        // spot; a little chance so the same cell does not win
+                        // every time, and pure chance once stuck.
+                        let score = stalls > 3 ? Int.random(in: 0...100) : icy * 2 + (deep == nil ? 0 : 1) + Int.random(in: 0...1)
+                        if let target = deep ?? (icy > 0 ? CGPoint(x: cx, y: cy) : nil), best == nil || score > best!.1 {
+                            best = (target, score)
+                        }
+                    }
+                }
+                if var target = best?.0 {
+                    if field.ice(at: target) < 0.5, let near = field.nearestIce(to: target, range: 120) { target = near }
+                    lastIceTap = target
+                    NSLog("[demo] ice %.1f%%: tap (%.0f,%.0f)", field.fraction * 100, target.x, target.y)
+                    tap(controller, at: target, size: size)
+                    return
                 }
             }
-            guard let target = deep ?? anywhere else { return }
-            // Every seventh beat the finger slides across the sheet instead:
-            // nothing breaks, the frost is wiped where it went.
-            if beats % 7 == 0, let start = deep {
-                let a = CGFloat.random(in: 0...(2 * .pi))
-                let end = CGPoint(x: start.x + cos(a) * 170, y: start.y + sin(a) * 170)
-                slide(controller, from: start, to: end, size: size)
-                return
-            }
-            lastIceTap = target
-            tap(controller, at: target, size: size)
-            return
         }
         // A tidying level: push each piece toward its nearest bank.
         if controller.level.mosaicRadius <= 0 {
             guard let piece = live.min(by: { edgeDistance($0.position, size) < edgeDistance($1.position, size) }) else { return }
             let p = piece.position
+            // Stuck against ice: break the ice, not the water.
+            if let field = controller.iceField, let ice = field.nearestIce(to: p, range: 80) {
+                let moved = hypot(p.x - (lastPiecePos[piece.id]?.x ?? -999), p.y - (lastPiecePos[piece.id]?.y ?? -999))
+                lastPiecePos[piece.id] = p
+                if moved < 6 {
+                    NSLog("[demo] piece %d stuck by ice, tap (%.0f,%.0f)", piece.id, ice.x, ice.y)
+                    lastIceTap = ice
+                    tap(controller, at: ice, size: size)
+                    return
+                }
+            }
             let toLeft = p.x, toRight = size.width - p.x, toTop = p.y, toBottom = size.height - p.y
             let m = min(toLeft, toRight, toTop, toBottom)
             var away = CGVector(dx: 0, dy: 0)
