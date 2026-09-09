@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import UIKit
 import QuartzCore
 import simd
 
@@ -452,7 +453,7 @@ enum WaterMenus {
         let store = Store.shared
         var rows: [WaterMenuRow] = [
             .title("Seasons to come"),
-            .words("New seasons, new levels and new looks for the garden arrive with the Seasons pass. The first year is yours to keep.")
+            .words("Winter, spring, summer and autumn are yours. The Seasons pass adds new seasons as they arrive, and renews monthly or yearly until you cancel.")
         ]
         if store.isSubscribed {
             rows.append(.words("You have the Seasons pass. Thank you."))
@@ -465,7 +466,12 @@ enum WaterMenus {
                                        action: { Task { await store.purchase(product) } })
             }))
         }
-        rows.append(.buttons([WaterMenuButton(label: "Done", dark: true, action: { [weak menu] in menu?.close() })]))
+        var legal = [WaterMenuButton(label: "Terms", dark: false, action: { UIApplication.shared.open(Store.termsURL) })]
+        if let privacy = Store.privacyURL {
+            legal.append(WaterMenuButton(label: "Privacy", dark: false, action: { UIApplication.shared.open(privacy) }))
+        }
+        legal.append(WaterMenuButton(label: "Done", dark: true, action: { [weak menu] in menu?.close() }))
+        rows.append(.buttons(legal))
         return rows
     }
 }

@@ -9,6 +9,11 @@ final class Store: ObservableObject {
 
     static let shared = Store()
 
+    /// Apple's standard licence for App Store apps, and the privacy policy the
+    /// owner publishes. Both are shown on the paywall, as the guidelines ask.
+    static let termsURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
+    static var privacyURL: URL? = URL(string: "https://radicraft.co.uk/ripple/privacy")
+
     static let monthlyID = "com.radicraft.ripple.seasons.monthly"
     static let annualID = "com.radicraft.ripple.seasons.annual"
 
