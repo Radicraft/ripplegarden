@@ -38,6 +38,11 @@ final class Garden {
     var weedSamples: [Int: FieldSample] = [:]
     private var critters: [Critter] = []
     private var shoals: [Shoal] = []
+    /// Koi drawn as bodies rather than cut-outs; the sprite path stays behind
+    /// this for comparison.
+    var koiAsBodies = true
+    /// Which koi got which spine this frame, for the bodies.
+    private var koiSpines: [(koi: Koi, spine: Int)] = []
     private var clouds: [Cloud] = []
     private var dragonfly: Dragonfly?
     private var nextFlyerAt: TimeInterval = 0
@@ -388,6 +393,8 @@ final class Garden {
             // Its shadow lies on the bed a little downhill of the light.
             out.append(Sprite(piece.texture, at: CGPoint(x: piece.position.x + 4, y: piece.position.y + 6), size: sz,
                               rotation: piece.rotation, mode: .shadow, alpha: 0.5, z: -1.0))
+            // Stones are bodies now; only the flat scatter stays a cut-out.
+            if piece.texture.hasPrefix("stone") { continue }
             let pale = piece.texture.hasPrefix("sand") || piece.texture.hasPrefix("gravel")
             out.append(Sprite(piece.texture, at: piece.position, size: sz, rotation: piece.rotation,
                               mode: .submerged, alpha: pale ? 0.85 : 1, depth: 0.3 + piece.depth * 0.5,
@@ -445,6 +452,7 @@ final class Garden {
                                   wave: f.phase, waveAmp: 0.14, z: -0.2 - 0.7 * shoal.depth))
             }
         }
+        koiSpines = []
         for k in koi where k.depth < 0.98 {
             let d = k.depth
             let w = k.width
@@ -456,11 +464,55 @@ final class Garden {
             out.append(Sprite(k.texture, at: CGPoint(x: offset * 0.6, y: offset),
                               size: CGSize(width: w, height: h), mode: .shadow,
                               alpha: 0.7 * (1 - d * 0.6), wave: k.phase, waveAmp: k.waveAmp, spine: index, z: -1.0))
+            if koiAsBodies {
+                koiSpines.append((k, index))
+                continue
+            }
             out.append(Sprite(k.texture, at: .zero, size: CGSize(width: w, height: h),
                               mode: .submerged, alpha: 1, depth: d,
                               wave: k.phase, waveAmp: k.waveAmp, tint: [1, 1, 1, k.roll], spine: index, z: z))
         }
         return (out, spines)
+    }
+
+    /// The koi as bodies: a spindle bent along the spine laid out this frame,
+    /// wearing the fish's own painting. `depthScale` is points per pond unit.
+    /// Fish under the surface go into the floor; a surfaced one (depth under
+    /// 0.1) rides with its back just clear of the water.
+    func koiBodies(depthScale: Float, textureIndex: (String) -> UInt32) -> (under: [SolidInstance], surface: [SolidInstance]) {
+        var under: [SolidInstance] = []
+        var surface: [SolidInstance] = []
+        for (k, spine) in koiSpines {
+            let d = k.depth
+            let h = Float(k.width * k.aspect)
+            // `radius` is the body's full width: the mesh's profile peaks at
+            // half of it. The painted body is only about a third of its
+            // painting wide, the rest being the spread fins, so a body given
+            // that width comes out a needle. Half the painting's width reads
+            // as the fish the shadow underneath it is.
+            let radius = Float(k.width) * 0.52
+            let lift: Float = d < 0.1 ? radius * 0.15 : -(0.2 + 0.7 * d) * depthScale
+            let body = SolidInstance(position: SIMD2(Float(k.position.x), Float(k.position.y)), lift: lift,
+                                     yaw: k.phase, roll: k.roll, texture: textureIndex(k.texture),
+                                     tilt: SIMD2(k.waveAmp * 0.42, 0), length: h, radius: radius, shape: 5,
+                                     alpha: 1, colourA: [0.9, 0.86, 0.78, 1], colourB: [0.9, 0.86, 0.78, 1], spine: Int32(spine))
+            if d < 0.1 { surface.append(body) } else { under.append(body) }
+        }
+        return (under, surface)
+    }
+
+    /// The bed's stones as bodies lying on the bed at their depths.
+    func bedStoneBodies(depthScale: Float, mossy: Bool) -> [SolidInstance] {
+        var out: [SolidInstance] = []
+        for piece in bedPieces where piece.texture.hasPrefix("stone") {
+            let r = Float(piece.size) * 0.42
+            out.append(SolidInstance(position: SIMD2(Float(piece.position.x), Float(piece.position.y)),
+                                     lift: -Float(piece.depth) * depthScale + r * 0.3,
+                                     yaw: piece.rotation, roll: Float(piece.position.x * 0.19 + piece.position.y * 0.07),
+                                     tilt: .zero, length: r * 1.4, radius: r, shape: 2, alpha: 1,
+                                     colourA: [0.5, 0.5, 0.48, 1], colourB: mossy ? [0.34, 0.48, 0.3, 1] : [0.5, 0.5, 0.48, 1]))
+        }
+        return out
     }
 
     /// Where each strand's tip is on the surface plane, for the water probes.

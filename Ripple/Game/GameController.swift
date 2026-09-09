@@ -682,7 +682,8 @@ final class GameController: ObservableObject, TouchInput {
             }
             if diagFrames % 60 == 0 {
                 let heavy = debris.first { $0.cls == .heavy }
-                NSLog("[camera] zoom=%.2f pitch=%.2f", renderer.zoom, renderer.pitch)
+                NSLog("[camera] zoom=%.2f pitch=%.2f solids=%d under=%d paintings=%d", renderer.zoom, renderer.pitch,
+                      renderer.solids.count, renderer.submergedSolids.count, renderer.solidTextures.count)
                 NSLog("[garden] ice=%.3f targets=%d/%d debris=%d heavyLift=%.3f heavyPos=(%.0f,%.0f) phase=%@",
                       iceField?.fraction ?? 0, targets.filter(\.woke).count, targets.count, probeOrder.count, diagHeavyLift,
                       heavy?.position.x ?? 0, heavy?.position.y ?? 0, String(describing: phase))
@@ -718,6 +719,16 @@ final class GameController: ObservableObject, TouchInput {
         let submerged = garden.submergedSprites()
         renderer.spines = submerged.spines
         var under = submerged.sprites
+        // Paintings the bodies wear this frame, handed to the batch by index.
+        var paintings: [String] = []
+        func painting(_ name: String) -> UInt32 {
+            if let i = paintings.firstIndex(of: name) { return UInt32(i + 1) }
+            paintings.append(name)
+            return UInt32(paintings.count)
+        }
+        let koiBodies = garden.koiBodies(depthScale: WaterRenderer.depthScale, textureIndex: painting)
+        var underBodies = koiBodies.under
+        underBodies += garden.bedStoneBodies(depthScale: WaterRenderer.depthScale, mossy: season.id != "winter")
         under += garden.reflectionSprites()
         for d in debris where !d.cleared {
             let s = spriteSize(d)
@@ -765,24 +776,32 @@ final class GameController: ObservableObject, TouchInput {
         for r in rocks {
             solids.append(stone(at: r.centre, radius: r.radius, sprite: art.rock, tilt: .zero, alpha: 1))
         }
+        // Pads, buds and the bell are thin discs wearing their paintings,
+        // sitting on the water and banking with it.
+        func disc(_ name: String, at p: CGPoint, side: CGFloat, yaw: Float, alpha: Float, tilt: SIMD2<Float> = .zero) -> SolidInstance {
+            SolidInstance(position: SIMD2(Float(p.x), Float(p.y)), lift: 1.5, yaw: yaw, roll: 0, texture: painting(name),
+                          tilt: tilt, length: 3, radius: Float(side) * 0.5, shape: 4, alpha: alpha,
+                          colourA: [0.16, 0.36, 0.22, 1], colourB: [0.16, 0.36, 0.22, 1])
+        }
         for p in pads {
             let side = p.radius * 2.2
             over.append(Sprite(p.sprite, at: CGPoint(x: p.centre.x + 3, y: p.centre.y + 4),
                                size: CGSize(width: side * 1.06, height: side * 1.06), mode: .shadow, alpha: 0.3, z: 0))
-            paper(Sprite(p.sprite, at: p.centre, size: CGSize(width: side, height: side), rotation: Float(p.centre.x * 0.01), mode: .floater, alpha: 1))
+            solids.append(disc(p.sprite, at: p.centre, side: side, yaw: Float(p.centre.x * 0.01), alpha: 1))
         }
         for t in targets {
             let side: CGFloat = 92
             switch t.spec.kind {
             case .bud:
-                if t.opening < 1 { paper(Sprite("bud_closed", at: t.position, size: CGSize(width: side, height: side), mode: .floater, alpha: 1 - t.opening)) }
-                if t.opening > 0 { paper(Sprite("bud_open", at: t.position, size: CGSize(width: side, height: side), mode: .floater, alpha: t.opening)) }
+                if t.opening < 1 { solids.append(disc("bud_closed", at: t.position, side: side, yaw: 0, alpha: 1 - t.opening)) }
+                if t.opening > 0 { solids.append(disc("bud_open", at: t.position, side: side, yaw: 0, alpha: t.opening)) }
             case .bell:
                 let since = Double(elapsed - t.wokeAt)
-                let swing = t.woke ? CGFloat(sin(since * 14) * exp(-since * 1.5)) * 0.25 : 0
-                paper(Sprite("bell_float", at: t.position, size: CGSize(width: side, height: side), rotation: Float(swing), mode: .floater, alpha: 1))
+                let swing = t.woke ? Float(sin(since * 14) * exp(-since * 1.5)) * 0.25 : 0
+                solids.append(disc("bell_float", at: t.position, side: side, yaw: swing, alpha: 1))
             }
         }
+        solids += koiBodies.surface
         for d in debris where !d.cleared {
             // Under unbroken ice a piece is a shape in the dark, not a thing
             // on the water: its floor shadow stays, the rest waits for the
@@ -826,6 +845,8 @@ final class GameController: ObservableObject, TouchInput {
         }
         renderer.contactShadows = shadows
         renderer.solids = solids + (menuArt?.solids ?? [])
+        renderer.submergedSolids = underBodies
+        renderer.solidTextures = paintings
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
         // Drops in the air are water, not paper: no cut edge under them.

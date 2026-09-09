@@ -487,6 +487,15 @@ final class HubController: ObservableObject, TouchInput {
         renderer.spines = submerged.spines
         var under = submerged.sprites
         under += garden.reflectionSprites()
+        var paintings: [String] = []
+        func painting(_ name: String) -> UInt32 {
+            if let i = paintings.firstIndex(of: name) { return UInt32(i + 1) }
+            paintings.append(name)
+            return UInt32(paintings.count)
+        }
+        let koiBodies = garden.koiBodies(depthScale: WaterRenderer.depthScale, textureIndex: painting)
+        var underBodies = koiBodies.under
+        underBodies += garden.bedStoneBodies(depthScale: WaterRenderer.depthScale, mossy: true)
         for pool in pools {
             let rock = garden.rocks.first { hypot($0.centre.x - pool.centre.x, $0.centre.y - pool.centre.y) < pool.radius }
             if let r = rock {
@@ -520,7 +529,22 @@ final class HubController: ObservableObject, TouchInput {
         // Each pool: a stone at its shoulder, a lily pad with the bud that
         // opens once the level is done; a sleeping season lies under mist.
         var solids: [SolidInstance] = shoreStones
-        for s in dressing { paper(s) }
+        // A pad or a lotus lying on the water is a body like the pool's own:
+        // a thin disc wearing its painting, with a shadow under it. The rest
+        // of the dressing is still cut paper.
+        for s in dressing {
+            let name = s.texture
+            guard name.hasPrefix("lilypad") || name.hasPrefix("lotus") else { paper(s); continue }
+            let c = CGPoint(x: CGFloat(s.gpu.center.x), y: CGFloat(s.gpu.center.y))
+            let side = CGFloat(s.gpu.size.x)
+            over.append(Sprite(name, at: CGPoint(x: c.x + 3, y: c.y + 4),
+                               size: CGSize(width: side, height: side), mode: .shadow, alpha: 0.28, z: 0))
+            solids.append(SolidInstance(position: SIMD2(Float(c.x), Float(c.y)),
+                                        lift: name.hasPrefix("lotus") ? 3.5 : 1.5,
+                                        yaw: s.gpu.rotation, roll: 0, texture: painting(name), tilt: .zero,
+                                        length: 3, radius: Float(side) * 0.5, shape: 4, alpha: 1,
+                                        colourA: [0.16, 0.36, 0.22, 1], colourB: [0.16, 0.36, 0.22, 1]))
+        }
         for pool in pools {
             let unlocked = progress.isUnlocked(level: pool.level)
             let done = progress.isComplete(levelID: pool.level.id)
@@ -534,9 +558,13 @@ final class HubController: ObservableObject, TouchInput {
                                         colourB: winter ? [0.62, 0.66, 0.72, 1] : [0.36, 0.55, 0.30, 1]))
             let pad = CGPoint(x: pool.centre.x - pool.radius * 0.55, y: pool.centre.y + pool.radius * 0.5)
             over.append(Sprite("lilypad_1", at: CGPoint(x: pad.x + 3, y: pad.y + 4), size: CGSize(width: 62, height: 62), mode: .shadow, alpha: 0.3, z: 0))
-            paper(Sprite("lilypad_1", at: pad, size: CGSize(width: 58, height: 58), rotation: Float(pool.centre.y * 0.01), mode: .floater, alpha: 1))
+            solids.append(SolidInstance(position: SIMD2(Float(pad.x), Float(pad.y)), lift: 1.5, yaw: Float(pool.centre.y * 0.01), roll: 0,
+                                        texture: painting("lilypad_1"), tilt: .zero, length: 3, radius: 29, shape: 4, alpha: 1,
+                                        colourA: [0.16, 0.36, 0.22, 1], colourB: [0.16, 0.36, 0.22, 1]))
             let bud = done ? "bud_open" : "bud_closed"
-            paper(Sprite(bud, at: CGPoint(x: pad.x + 2, y: pad.y - 4), size: CGSize(width: 44, height: 44), mode: .floater, alpha: unlocked ? 1 : 0.35))
+            solids.append(SolidInstance(position: SIMD2(Float(pad.x + 2), Float(pad.y - 4)), lift: 4.5, yaw: 0, roll: 0,
+                                        texture: painting(bud), tilt: .zero, length: 3, radius: 22, shape: 4, alpha: unlocked ? 1 : 0.35,
+                                        colourA: [0.6, 0.35, 0.4, 1], colourB: [0.6, 0.35, 0.4, 1]))
             if !unlocked {
                 // Mist: cloud sprites low over the pool.
                 for k in 0..<2 {
@@ -613,6 +641,8 @@ final class HubController: ObservableObject, TouchInput {
         renderer.surfaceSprites = over
         renderer.contactShadows = []
         renderer.solids = solids + (menuArt?.solids ?? [])
+        renderer.submergedSolids = underBodies
+        renderer.solidTextures = paintings
     }
 
     // MARK: - Touch

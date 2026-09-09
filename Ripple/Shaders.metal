@@ -1234,22 +1234,26 @@ fragment float4 water_fragment(VertexOut in                              [[stage
 
 struct SolidInstance {
     float2 position;       // world points on the water plane
-    float  lift;           // points above the plane the axis sits
-    float  yaw;            // heading of the long axis on the plane
-    float  roll;           // rotation about the long axis, or a stone's lump seed
-    float2 tilt;           // surface slope under it
+    float  lift;           // points above the plane the axis sits; negative = under the water
+    float  yaw;            // heading of the long axis on the plane; a koi's wag phase
+    float  roll;           // rotation about the long axis, a stone's lump seed, a koi's bank
+    uint   texture;        // which of the batch's paintings, 1 based; 0 none
+    float2 tilt;           // surface slope under it; a koi's x is its wag amplitude
     float  length;         // points
     float  radius;         // points
-    uint   shape;          // 0 can, 1 bottle, 2 stone, 3 log
+    uint   shape;          // 0 can, 1 bottle, 2 stone, 3 log, 4 disc, 5 koi
     float  alpha;
     float4 colourA;        // main body colour
     float4 colourB;        // band / cap / moss / cut wood colour
+    int    spine;          // spine in the shared buffer that bends a koi, or -1
+    float  pad0, pad1, pad2;
 };
 
 struct SolidParams {
-    float4 light;          // xyz direction toward the light, sprite screen frame
+    float4 light;          // xyz toward the light, sprite screen frame; w points per unit of depth
     float4 ink;            // rgb woodblock line colour
     float4 gains;          // x slope to bank, y far plane in points, z specular, w rim width
+    float4 flags;          // x 1 = drawing into the floor texture; yzw the pond's deep colour
 };
 
 struct SolidVertexIn {
@@ -1277,7 +1281,9 @@ struct SolidOut {
     float  bump;           // how far out of the smooth shape, -1 to 1
     float  alpha;
     float  wz;             // height above the water plane, in radii
+    float  wpz;            // height above the water plane, in points
     uint   shape;
+    float2 cap;            // where on the cap (disc) or the painting (koi) this is
 };
 
 // Hash noise for the bodies that are not smooth. A stone's lumps are worked
@@ -1333,10 +1339,13 @@ static float3 stonePoint(float3 u, float bump)
 vertex SolidOut solid_vertex(SolidVertexIn vin                  [[stage_in]],
                              constant SolidInstance *instances  [[buffer(1)]],
                              constant SolidParams &p            [[buffer(2)]],
+                             constant float4 *spines            [[buffer(3)]],
                              constant CameraParams &cam         [[buffer(4)]],
                              uint iid                           [[instance_id]])
 {
     SolidInstance s = instances[iid];
+    bool isDisc = (s.shape == 4u);
+    bool isKoi = (s.shape == 5u);
 
     // The body sits on the water, so its up is the surface normal under it.
     // A floater sprite shifts sideways by the same slope; here the slope
@@ -1379,14 +1388,54 @@ vertex SolidOut solid_vertex(SolidVertexIn vin                  [[stage_in]],
     }
 
     float3 local = float3(mesh.x * s.length, mesh.y * s.radius, mesh.z * s.radius);
-    float3 P = float3(s.position, s.lift) + ax * local.x + bY * local.y + bZ * local.z;
+    float3 P;
+    float3 N;
+    float2 capUV = float2(0.0);
+    if (isDisc) {
+        // A disc lies flat: its thickness is the up axis, its face is on the
+        // plane, banked with the water like a floater. The face's two axes are
+        // the heading laid on the plane and the one across it. Crossing `up`
+        // into `side` again gives the heading back, which folds the whole disc
+        // into a line, so the second axis has to be `side` itself.
+        P = float3(s.position, s.lift) + up * local.x + ax * (mesh.y * s.radius) + side * (mesh.z * s.radius);
+        float3 nm = normalize(float3(normal.x / max(s.length, 1e-3), normal.y / max(s.radius, 1e-3), normal.z / max(s.radius, 1e-3)));
+        N = up * nm.x + ax * nm.y + side * nm.z;
+        capUV = float2(mesh.y, mesh.z) * 0.5 + 0.5;
+    } else if (isKoi && s.spine >= 0) {
+        // A fish: each ring sits on the path its head swam, in the plane
+        // across the tangent there, banked into the turn. The wag rides
+        // along the body, largest at the tail.
+        float f = vin.v * 12.0;
+        int i0 = int(floor(f));
+        int i1 = min(i0 + 1, 12);
+        float t = f - float(i0);
+        float4 a = spines[s.spine * 13 + i0];
+        float4 b = spines[s.spine * 13 + i1];
+        float2 pos = mix(a.xy, b.xy, t);
+        float2 tan2 = normalize(mix(a.zw, b.zw, t));
+        float tailness = 1.0 - vin.v;
+        float wag = sin(s.yaw + vin.v * 4.2) * s.tilt.x * s.radius * 2.0 * tailness * tailness;
+        float3 fwd = float3(tan2, 0.0);
+        float3 sideK = float3(-tan2.y, tan2.x, 0.0);
+        float bank = s.roll * 0.6;
+        float3 upK = normalize(float3(0.0, 0.0, 1.0) * cos(bank) + sideK * sin(bank));
+        float3 sideB = normalize(cross(upK, fwd));
+        P = float3(pos, s.lift) + sideB * (mesh.y * s.radius + wag) + upK * (mesh.z * s.radius);
+        float3 nm = normalize(float3(normal.x / max(s.length, 1e-3), normal.y / max(s.radius, 1e-3), normal.z / max(s.radius, 1e-3)));
+        N = fwd * nm.x + sideB * nm.y + upK * nm.z;
+        capUV = float2(vin.ang, vin.v);
+    } else {
+        P = float3(s.position, s.lift) + ax * local.x + bY * local.y + bZ * local.z;
+        float3 nm = normalize(float3(normal.x / max(s.length, 1e-3),
+                                     normal.y / max(s.radius, 1e-3),
+                                     normal.z / max(s.radius, 1e-3)));
+        N = ax * nm.x + bY * nm.y + bZ * nm.z;
+    }
 
-    float3 nm = normalize(float3(normal.x / max(s.length, 1e-3),
-                                 normal.y / max(s.radius, 1e-3),
-                                 normal.z / max(s.radius, 1e-3)));
-    float3 N = ax * nm.x + bY * nm.y + bZ * nm.z;
-
-    float2 clip = projectToScreen(P, cam) / cam.focal.zw;
+    // Into the floor's own texture, a body under the water is laid where the
+    // line of sight meets the surface, so the water refracts it like the bed.
+    float2 clip = (p.flags.x > 0.5) ? projectToSurface(P, cam) / cam.world.xy
+                                    : projectToScreen(P, cam) / cam.focal.zw;
     float depth = dot(P - cam.position.xyz, cam.forward.xyz);
 
     SolidOut out;
@@ -1407,13 +1456,17 @@ vertex SolidOut solid_vertex(SolidVertexIn vin                  [[stage_in]],
     out.bump = bump;
     out.alpha = s.alpha;
     out.wz = P.z / max(s.radius, 1e-3);
+    out.wpz = P.z;
     out.shape = s.shape;
+    out.cap = capUV;
     return out;
 }
 
 fragment float4 solid_fragment(SolidOut in [[stage_in]],
+                               texture2d<float, access::sample> painting [[texture(0)]],
                                constant SolidParams &p [[buffer(0)]])
 {
+    constexpr sampler smp(filter::linear, address::clamp_to_edge);
     float3 N = normalize(in.normal);
     float3 V = normalize(in.view);
     float3 L = normalize(in.light);
@@ -1421,7 +1474,34 @@ fragment float4 solid_fragment(SolidOut in [[stage_in]],
 
     float3 base;
     float spec = 0.0;
-    if (in.shape == 0u) {
+    if (in.shape == 4u) {
+        // A disc: the painting on its face, plain rim and underside.
+        if (in.part < 0.5) {
+            float4 px = painting.sample(smp, float2(in.cap.x, 1.0 - in.cap.y));
+            if (px.a < 0.3) { discard_fragment(); }
+            base = px.rgb;
+            spec = 0.25;
+        } else {
+            base = in.colourA.rgb * (in.part > 1.5 ? 0.55 : 0.8);
+        }
+    } else if (in.shape == 5u) {
+        // A fish: the top-down painting wrapped round the body, from the
+        // spine down either flank, the belly a little darker. How far across
+        // the painting a point sits follows the body's own half width there
+        // (`lp.y` is already the profile times the angle), scaled so the
+        // flank lands on the edge of the painted body. Wrapping the whole
+        // width instead would lay the painting's empty margin, and its
+        // spread fins, down the widest part of the fish.
+        float across = 0.5 + in.lp.y * 0.38;
+        float4 px = painting.sample(smp, float2(across, in.cap.y));
+        float belly = 0.5 - 0.5 * cos(in.cap.x);
+        base = px.rgb * (1.0 - 0.3 * belly);
+        if (px.a < 0.25) { base = in.colourA.rgb; }
+        // The tail is cut off square. Kept dark, the cut reads as the shadow
+        // inside a fin rather than a bright stump.
+        if (in.part > 0.5) { base *= 0.45; }
+        spec = 0.4;
+    } else if (in.shape == 0u) {
         // A can: a printed body between two silver lids.
         if (in.part > 0.5) {
             base = float3(0.78, 0.80, 0.84);
@@ -1495,15 +1575,29 @@ fragment float4 solid_fragment(SolidOut in [[stage_in]],
     float wet = 1.0 - smoothstep(0.02, 0.10, in.wz);
     col *= mix(1.0, 0.75, wet);
     // Below the surface the water takes it: it does not sit on top of the pond.
-    float under = smoothstep(0.0, -0.45, in.wz);
+    // Drawn into the floor the water itself does that, so nothing fades here.
+    float under = (p.flags.x > 0.5) ? 0.0 : smoothstep(0.0, -0.45, in.wz);
     col = mix(col, col * float3(0.42, 0.58, 0.66), under);
     alpha *= 1.0 - under * 0.85;
 
     // The ink rim. Where the surface turns away from the eye the print puts a
     // line, and that line is what makes it a drawn object rather than a model.
-    float rim = 1.0 - smoothstep(p.gains.w * 0.6, p.gains.w, abs(dot(N, V)));
+    // A pad is a leaf, not a counter: its dome turns away from the eye over
+    // a wide band, so the print's line has to be kept narrow on it or the
+    // whole rim goes black.
+    float rimW = p.gains.w * (in.shape == 4u ? 0.45 : 1.0);
+    float rim = 1.0 - smoothstep(rimW * 0.6, rimW, abs(dot(N, V)));
     col = mix(col, p.ink.rgb, rim);
     alpha = mix(alpha, max(alpha, in.alpha * (1.0 - under * 0.85)), rim);
+
+    // Drawn into the floor, the body is under the water rather than on it, so
+    // the water swallows it into its own deep colour the way it swallows the
+    // submerged sprites: by how far down it lies, in points, not in its own
+    // radii, or a small stone would go deeper than a big one beside it.
+    if (p.flags.x > 0.5) {
+        float d = saturate(-in.wpz / max(p.light.w, 1e-3));
+        col = mix(col, p.flags.yzw, smoothstep(0.0, 1.0, d) * 0.85);
+    }
 
     return float4(col * alpha, alpha);
 }

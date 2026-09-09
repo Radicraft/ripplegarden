@@ -11,28 +11,48 @@ import simd
 /// Layout mirrors `SolidInstance` in Shaders.metal.
 struct SolidInstance {
     var position: SIMD2<Float>   // world points on the water plane
-    var lift: Float              // points above the plane the axis sits
-    var yaw: Float               // heading of the long axis on the plane
+    /// Points above the plane the axis sits. Negative puts the body under
+    /// the water, where it is drawn into the floor instead.
+    var lift: Float
+    /// Heading of the long axis on the plane. A koi swims along its spine
+    /// rather than a heading, so its slot carries the wag phase instead.
+    var yaw: Float
     /// Rotation about the long axis. A stone does not roll, so its slot
-    /// carries the seed of its lumps instead.
+    /// carries the seed of its lumps instead; a koi's is how far it banks.
     var roll: Float
-    var tilt: SIMD2<Float>       // surface slope under it, the body banks with it
+    /// Which of the batch's textures paints the body, 1 based. 0 = none.
+    var texture: UInt32 = 0
+    /// Surface slope under it, the body banks with it. A koi has no slope
+    /// to sit on, so x is its wag amplitude instead.
+    var tilt: SIMD2<Float>
     var length: Float            // points
     var radius: Float            // points
-    var shape: UInt32            // 0 can, 1 bottle, 2 stone, 3 log
+    var shape: UInt32            // 0 can, 1 bottle, 2 stone, 3 log, 4 disc, 5 koi
     var alpha: Float
     var colourA: SIMD4<Float>    // main body colour
     var colourB: SIMD4<Float>    // band / cap / moss / cut wood colour
+    /// Which spine in the shared buffer bends this body, or -1 for a body
+    /// that stands on its own axis.
+    var spine: Int32 = -1
+    var pad0: Float = 0
+    var pad1: Float = 0
+    var pad2: Float = 0
 }
 
 /// Mirrors `SolidParams` in Shaders.metal.
 struct SolidParams {
-    /// xyz direction toward the light, in the sprites' screen frame.
+    /// xyz direction toward the light, in the sprites' screen frame. w is
+    /// points per unit of depth, for the haze on a body under the water.
     var light: SIMD4<Float>
     /// rgb woodblock line colour.
     var ink: SIMD4<Float>
     /// x slope to bank gain, y far plane in points, z specular gain, w rim width.
     var gains: SIMD4<Float>
+    /// x: 1 draws into the floor's own texture, where a body under the water
+    /// is laid at the point the line of sight crosses the surface, so the
+    /// water refracts and lights it like everything else on the bed. yzw is
+    /// the colour the pond swallows a deep body into.
+    var flags: SIMD4<Float> = .zero
 }
 
 /// One mesh vertex. Positions are normalised: x runs -0.5 to 0.5 along the
@@ -231,6 +251,154 @@ enum SolidMesh {
         return (verts, idx)
     }
 
+    static let discCapRings = 4
+
+    /// A thin disc: a lily pad, a bud on it, a bell on its float. The axis is
+    /// the thickness, so the instance's `length` is how thick it is and its
+    /// `radius` how wide. The top is a shallow dome and carries the painting;
+    /// the rim and the underside are plain.
+    static func disc() -> ([SolidVertex], [UInt16]) {
+        var verts: [SolidVertex] = []
+        var idx: [UInt16] = []
+        // Dome height in thickness units: a pad three points thick stands
+        // about one and a half proud at the middle.
+        func dome(_ r: Float) -> Float { 0.5 + 0.55 * (1 - r * r) }
+
+        var rows: [Int] = []
+        for i in 0...discCapRings {
+            let rr = Float(i) / Float(discCapRings)
+            rows.append(verts.count)
+            for s in 0...segments {
+                let a = Float(s) / Float(segments) * 2 * Float.pi
+                // The dome's slope, turned into the normal of it.
+                let n = simd_normalize(SIMD3<Float>(1, 1.1 * rr * cos(a), 1.1 * rr * sin(a)))
+                verts.append(SolidVertex(px: dome(rr), py: cos(a) * rr, pz: sin(a) * rr,
+                                         nx: n.x, ny: n.y, nz: n.z, v: 0, ang: a, part: 0, rad: rr))
+            }
+        }
+        for i in 0..<discCapRings {
+            for s in 0..<segments {
+                let a = UInt16(rows[i] + s), b = a + 1
+                let c = UInt16(rows[i + 1] + s), d = c + 1
+                idx += [a, c, b, b, c, d]
+            }
+        }
+
+        // The rim, standing straight down from the edge of the dome.
+        let rimTop = verts.count
+        for (k, px) in [dome(1), Float(-0.5)].enumerated() {
+            for s in 0...segments {
+                let a = Float(s) / Float(segments) * 2 * Float.pi
+                verts.append(SolidVertex(px: px, py: cos(a), pz: sin(a),
+                                         nx: 0, ny: cos(a), nz: sin(a), v: Float(k), ang: a, part: 1, rad: 1))
+            }
+        }
+        for s in 0..<segments {
+            let a = UInt16(rimTop + s), b = a + 1
+            let c = UInt16(rimTop + segments + 1 + s), d = c + 1
+            idx += [a, c, b, b, c, d]
+        }
+
+        // The underside: a flat disc, its own normal, its own colour.
+        let centre = UInt16(verts.count)
+        verts.append(SolidVertex(px: -0.5, py: 0, pz: 0, nx: -1, ny: 0, nz: 0, v: 1, ang: 0, part: 2, rad: 0))
+        for s in 0...segments {
+            let a = Float(s) / Float(segments) * 2 * Float.pi
+            verts.append(SolidVertex(px: -0.5, py: cos(a), pz: sin(a), nx: -1, ny: 0, nz: 0,
+                                     v: 1, ang: a, part: 2, rad: 1))
+        }
+        for s in 0..<segments {
+            let a = centre + 1 + UInt16(s)
+            idx += [centre, a, a + 1]
+        }
+        return (verts, idx)
+    }
+
+    static let koiRings = 20
+    static let koiSegments = 12
+    /// How much thinner a fish is top to bottom than side to side.
+    static let koiFlatten: Float = 0.8
+
+    /// A koi's body: a spindle turned along its length, flattened a little.
+    /// `v` runs 0 at the tail to 1 at the nose, which is the same way the
+    /// spine samples run, so the vertex shader lays each ring on the path the
+    /// head actually swam. `ang` is measured from the back, so the painting
+    /// wraps round the body from the spine down to the belly on either side.
+    static func koi() -> ([SolidVertex], [UInt16]) {
+        let rows = koiRings, cols = koiSegments + 1
+        var verts: [SolidVertex] = []
+        var idx: [UInt16] = []
+
+        // Widest a little behind the shoulder, nothing at the nose, a thin
+        // stalk at the tail.
+        func profile(_ v: Float) -> Float {
+            if v >= 0.6 {
+                let t = (1 - v) / 0.4
+                return 0.5 * pow(sin(t * Float.pi / 2), 0.8)
+            }
+            return 0.15 + 0.35 * pow(v / 0.6, 0.7)
+        }
+
+        var pos = [SIMD3<Float>](repeating: .zero, count: rows * cols)
+        var normals = [SIMD3<Float>](repeating: .zero, count: rows * cols)
+        for i in 0..<rows {
+            let v = Float(i) / Float(rows - 1)
+            let r = profile(v)
+            for s in 0...koiSegments {
+                let a = Float(s) / Float(koiSegments) * 2 * Float.pi
+                pos[i * cols + s] = SIMD3(v - 0.5, sin(a) * r, cos(a) * r * koiFlatten)
+            }
+        }
+        for i in 0..<(rows - 1) {
+            for s in 0..<koiSegments {
+                let a = i * cols + s, b = a + 1
+                let c = (i + 1) * cols + s, d = c + 1
+                for tri in [(a, c, b), (b, c, d)] {
+                    let n = simd_cross(pos[tri.1] - pos[tri.0], pos[tri.2] - pos[tri.0])
+                    normals[tri.0] += n
+                    normals[tri.1] += n
+                    normals[tri.2] += n
+                }
+                idx += [UInt16(a), UInt16(c), UInt16(b), UInt16(b), UInt16(c), UInt16(d)]
+            }
+        }
+        // The seam column is the same edge as the first: one normal between
+        // them, or a line shows down the fish.
+        for i in 0..<rows {
+            let n = normals[i * cols] + normals[i * cols + koiSegments]
+            normals[i * cols] = n
+            normals[i * cols + koiSegments] = n
+        }
+        for i in 0..<rows {
+            let v = Float(i) / Float(rows - 1)
+            for s in 0...koiSegments {
+                let k = i * cols + s
+                let p = pos[k]
+                var n = normals[k]
+                if simd_dot(n, SIMD3<Float>(0, p.y, p.z)) < 0 { n = -n }
+                n = simd_length(n) > 1e-6 ? simd_normalize(n) : SIMD3(0, p.y, p.z)
+                verts.append(SolidVertex(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                                         v: v, ang: Float(s) / Float(koiSegments) * 2 * Float.pi,
+                                         part: 0, rad: 1))
+            }
+        }
+
+        // The tail end is cut off square, so nothing is seen inside it.
+        let r0 = profile(0)
+        let centre = UInt16(verts.count)
+        verts.append(SolidVertex(px: -0.5, py: 0, pz: 0, nx: -1, ny: 0, nz: 0, v: 0, ang: 0, part: 1, rad: 0))
+        for s in 0...koiSegments {
+            let a = Float(s) / Float(koiSegments) * 2 * Float.pi
+            verts.append(SolidVertex(px: -0.5, py: sin(a) * r0, pz: cos(a) * r0 * koiFlatten,
+                                     nx: -1, ny: 0, nz: 0, v: 0, ang: a, part: 1, rad: 1))
+        }
+        for s in 0..<koiSegments {
+            let a = centre + 1 + UInt16(s)
+            idx += [centre, a, a + 1]
+        }
+        return (verts, idx)
+    }
+
     /// Value noise round a circle: `period` samples spread over the turn and
     /// smoothly joined, so the seam meets itself.
     private static func ringNoise(_ ang: Float, period: Int, seed: UInt32) -> Float {
@@ -318,7 +486,7 @@ enum SolidMesh {
 /// the style of `SpriteBatch`: one instance buffer filled per frame, one
 /// pipeline, no per-piece state.
 final class SolidBatch {
-    static let maxInstances = 256
+    static let maxInstances = 1024
 
     let pipeline: MTLRenderPipelineState
     let depthState: MTLDepthStencilState
@@ -362,8 +530,10 @@ final class SolidBatch {
 
         // The solids are the only thing in the frame that has to sort against
         // itself, so they are the only thing that reads and writes depth.
+        // Equal passes, so a crossfade drawn as two bodies in the same place
+        // (a bud closing over a bud opening) still shows both.
         let dd = MTLDepthStencilDescriptor()
-        dd.depthCompareFunction = .less
+        dd.depthCompareFunction = .lessEqual
         dd.isDepthWriteEnabled = true
         guard let ds = device.makeDepthStencilState(descriptor: dd) else { return nil }
         depthState = ds
@@ -371,7 +541,8 @@ final class SolidBatch {
         var verts: [SolidVertex] = []
         var idx: [UInt16] = []
         var built: [(offset: Int, count: Int, baseVertex: Int)] = []
-        for (v, i) in [SolidMesh.can(), SolidMesh.bottle(), SolidMesh.stone(), SolidMesh.log()] {
+        for (v, i) in [SolidMesh.can(), SolidMesh.bottle(), SolidMesh.stone(), SolidMesh.log(),
+                       SolidMesh.disc(), SolidMesh.koi()] {
             built.append((offset: idx.count * MemoryLayout<UInt16>.stride, count: i.count, baseVertex: verts.count))
             verts += v
             idx += i
@@ -387,14 +558,30 @@ final class SolidBatch {
         instanceBuffer = inst
     }
 
-    /// Uploads the bodies and draws them, in runs by shape.
+    /// Uploads the bodies and draws them, in runs by shape and painting.
+    /// `textures` is the batch's small painting list, indexed 1 based by the
+    /// instance; `blank` fills the slot for a body that wears none, since a
+    /// draw with nothing bound there is an error.
+    private var cursor = 0
+
+    /// Called once a frame before any draw: the instance buffer starts over.
+    func beginFrame() { cursor = 0 }
+
     func draw(_ solids: [SolidInstance], encoder: MTLRenderCommandEncoder,
-              params: SolidParams, camera: inout CameraParams) {
+              params: SolidParams, camera: inout CameraParams,
+              spines: MTLBuffer, textures: [MTLTexture] = [], blank: MTLTexture? = nil) {
         guard !solids.isEmpty else { return }
-        // Grouped so one draw call covers every body of the same shape.
-        let sorted = solids.sorted { $0.shape < $1.shape }
-        let count = min(sorted.count, SolidBatch.maxInstances)
-        instanceBuffer.contents().withMemoryRebound(to: SolidInstance.self, capacity: count) { ptr in
+        // Grouped so one draw call covers every body of the same shape wearing
+        // the same painting. Each draw in a frame takes its own stretch of the
+        // instance buffer, or a later draw would overwrite an earlier one
+        // before the GPU had drawn it.
+        let sorted = solids.sorted { ($0.shape, $0.texture) < ($1.shape, $1.texture) }
+        let count = min(sorted.count, SolidBatch.maxInstances - cursor)
+        guard count > 0 else { return }
+        let base = cursor
+        cursor += count
+        instanceBuffer.contents().advanced(by: base * MemoryLayout<SolidInstance>.stride)
+            .withMemoryRebound(to: SolidInstance.self, capacity: count) { ptr in
             for i in 0..<count { ptr[i] = sorted[i] }
         }
 
@@ -403,17 +590,23 @@ final class SolidBatch {
         encoder.setDepthStencilState(depthState)
         encoder.setCullMode(.none)
         encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-        encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 1)
+        encoder.setVertexBuffer(instanceBuffer, offset: base * MemoryLayout<SolidInstance>.stride, index: 1)
         encoder.setVertexBytes(&p, length: MemoryLayout<SolidParams>.stride, index: 2)
+        encoder.setVertexBuffer(spines, offset: 0, index: 3)
         encoder.setVertexBytes(&camera, length: MemoryLayout<CameraParams>.stride, index: 4)
         encoder.setFragmentBytes(&p, length: MemoryLayout<SolidParams>.stride, index: 0)
 
         var runStart = 0
         while runStart < count {
             let shape = Int(sorted[runStart].shape)
+            let tex = sorted[runStart].texture
             var runEnd = runStart + 1
-            while runEnd < count, Int(sorted[runEnd].shape) == shape { runEnd += 1 }
-            if shape < ranges.count {
+            while runEnd < count, Int(sorted[runEnd].shape) == shape, sorted[runEnd].texture == tex { runEnd += 1 }
+            // Something is always bound: the fragment names a painting
+            // whether or not this body wears one.
+            let painting = (tex > 0 && Int(tex) <= textures.count) ? textures[Int(tex) - 1] : blank
+            if let painting { encoder.setFragmentTexture(painting, index: 0) }
+            if shape < ranges.count, painting != nil {
                 let r = ranges[shape]
                 encoder.drawIndexedPrimitives(type: .triangle, indexCount: r.count, indexType: .uint16,
                                               indexBuffer: indexBuffer, indexBufferOffset: r.offset,

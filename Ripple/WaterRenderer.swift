@@ -235,6 +235,11 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// Nil if the solids pipeline could not be built. The pond still draws:
     /// the paper pieces are the app, the bodies are an addition to it.
     private let solidBatch: SolidBatch?
+    private var floorDepth: MTLTexture?
+    /// Bodies under the water, drawn into the floor so the water refracts them.
+    var submergedSolids: [SolidInstance] = []
+    /// The paintings the bodies may wear, indexed 1 based by `SolidInstance.texture`.
+    var solidTextures: [String] = []
     private let flatDepthState: MTLDepthStencilState
     let textures: TextureCache
 
@@ -481,7 +486,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             composeDesc.vertexFunction = vertFn
             composeDesc.fragmentFunction = composeFn
             composeDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-            composeDesc.depthAttachmentPixelFormat = .invalid
+            composeDesc.depthAttachmentPixelFormat = .depth32Float
             floorComposePipeline = try device.makeRenderPipelineState(descriptor: composeDesc)
         } catch {
             print("pipeline creation failed: \(error)")
@@ -490,7 +495,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
         textures = TextureCache(device: device)
         guard let fs = SpriteBatch(device: device, library: library, pixelFormat: .bgra8Unorm,
-                                   depthFormat: .invalid, textures: textures),
+                                   depthFormat: .depth32Float, textures: textures),
               let ss = SpriteBatch(device: device, library: library, pixelFormat: view.colorPixelFormat,
                                    depthFormat: view.depthStencilPixelFormat, textures: textures)
         else { return nil }
@@ -710,6 +715,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         // --- the crack field, only when the sheet has changed --------------------
 
         bakeCracks(commands: commands, worldPoints: pointsViewport)
+        solidBatch?.beginFrame()
 
         // --- floor base, once ---------------------------------------------------
 
@@ -910,7 +916,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             pass.colorAttachments[0].texture = floorTexture
             pass.colorAttachments[0].loadAction = .dontCare
             pass.colorAttachments[0].storeAction = .store
+            pass.depthAttachment.texture = floorDepth
+            pass.depthAttachment.loadAction = .clear
+            pass.depthAttachment.clearDepth = 1
+            pass.depthAttachment.storeAction = .dontCare
             if let encoder = commands.makeRenderCommandEncoder(descriptor: pass) {
+                encoder.setDepthStencilState(flatDepthState)
                 var fp = floorParams()
                 encoder.setRenderPipelineState(floorComposePipeline)
                 encoder.setFragmentTexture(floorBase, index: 0)
@@ -933,6 +944,13 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
                 floorBatch.beginFrame()
                 floorBatch.draw(submergedSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam, ice: iceTexture ?? blankIce)
+                if !submergedSolids.isEmpty {
+                    var sp = solidParams()
+                    sp.flags.x = 1
+                    solidBatch?.draw(submergedSolids, encoder: encoder, params: sp, camera: &cam, spines: spineBuffer,
+                                     textures: solidTextures.map { textures.texture($0) ?? blankMosaic }, blank: blankMosaic)
+                    encoder.setDepthStencilState(flatDepthState)
+                }
                 encoder.endEncoding()
             }
         }
@@ -972,7 +990,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             surfaceBatch.beginFrame()
             surfaceBatch.draw(contactShadows, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam, ice: iceTexture ?? blankIce)
             if descriptor.depthAttachment.texture != nil {
-                solidBatch?.draw(solids, encoder: encoder, params: solidParams(), camera: &cam)
+                solidBatch?.draw(solids, encoder: encoder, params: solidParams(), camera: &cam, spines: spineBuffer,
+                                 textures: solidTextures.map { textures.texture($0) ?? blankMosaic }, blank: blankMosaic)
                 encoder.setDepthStencilState(flatDepthState)
             }
             surfaceBatch.draw(surfaceSprites, encoder: encoder, params: spriteParams, field: read, spines: spineBuffer, camera: &cam, ice: iceTexture ?? blankIce)
@@ -986,9 +1005,13 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// The solids borrow the sprites' light so the whole pond is lit once,
     /// and the water's own ink colour so the rim is the same line.
     private func solidParams() -> SolidParams {
-        SolidParams(light: SIMD4(-0.40, -0.56, 0.72, 0),
+        // light.w is points per unit of depth, so a body under the water can
+        // haze by the same depth the submerged sprites do; flags.yzw is the
+        // colour the pond swallows them into.
+        SolidParams(light: SIMD4(-0.40, -0.56, 0.72, WaterRenderer.depthScale),
                     ink: SIMD4(0.08, 0.07, 0.09, 1),
-                    gains: SIMD4(Tuning.solidBank, Tuning.solidFarPlane, Tuning.solidSpec, Tuning.solidRim))
+                    gains: SIMD4(Tuning.solidBank, Tuning.solidFarPlane, Tuning.solidSpec, Tuning.solidRim),
+                    flags: SIMD4(0, floorLook.deep.x * 0.9, floorLook.deep.y * 0.9, floorLook.deep.z * 0.9))
     }
 
     private func floorParams() -> FloorParams {
@@ -1142,6 +1165,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         floorDesc.storageMode = .private
         floorBase = device.makeTexture(descriptor: floorDesc)
         floorTexture = device.makeTexture(descriptor: floorDesc)
+        // Bodies under the water sort against each other in the floor pass.
+        let floorDepthDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float,
+                                                                      width: floorDesc.width, height: floorDesc.height, mipmapped: false)
+        floorDepthDesc.usage = .renderTarget
+        floorDepthDesc.storageMode = .private
+        floorDepth = device.makeTexture(descriptor: floorDepthDesc)
         needsFloorBake = true
         // The crack field is laid out over the world, so a new size needs a
         // new one rather than the old one stretched.
