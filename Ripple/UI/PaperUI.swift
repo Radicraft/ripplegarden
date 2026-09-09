@@ -1,49 +1,63 @@
 import SwiftUI
 
-/// Paper, ink and stone: the materials the interface is allowed.
+/// The materials the interface is allowed: paper white on an ink scrim, one
+/// vermilion accent, and two faces.
 ///
-/// Type is Shippori Mincho B1, an OFL Mincho whose Latin is a fine
-/// transitional serif. The bundled faces are subset to Latin so the whole
-/// family costs a few hundred kilobytes instead of forty megabytes. If a face
-/// fails to load for any reason the system serif stands in at the same size,
-/// so nothing moves.
+/// The serif is Newsreader at weight 300, the variable font from Google
+/// Fonts, used for the few words that are read: a level's name, "Seasons to
+/// come", "The pond is clear.", the hints. Every word that is pressed is set
+/// in the system face, which is Apple's own answer to legibility in a game.
+/// If the bundled face fails to load the system serif stands in at the same
+/// size, so nothing moves.
 enum Ink {
-    static let paper = Color(red: 0.965, green: 0.945, blue: 0.900)
-    static let ink = Color(red: 0.106, green: 0.106, blue: 0.106)
-    static let blossom = Color(red: 0.93, green: 0.55, blue: 0.65)
-    static let stone = Color(red: 0.74, green: 0.73, blue: 0.71)
-    static let stoneDark = Color(red: 0.20, green: 0.23, blue: 0.24)
+    /// Paper white. 13.8:1 on the scrim.
+    static let paper = Color(red: 0.949, green: 0.937, blue: 0.902)
+    /// The scrim's own colour, which is the composited value the design
+    /// asks for rather than an alpha: the pond is pulled down under it and
+    /// this laid over, so the result lands here whatever the season.
+    static let scrim = Color(red: 0.090, green: 0.145, blue: 0.122)
+    /// The veil under a hint, which is mixed over a pond at full brightness.
+    static let veil = Color(red: 0.043, green: 0.086, blue: 0.071)
+    /// The koi's colour. A hairline and a switch only, never a word: 3.3:1
+    /// carries a 2pt rule and fails body text.
+    static let vermilion = Color(red: 0.776, green: 0.282, blue: 0.184)
+    /// The line between rows. Decorative; the rows read without it.
+    static let hairline = Color(red: 0.949, green: 0.937, blue: 0.902).opacity(0.14)
+    /// Secondary text: the disclosure, Terms, Privacy. 7.8:1.
+    static let dim = 0.72
 
-    private static let titleFace = "ShipporiMinchoB1-Regular"
-    private static let labelFace = "ShipporiMinchoB1-Medium"
-    private static let bodyFace = "ShipporiMincho-Regular"
+    private static let serifFace = "NewsreaderRoman-Light"
+    private static let hasSerif = UIFont(name: serifFace, size: 12) != nil
 
-    private static func loaded(_ name: String) -> Bool {
-        UIFont(name: name, size: 12) != nil
+    /// The words that are read.
+    static func serif(_ size: CGFloat) -> Font {
+        hasSerif ? .custom(serifFace, fixedSize: size) : .system(size: size, weight: .light, design: .serif)
     }
 
-    private static let hasTitle = loaded(titleFace)
-    private static let hasLabel = loaded(labelFace)
-    private static let hasBody = loaded(bodyFace)
-
-    /// Names, headings, the game's own voice.
-    static func title(_ size: CGFloat) -> Font {
-        hasTitle ? .custom(titleFace, fixedSize: size) : .system(size: size, weight: .regular, design: .serif)
-    }
-
-    /// Small type that has to hold its own over moving water.
+    /// The words that are pressed.
     static func label(_ size: CGFloat) -> Font {
-        hasLabel ? .custom(labelFace, fixedSize: size) : .system(size: size, weight: .medium, design: .serif)
-    }
-
-    /// Sentences.
-    static func body(_ size: CGFloat) -> Font {
-        hasBody ? .custom(bodyFace, fixedSize: size) : .system(size: size, design: .serif)
+        .system(size: size, weight: .regular)
     }
 }
 
-/// Loose PNGs from the bundle, kept once they are read. The stones the HUD
-/// wears are the only art the SwiftUI layer still draws.
+/// The six roles the whole game is set in, and nothing else. Sizes are in
+/// points and none is under 15.
+enum Size {
+    /// "Ripple Garden".
+    static let display: CGFloat = 40
+    /// A screen's one word: "Seasons to come", "The pond is clear.".
+    static let word: CGFloat = 28
+    /// Hints, a level's goal, what is left.
+    static let prose: CGFloat = 20
+    /// Anything operable.
+    static let row: CGFloat = 19
+    /// The subscription disclosure.
+    static let body: CGFloat = 17
+    /// Terms and Privacy.
+    static let legal: CGFloat = 15
+}
+
+/// Loose PNGs from the bundle, kept once they are read.
 enum Art {
     private static var cache: [String: UIImage] = [:]
     static func image(_ name: String) -> UIImage? {
@@ -54,55 +68,35 @@ enum Art {
     }
 }
 
-/// The face of a river stone, stretched to whatever it has to carry.
-struct StoneFace: View {
-    var dark: Bool
-
-    var body: some View {
-        Group {
-            if let image = Art.image(dark ? "button_stone_dark" : "button_stone") {
-                Image(uiImage: image)
-                    .resizable()
-                    .interpolation(.high)
-            } else {
-                Capsule().fill(dark ? Ink.stoneDark : Ink.stone)
-            }
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-/// A small round pebble for the corner marks: back, and the leaf.
-struct StoneIconButton: View {
+/// The one icon the game has, in a 44pt target. A system glyph, because an
+/// invented mark costs the player a guess and buys nothing.
+struct GlyphButton: View {
     let symbol: String
-    var diameter: CGFloat = 34
-    let action: () -> Void
+    /// Where it was pressed, so a menu can drop its ring in the real water
+    /// at the place the player asked from.
+    var action: (CGPoint) -> Void
+
+    @State private var centre: CGPoint = .zero
 
     var body: some View {
-        Button(action: action) {
+        Button { action(centre) } label: {
             Image(systemName: symbol)
-                .font(.system(size: diameter * 0.44, weight: .medium))
-                .foregroundStyle(Ink.ink.opacity(0.85))
-                .shadow(color: .white.opacity(0.6), radius: 0.7, y: 0.8)
-                .frame(width: diameter, height: diameter)
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(Ink.paper.opacity(0.72))
+                // The bank is pale in summer, so the glyph carries its own
+                // shade rather than trusting the water behind it.
+                .shadow(color: Ink.veil.opacity(0.65), radius: 5, y: 1)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
                 .background {
-                    StoneFace(dark: false)
-                        .scaledToFill()
-                        .frame(width: diameter, height: diameter)
-                        .clipShape(Circle())
+                    GeometryReader { g in
+                        Color.clear.onAppear {
+                            let f = g.frame(in: .global)
+                            centre = CGPoint(x: f.midX, y: f.midY)
+                        }
+                    }
                 }
         }
-        .buttonStyle(PebblePress())
-    }
-}
-
-/// The same sink, for buttons that are not label-on-stone.
-struct PebblePress: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        let pressed = configuration.isPressed
-        return configuration.label
-            .shadow(color: .black.opacity(pressed ? 0.14 : 0.28), radius: pressed ? 3 : 7, y: pressed ? 2 : 5)
-            .offset(y: pressed ? 2 : 0)
-            .animation(.spring(response: 0.28, dampingFraction: 0.62), value: pressed)
+        .buttonStyle(.plain)
     }
 }

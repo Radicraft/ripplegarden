@@ -7,6 +7,7 @@
 		<string>ShipporiMinchoB1-Regular.ttf</string>
 		<string>ShipporiMinchoB1-Medium.ttf</string>
 		<string>ShipporiMincho-Regular.ttf</string>
+		<string>Newsreader-VF.ttf</string>
 	</array>
 	<!-- SwiftData mirrors progress through the player's private CloudKit
 	     database. CloudKit tells the app that another device wrote something

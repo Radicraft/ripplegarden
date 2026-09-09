@@ -41,10 +41,8 @@ struct RenderParams {
     float4 inkColour;      // woodblock line colour
     float4 view;           // x zoom, yz view centre in world pixels
     float4 world;          // xy world size in pixels
-    float4 menuRect;       // xy centre, zw radii of the clear water, world uv
-    float  menuDim;        // 0...1, the cloud passing over the pond
     float  dayPhase;       // 0...1 through the day, noon at a half
-    float  _menuPad1, _menuPad2;
+    float  _pad0, _pad1, _pad2;
 };
 
 // One Voronoi seed of the fractured sheet: mirrors `IceSeedGPU` in
@@ -907,18 +905,6 @@ static float3 skyLook(float3 R, float3 L, float noon)
     return sky;
 }
 
-/// A menu is open in the pond: the water darkens like a cloud passing,
-/// except inside the soft ellipse around the menu itself.
-static inline float3 menuShade(float3 col, float2 wuv, constant RenderParams &p)
-{
-    if (p.menuDim < 0.001) { return col; }
-    float2 d = (wuv - p.menuRect.xy) / max(p.menuRect.zw, float2(0.001));
-    float e = length(d);
-    float inside = 1.0 - smoothstep(0.75, 1.25, e);
-    float amount = mix(0.82, 0.5, inside) * p.menuDim;
-    return col * (1.0 - amount);
-}
-
 fragment float4 water_fragment(VertexOut in                              [[stage_in]],
                                texture2d<float, access::sample> field     [[texture(0)]],
                                texture2d<float, access::sample> floorTex  [[texture(1)]],
@@ -956,7 +942,7 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         dry = mix(dry, earth, away);
         float paper = fbm(in.uv * p.viewport / 6.0, 2);
         dry *= 0.92 + 0.14 * paper;
-        return float4(menuShade(dry, wuv, p), 1.0);
+        return float4(dry, 1.0);
     }
 
     float2 texel = 1.0 / float2(p.size);
@@ -1048,7 +1034,7 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         float2 vc = in.uv - 0.5;
         col *= 1.0 - dot(vc, vc) * 0.40;
         col += (hash21(in.uv * p.viewport + p.time) - 0.5) * (1.5 / 255.0);
-        return float4(menuShade(col, wuv, p), 1.0);
+        return float4(col, 1.0);
     }
 
     // --- woodblock ------------------------------------------------------------
@@ -1224,7 +1210,7 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         float presence = max(solid, (1.0 - solid) * (1.0 - sinkT * sinkT));
         col = mix(col, sheet, presence);
     }
-    return float4(menuShade(col, wuv, p), 1.0);
+    return float4(col, 1.0);
 }
 
 // ---------------------------------------------------------------------------

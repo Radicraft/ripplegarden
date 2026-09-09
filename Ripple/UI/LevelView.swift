@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// A level is the water and two stones in the corners. Everything else the
-/// game has to say it says in the pond: the words are ink under the surface
-/// and the buttons are stones in the water.
+/// A level is the pond, two glyphs in 44pt targets, and whatever the game has
+/// to say. What is read sits low in the water under a veil; a menu is one
+/// scrim over the lot.
 struct LevelView: View {
 
     @ObservedObject var controller: GameController
@@ -13,7 +13,9 @@ struct LevelView: View {
             WaterView(controller: controller)
                 .ignoresSafeArea()
 
+            words
             hud
+            menu
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
@@ -21,20 +23,45 @@ struct LevelView: View {
         .onAppear { controller.onExit = onExit }
     }
 
+    /// The line that opens the level, what is left, a hint.
+    @ViewBuilder private var words: some View {
+        ZStack {
+            if let w = controller.words, controller.presented == nil {
+                PondVeil(words: w)
+                    .transition(.opacity)
+                    .id(w)
+            }
+        }
+        .animation(Motion.scrim, value: controller.words)
+        .allowsHitTesting(false)
+    }
+
+    /// Back at the top left, the settings gear opposite it. The bottom of the
+    /// screen belongs to the words, so the gear does not sit there here.
     private var hud: some View {
         VStack {
-            HStack(alignment: .top) {
-                StoneIconButton(symbol: "chevron.left", action: onExit)
-                    .padding(.leading, 18)
-                    .padding(.top, 8)
-                    .opacity(controller.phase == .playing ? 0.9 : 0)
+            HStack {
+                GlyphButton(symbol: "chevron.left") { _ in onExit() }
                 Spacer()
-                StoneIconButton(symbol: "leaf") { controller.openSettings() }
-                    .padding(.trailing, 18)
-                    .padding(.top, 8)
-                    .opacity(controller.phase == .playing ? 0.9 : 0)
+                GlyphButton(symbol: "gearshape") { controller.openSettings(from: $0) }
             }
+            .padding(.horizontal, 18)
+            .opacity(controller.phase == .playing && controller.presented == nil ? 1 : 0)
+            .animation(Motion.leave, value: controller.presented)
             Spacer()
+        }
+    }
+
+    @ViewBuilder private var menu: some View {
+        if let screen = controller.presented {
+            MenuLayer(screen: screen,
+                      sound: controller.sound,
+                      haptics: controller.haptics,
+                      hasNext: controller.hasNext,
+                      onClose: { controller.closeMenu() },
+                      onGarden: onExit,
+                      onNext: { controller.next() })
+                .transition(.opacity)
         }
     }
 }

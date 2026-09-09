@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import QuartzCore
+import SwiftUI
 import simd
 
 /// The hub: the year as one stream, winter at its source and autumn at its
@@ -34,8 +35,8 @@ final class HubController: ObservableObject, TouchInput {
     /// The level a splash is opening, once the water has closed over the tap.
     var onPlay: ((LevelSpec) -> Void)?
     private var storeNote: CGPoint = .zero
-    /// The menu in the water, when one is open.
-    private(set) var menu: WaterMenu?
+    /// The menu that is up, when one is. The view draws it over the stream.
+    @Published private(set) var presented: MenuScreen?
     /// `-showMenu settings|store`, so a menu can be seen without a finger.
     private var pendingMenu: String? = {
         let args = ProcessInfo.processInfo.arguments
@@ -459,10 +460,6 @@ final class HubController: ObservableObject, TouchInput {
         for s in garden.splashes { renderer.addSplat(at: s.at, in: viewSize, radius: s.radius, amplitude: s.amplitude) }
         garden.splashes.removeAll()
 
-        menu?.update(dt: dt)
-        if menu?.isGone == true { menu = nil }
-        renderer.menuDim = menu?.dim ?? 0
-        if let m = menu { renderer.menuRect = m.rect }
         if let flag = pendingMenu, elapsed > 1.0 {
             pendingMenu = nil
             switch flag {
@@ -482,7 +479,6 @@ final class HubController: ObservableObject, TouchInput {
     }
 
     private func feed(_ renderer: WaterRenderer) {
-        let menuArt = menu?.sprites(textures: renderer.textures)
         renderer.walls = []
         renderer.siltCovers = []
         renderer.camera = garden.camera
@@ -508,11 +504,6 @@ final class HubController: ObservableObject, TouchInput {
                                     size: CGSize(width: side, height: side * 0.8), mode: .shadow, alpha: 0.5, z: -1.0))
             }
         }
-        if let m = menu, m.dim > 0.01 {
-            let keep = 1 - 0.9 * m.dim
-            for i in under.indices { under[i].gpu.alpha *= keep }
-        }
-        under += menuArt?.submerged ?? []
         renderer.submergedSprites = under
 
         var over: [Sprite] = []
@@ -637,15 +628,9 @@ final class HubController: ObservableObject, TouchInput {
         }
         over += garden.skySprites()
         over += garden.mistSprites()
-        if let m = menu, m.dim > 0.01 {
-            let keep = 1 - 0.92 * m.dim
-            for i in over.indices { over[i].gpu.alpha *= keep }
-            for i in solids.indices { solids[i].alpha *= keep }
-        }
-        over += menuArt?.surface ?? []
         renderer.surfaceSprites = over
         renderer.contactShadows = []
-        renderer.solids = solids + (menuArt?.solids ?? [])
+        renderer.solids = solids
         renderer.submergedSolids = underBodies
         renderer.solidTextures = paintings
     }
@@ -662,7 +647,7 @@ final class HubController: ObservableObject, TouchInput {
     func touchBegan(id: Int, at screen: CGPoint, in size: CGSize, weight: Float) {
         screenSize = size
         // A menu is in the way: the stream neither scrolls nor ripples.
-        if menu?.isOpen == true { return }
+        if presented != nil { return }
         guard placed, opening == nil else { return }
         let now = CACurrentMediaTime()
         pending[id] = (screen, now)
@@ -675,26 +660,36 @@ final class HubController: ObservableObject, TouchInput {
         momentum = 0
     }
 
-    // MARK: - Menus in the water
+    // MARK: - Menus over the stream
 
-    private func present(_ m: WaterMenu) {
-        m.splat = { [weak self] point, radius, amplitude in
-            guard let self, self.viewSize != .zero else { return }
-            self.renderer?.addSplat(at: point, in: self.viewSize, radius: radius, amplitude: amplitude)
+    /// A menu opens: one real impulse in the real water where it was asked
+    /// for, and then the scrim.
+    private func present(_ screen: MenuScreen, from screen0: CGPoint?) {
+        if viewSize != .zero {
+            let at = screen0.map { worldPoint($0) }
+                ?? renderer.map { CGPoint(x: CGFloat($0.viewCentre.x), y: CGFloat($0.viewCentre.y)) }
+                ?? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+            renderer?.addSplat(at: at, in: viewSize, radius: 90, amplitude: -0.09)
         }
-        menu = m
-        var centre = renderer.map { CGPoint(x: CGFloat($0.viewCentre.x), y: CGFloat($0.viewCentre.y)) }
-            ?? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
-        if let r = renderer { centre.y += CGFloat(Float(screenSize.height) * 0.08 / r.zoom) }
-        m.open(at: centre, world: viewSize)
+        sound.plop()
+        haptics.swell()
+        withAnimation(Motion.scrim) { presented = screen }
     }
 
-    func openSettings() { present(WaterMenus.settings(sound: sound, haptics: haptics)) }
+    func openSettings(from screen: CGPoint? = nil) { present(.settings, from: screen) }
 
-    func openStore() { present(WaterMenus.store(sound: sound, haptics: haptics)) }
+    func openStore(from screen: CGPoint? = nil) { present(.store, from: screen) }
+
+    /// Arriving is savoured; leaving is instant.
+    func closeMenu() {
+        guard presented != nil else { return }
+        sound.holdRelease(charge: 0.25)
+        haptics.holdRelease(charge: 0.25)
+        withAnimation(Motion.leave) { presented = nil }
+    }
 
     func touchMoved(id: Int, to screen: CGPoint, in size: CGSize) {
-        if menu?.isOpen == true { return }
+        if presented != nil { return }
         touches[id] = screen
         if tilt?.ids.contains(id) == true, updateTilt(moved: id, to: screen) { return }
         guard var s = scroll, s.id == id, let renderer else { return }
@@ -759,10 +754,7 @@ final class HubController: ObservableObject, TouchInput {
             if scroll?.id == id { scroll = nil }
             return
         }
-        if let m = menu, m.isOpen {
-            m.hit(worldPoint(screen))
-            return
-        }
+        if presented != nil { return }
         let wasScroll = scroll?.id == id ? scroll?.moved ?? false : false
         if scroll?.id == id { scroll = nil }
         guard let start = pending.removeValue(forKey: id), let renderer else { return }
@@ -777,7 +769,7 @@ final class HubController: ObservableObject, TouchInput {
         sound.tap(x: Float(point.x / viewSize.width), weight: 0.5)
         haptics.tap(weight: 0.5)
         if CACurrentMediaTime() - start.began < 0.45, abs(point.x - storeNote.x) < 90, abs(point.y - storeNote.y) < 34 {
-            openStore()
+            openStore(from: screen)
             return
         }
         if CACurrentMediaTime() - start.began < 0.45,

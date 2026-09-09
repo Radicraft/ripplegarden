@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The stream, with its labels floating on the water. The only thing over the
-/// glass is the leaf: the settings and the seasons pass happen in the water.
+/// The stream, with its labels floating on the water. Over the glass there is
+/// one system gear in a 44pt target, and a menu when the player asks for one.
 struct HubView: View {
 
     @ObservedObject var hub: HubController
@@ -14,7 +14,8 @@ struct HubView: View {
             }
             .ignoresSafeArea()
 
-            header
+            gear
+            menu
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
@@ -22,15 +23,27 @@ struct HubView: View {
         .onAppear { hub.onPlay = onPlay }
     }
 
-    private var header: some View {
+    private var gear: some View {
         VStack {
-            HStack(alignment: .firstTextBaseline) {
-                Spacer()
-                StoneIconButton(symbol: "leaf") { hub.openSettings() }
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 58)
             Spacer()
+            HStack {
+                Spacer()
+                GlyphButton(symbol: "gearshape") { hub.openSettings(from: $0) }
+            }
+            .padding(.trailing, 12)
+            .padding(.bottom, 22)
+        }
+        .opacity(hub.presented == nil ? 1 : 0)
+        .animation(Motion.leave, value: hub.presented)
+    }
+
+    @ViewBuilder private var menu: some View {
+        if let screen = hub.presented {
+            MenuLayer(screen: screen,
+                      sound: hub.sound,
+                      haptics: hub.haptics,
+                      onClose: { hub.closeMenu() })
+                .transition(.opacity)
         }
     }
 }

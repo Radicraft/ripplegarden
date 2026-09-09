@@ -19,13 +19,14 @@ final class GameController: ObservableObject, TouchInput {
     let style: WaterStyle
     /// Back to the garden, set by the view: the menus use it too.
     var onExit: (() -> Void)?
-    /// The menu in the water, when one is open.
-    private(set) var menu: WaterMenu?
-    /// Ink under the surface: what this level is for, what is left, a hint.
-    private var words: [WaterWords] = []
-    private var openingWords: WaterWords?
-    private var statusWords: WaterWords?
-    private var hintWords: WaterWords?
+    /// The menu that is up, when one is. The view draws it over the pond.
+    @Published private(set) var presented: MenuScreen?
+    /// The words low in the pond: the line that opens the level, what is
+    /// left, a hint. One slot, so two of them never collide.
+    @Published private(set) var words: PondWords?
+    /// When the hint arrived, in level seconds. It goes on its own after a
+    /// while, or on the next touch, whichever comes first.
+    private var hintAt: Float = 0
     private var statusText = ""
     private var statusKey = SIMD4<Int>(-1, -1, -1, -1)
     /// `-showMenu settings|store|complete|hint`, shown once the pond is laid
@@ -226,11 +227,8 @@ final class GameController: ObservableObject, TouchInput {
     /// fingers are let go.
     func leave() {
         celebration?.cancel()
-        menu = nil
-        words = []
-        openingWords = nil
-        statusWords = nil
-        hintWords = nil
+        presented = nil
+        words = nil
         sound.stopAmbience()
         for id in Array(holdSounding) { sound.holdEnd(id: id) }
         holdSounding.removeAll()
@@ -284,11 +282,8 @@ final class GameController: ObservableObject, TouchInput {
 
     func load(level newLevel: LevelSpec) {
         celebration?.cancel()
-        menu = nil
-        words = []
-        openingWords = nil
-        statusWords = nil
-        hintWords = nil
+        presented = nil
+        words = nil
         statusText = ""
         level = newLevel
         season = Library.season(for: newLevel)
@@ -723,17 +718,10 @@ final class GameController: ObservableObject, TouchInput {
 
         updateHints()
 
-        // The water's own interface: a menu, the line that opens the level,
-        // what is left, a hint.
-        menu?.update(dt: dt)
-        if menu?.isGone == true { menu = nil }
-        renderer.menuDim = menu?.dim ?? 0
-        if let m = menu { renderer.menuRect = m.rect }
-        for w in words { w.update(dt: dt) }
-        words.removeAll { $0.isGone }
-        if openingWords?.isGone == true { openingWords = nil }
-        if hintWords?.isGone == true { hintWords = nil; hint = nil }
+        // A hint stays a while and then goes by itself.
+        if hint != nil, elapsed - hintAt > 6 { dismissHint() }
         updateStatus()
+        updateWords()
         if let flag = pendingMenu, elapsed > 1.0 {
             pendingMenu = nil
             show(menuFlag: flag)
@@ -765,7 +753,6 @@ final class GameController: ObservableObject, TouchInput {
 
     private func feedRenderer(_ renderer: WaterRenderer) {
         let w = Float(viewSize.width), h = Float(viewSize.height)
-        let menuArt = menu?.sprites(textures: renderer.textures)
 
         // Walls: rocks are in the static depth map; heavy floaters move; ice
         // plates damp the water under them and turn ripples at their edges.
@@ -805,13 +792,6 @@ final class GameController: ObservableObject, TouchInput {
             under.append(Sprite(art.rock, at: CGPoint(x: r.centre.x + 6, y: r.centre.y + 9),
                                 size: CGSize(width: side, height: side * rockAspect), mode: .shadow, alpha: 0.55, z: -1.0))
         }
-        if let m = menu, m.dim > 0.01 {
-            let keep = 1 - 0.9 * m.dim
-            for i in under.indices { under[i].gpu.alpha *= keep }
-        }
-        under += menuArt?.submerged ?? []
-        // Words the player must read ride on the surface, over everything on
-        // the water; only the menus' ink lies beneath it.
         renderer.submergedSprites = under
 
         // On the water: rocks, debris, blossom, then the flora frame on top.
@@ -909,7 +889,7 @@ final class GameController: ObservableObject, TouchInput {
                                         colourB: natural?.b ?? (d.kind == .can ? [0.93, 0.93, 0.95, 1] : [0.18, 0.42, 0.72, 1])))
         }
         renderer.contactShadows = shadows
-        renderer.solids = solids + (menuArt?.solids ?? [])
+        renderer.solids = solids
         renderer.submergedSolids = underBodies
         renderer.solidTextures = paintings
         for s in garden.skaterSprites() { paper(s) }
@@ -925,17 +905,6 @@ final class GameController: ObservableObject, TouchInput {
         over += garden.skySprites()
         // Mist lies over everything on the water and under the sky.
         over += garden.mistSprites()
-        // While a menu is up the pond's own things fade back so the ink reads.
-        if let m = menu, m.dim > 0.01 {
-            let keep = 1 - 0.92 * m.dim
-            for i in over.indices { over[i].gpu.alpha *= keep }
-        }
-        for line in words {
-            line.onSurface = true
-            line.screenScale = CGFloat(1 / max(0.3, renderer.zoom))
-            over += line.sprites(textures: renderer.textures)
-        }
-        over += menuArt?.surface ?? []
         renderer.surfaceSprites = over
     }
 
@@ -1044,22 +1013,14 @@ final class GameController: ObservableObject, TouchInput {
         guard !hintsShown.contains(h), !HintMemory.seen(h), hint == nil else { return }
         hintsShown.insert(h)
         hint = h
-        showHintLine(h.text)
-    }
-
-    /// A hint is one line of ink low in the pond: it rises, waits, and sinks.
-    private func showHintLine(_ text: String) {
-        let line = WaterWords(lines: [WaterWords.Line(text: text, points: 22, wrapped: true)],
-                              centre: worldAt(CGPoint(x: 0.5, y: 0.78)), hold: 7)
-        hintWords = line
-        words.append(line)
+        hintAt = elapsed
     }
 
     private func updateHints() {
         guard phase == .playing else { return }
         if let h = level.hint, !touchedYet, elapsed > 4.0 { show(h) }
         // Once, a little way in: how to look at the pond from the side.
-        if elapsed > 30, touchedYet, !HintMemory.seen(.tilt), hintWords == nil { show(.tilt) }
+        if elapsed > 30, touchedYet, !HintMemory.seen(.tilt), hint == nil { show(.tilt) }
         if level.hint == .ice, touchedYet, let f = iceField, f.fraction > 0.97, elapsed > 12 { show(.ice) }
         // The tile is mostly clean but a heavy piece still shades it, and the
         // player has stalled: they need the hold.
@@ -1067,11 +1028,9 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     private func dismissHint() {
-        if let h = hint {
-            HintMemory.markSeen(h)
-            hintWords?.sink()
-            hint = nil
-        }
+        guard let h = hint else { return }
+        HintMemory.markSeen(h)
+        hint = nil
     }
 
     // MARK: - Touches
@@ -1565,7 +1524,7 @@ final class GameController: ObservableObject, TouchInput {
     func touchBegan(id: Int, at screen: CGPoint, in screenBounds: CGSize, weight: Float) {
         screenSize = screenBounds
         // A menu is in the way: nothing reaches the water through it.
-        if menu?.isOpen == true { return }
+        if presented != nil { return }
         touchedYet = true
         dismissHint()
         guard phase == .playing || phase == .celebrating, viewSize != .zero else { return }
@@ -1619,7 +1578,7 @@ final class GameController: ObservableObject, TouchInput {
     }
 
     func touchMoved(id: Int, to screen: CGPoint, in screenBounds: CGSize) {
-        if menu?.isOpen == true { return }
+        if presented != nil { return }
         screenTouches[id] = screen
         if pinch != nil {
             updatePinch(moved: id)
@@ -1711,10 +1670,7 @@ final class GameController: ObservableObject, TouchInput {
 
     func touchEnded(id: Int, at screen: CGPoint, in screenBounds: CGSize) {
         screenTouches.removeValue(forKey: id)
-        if let m = menu, m.isOpen {
-            m.hit(worldPoint(screen))
-            return
-        }
+        if presented != nil { return }
         if let p = pinch, p.ids.contains(id) {
             pinch = nil
             if p.active || p.tilting { renderer?.touchUp(id: id); pondTouches.removeValue(forKey: id); return }
@@ -1790,6 +1746,11 @@ final class GameController: ObservableObject, TouchInput {
             try? await Task.sleep(for: .seconds(5.2))
             if Task.isCancelled { return }
             self.phase = .complete
+            // Nothing at all for a moment: no scrim, no words, no cue. The
+            // ripples the player made are allowed to die out on their own,
+            // and that silence is the reward.
+            try? await Task.sleep(for: .seconds(Motion.completionPause))
+            if Task.isCancelled { return }
             self.showCompletion()
         }
     }
@@ -1799,7 +1760,7 @@ final class GameController: ObservableObject, TouchInput {
         load(level: following)
     }
 
-    // MARK: - Menus in the water
+    // MARK: - Words and menus
 
     /// A point in the pond at this fraction of the screen, kept inside the
     /// water so nothing is laid out on the bank.
@@ -1811,30 +1772,35 @@ final class GameController: ObservableObject, TouchInput {
                        y: min(max(p.y, 50), viewSize.height - 50))
     }
 
-    /// The level opens: its name and what it is for rise under the surface,
-    /// and the line that says what is left sits above them for good.
+    /// The level opens: its name and what it is for, low in the pond.
     private func openWords() {
-        guard viewSize != .zero else { return }
-        let opening = WaterWords(lines: [WaterWords.Line(text: level.title, points: 34),
-                                         WaterWords.Line(text: level.goal, points: 23, wrapped: true)],
-                                 centre: worldAt(CGPoint(x: 0.5, y: 0.34)), hold: 6)
-        let status = WaterWords(lines: [], centre: worldAt(CGPoint(x: 0.5, y: 0.13)), hold: nil)
-        status.width = 340
-        openingWords = opening
-        statusWords = status
-        words = [opening, status]
         statusText = ""
         statusKey = SIMD4<Int>(-1, -1, -1, -1)
         updateStatus()
+        updateWords()
     }
 
-    /// What is left, kept in the water. The texture is only drawn again when
-    /// the line itself changes.
+    /// One slot, filled by whatever matters most right now: a hint while it
+    /// is up, then the line that opened the level for its first few seconds,
+    /// then what is left.
+    private func updateWords() {
+        var next: PondWords?
+        // Once the pond is being cleared there is nothing on the screen at
+        // all: the last ripples are allowed to die out on their own.
+        if phase == .playing {
+            if let h = hint {
+                next = PondWords(title: nil, line: h.text)
+            } else if elapsed < 6 {
+                next = PondWords(title: level.title, line: level.goal)
+            } else if !statusText.isEmpty {
+                next = PondWords(title: nil, line: statusText)
+            }
+        }
+        if next != words { words = next }
+    }
+
+    /// What is left. The line is only written again when it has changed.
     private func updateStatus() {
-        guard let status = statusWords else { return }
-        // The line is only written again when what is left has actually
-        // changed. The sheet is read to the nearest twentieth, or a melting
-        // shard would rewrite the words every frame.
         // Ice chunks melt on their own; they are not the player's to clear.
         let alive = debris.filter { !$0.cleared && $0.meltsIn == nil }
         let ice = ((iceField?.fraction ?? 0) * 20).rounded() / 20
@@ -1845,36 +1811,43 @@ final class GameController: ObservableObject, TouchInput {
         let text = LevelSpec.status(remaining: alive.map(\.kind),
                                     targetsAsleep: targets.filter { !$0.woke }.count,
                                     ice: ice)
-        guard text != statusText else { return }
-        statusText = text
-        // Once nothing is left the completion says so; the status line sinks.
-        if alive.isEmpty, targets.allSatisfy(\.woke), ice < 0.06 { status.sink() }
-        else { status.replace(lines: [WaterWords.Line(text: text, points: 19)]) }
+        // Once nothing is left the completion says so; the line goes.
+        if alive.isEmpty, targets.allSatisfy(\.woke), ice < 0.06 { statusText = "" }
+        else { statusText = text }
     }
 
-    private func present(_ m: WaterMenu) {
-        m.splat = { [weak self] point, radius, amplitude in
-            guard let self, self.viewSize != .zero else { return }
-            self.renderer?.addSplat(at: point, in: self.viewSize, radius: radius, amplitude: amplitude)
+    /// A menu opens: one real impulse in the real water at the point that
+    /// asked for it, and then the scrim. That single ring is the whole
+    /// diegetic ambition, kept, at no cost to legibility.
+    private func present(_ screen: MenuScreen, from screen0: CGPoint?) {
+        if viewSize != .zero {
+            let at = screen0.map { worldPoint($0) } ?? worldAt(CGPoint(x: 0.5, y: 0.6))
+            renderer?.addSplat(at: at, in: viewSize, radius: 90, amplitude: -0.09)
         }
-        menu = m
-        m.open(at: worldAt(CGPoint(x: 0.5, y: 0.6)), world: viewSize)
+        sound.plop()
+        haptics.swell()
+        withAnimation(Motion.scrim) { presented = screen }
     }
 
-    func openSettings() { present(WaterMenus.settings(sound: sound, haptics: haptics)) }
+    func openSettings(from screen: CGPoint? = nil) { present(.settings, from: screen) }
 
-    func openStore() { present(WaterMenus.store(sound: sound, haptics: haptics)) }
+    func openStore(from screen: CGPoint? = nil) { present(.store, from: screen) }
 
-    /// The pond is clear: the words rise, and two stones sit under them.
+    /// The pond is clear: four words and two ways on.
     func showCompletion() {
-        var buttons = [WaterMenuButton(label: "Garden", action: { [weak self] in self?.onExit?() })]
-        if Library.level(after: level) != nil {
-            buttons.append(WaterMenuButton(label: "Next", dark: true, action: { [weak self] in self?.next() }))
-        }
-        let m = WaterMenu(rows: [.title("The pond is clear."), .buttons(buttons)], sound: sound, haptics: haptics)
-        m.closesOnOutsideTap = false
-        present(m)
+        withAnimation(Motion.scrim) { presented = .complete }
     }
+
+    /// Arriving is savoured; leaving is instant.
+    func closeMenu() {
+        guard presented != nil, presented != .complete else { return }
+        sound.holdRelease(charge: 0.25)
+        haptics.holdRelease(charge: 0.25)
+        withAnimation(Motion.leave) { presented = nil }
+    }
+
+    /// Whether the completion may offer the next pond.
+    var hasNext: Bool { Library.level(after: level) != nil }
 
     /// `-showMenu settings|store|complete|hint`.
     private func show(menuFlag: String) {
@@ -1886,7 +1859,7 @@ final class GameController: ObservableObject, TouchInput {
             let h = level.hint ?? .tap
             hintsShown.insert(h)
             hint = h
-            showHintLine(h.text)
+            hintAt = elapsed
         default: break
         }
     }
