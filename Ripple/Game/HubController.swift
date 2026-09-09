@@ -166,6 +166,9 @@ final class HubController: ObservableObject, TouchInput {
             return self.depth(at: CGPoint(x: p.x / self.viewSize.width, y: p.y / self.viewSize.height))
         }
         garden.configure(art: art, size: viewSize, bloomStage: 1.5)
+        // The map lies under more mist than any pond: the world has to end
+        // in weather rather than in a line.
+        garden.mistAmount = 0.9
         garden.rocks = pools.map { (CGPoint(x: $0.centre.x + $0.radius * 0.7, y: $0.centre.y - $0.radius * 0.55), 22) }
         // Start at the source, on the first pool not yet done.
         guard let first = pools.first else { placed = true; return }
@@ -633,6 +636,7 @@ final class HubController: ObservableObject, TouchInput {
                                rotation: f.phase, mode: .floater, alpha: 0.85, z: 0.5))
         }
         over += garden.skySprites()
+        over += garden.mistSprites()
         if let m = menu, m.dim > 0.01 {
             let keep = 1 - 0.92 * m.dim
             for i in over.indices { over[i].gpu.alpha *= keep }

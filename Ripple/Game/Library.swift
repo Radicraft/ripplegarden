@@ -219,6 +219,9 @@ struct LevelSpec: Identifiable {
     var frozen: Bool = false
     /// Rain falls on the pond: drops all over the water, and the rain's air.
     var rain: Bool = false
+    /// A stream runs into the pond here, as a fraction of the world, on the
+    /// rim. It sends a ripple train and a slow current in. Nil on a still pond.
+    var inlet: CGPoint? = nil
 
     /// What the player is here to do, in one line, worked out from what the
     /// level holds. Shown when the level opens and kept in view.
@@ -613,9 +616,11 @@ enum Library {
             var debris = strewn(petals)
             debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.36, y: 0.48),
                                           variant: 0, scale: 1, rotation: 0.6, kind: .bag))
+            // Meltwater runs in at the top-left corner all through the level.
             out["spring-5"] = LevelSpec(id: "spring-5", seasonID: "spring", index: 5, title: "Spring, five",
                                         mosaicCentre: CGPoint(x: 0.5, y: 0.5), mosaicRadius: 0, debris: debris,
-                                        rocks: stones, hint: .current, bloomTarget: 2.5)
+                                        rocks: stones, hint: .current, bloomTarget: 2.5,
+                                        inlet: CGPoint(x: 0.105, y: 0.105))
         }
 
         // Spring six, "the bud in the pads": a bud closed inside a ring of
@@ -862,9 +867,11 @@ enum Library {
             var debris = strewn(leaves)
             debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.50, y: 0.46),
                                           variant: 0, scale: 1, rotation: 0.8, kind: .bag))
+            // The rain has to go somewhere: a stream runs in at the top-left.
             out["autumn-5"] = LevelSpec(id: "autumn-5", seasonID: "autumn", index: 5, title: "Autumn, five",
                                         mosaicCentre: CGPoint(x: 0.5, y: 0.48), mosaicRadius: 0, debris: debris,
-                                        shallows: banks, hint: .current, bloomTarget: 2.5, rain: true)
+                                        shallows: banks, hint: .current, bloomTarget: 2.5, rain: true,
+                                        inlet: CGPoint(x: 0.105, y: 0.105))
         }
 
         // Autumn six, "last light": a bell hangs over open water with nothing

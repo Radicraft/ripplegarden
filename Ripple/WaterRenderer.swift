@@ -45,7 +45,8 @@ struct RenderParams {
     var menuRect: SIMD4<Float>
     /// How far the cloud has passed over the water, 0...1.
     var menuDim: Float
-    var menuPad0: Float = 0
+    /// Where the day has got to, 0 to 1, with noon at a half.
+    var dayPhase: Float = 0.5
     var menuPad1: Float = 0
     var menuPad2: Float = 0
 }
@@ -160,7 +161,9 @@ enum Tuning {
     static let swellAmplitudeCap: Float = -0.16
     static let swellSpacing: Float = 12
 
-    static let breezeEnabled = true
+    /// The old random dab of breeze. The wind is a front that crosses the
+    /// pond now, laid by the game, so nothing pokes the water at random.
+    static let breezeEnabled = false
     static let breezeInterval: ClosedRange<TimeInterval> = 1.6...4.2
     static let breezeAmplitude: Float = -0.022
     static let breezeRadius: ClosedRange<Float> = 45...95
@@ -372,6 +375,52 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     static let maxPitch: Float = 0.95
     /// The tilt last chosen, so it is kept from level to level and in the hub.
     static var chosenPitch: Float = cameraPitch
+
+    // MARK: - The hour of the day
+
+    /// Where the day has got to, 0 to 1 with noon at a half. It creeps
+    /// forward only while the player plays, and is kept between sessions, so
+    /// the light is never quite the same twice and never jumps either.
+    var dayPhase: Float = WaterRenderer.storedDayPhase() {
+        didSet { if !dayPhase.isFinite { dayPhase = 0.5 } }
+    }
+    /// Seconds of play for one whole turn of the day.
+    static let dayLength: Float = 720
+    private static let dayKey = "water.dayPhase"
+    private var dayPhaseSavedAt: TimeInterval = 0
+
+    private static func storedDayPhase() -> Float {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: dayKey) != nil else { return 0.34 }
+        let v = defaults.float(forKey: dayKey)
+        guard v.isFinite else { return 0.34 }
+        return v - floor(v)
+    }
+
+    /// 1 at midday, 0 at either end of the day.
+    private var noon: Float { 1 - min(1, abs(dayPhase - 0.5) * 2) }
+
+    /// The colour the hour lays over the water: cool early, plain at midday,
+    /// warm and low at dusk.
+    private func dayColour() -> SIMD3<Float> {
+        let cool = SIMD3<Float>(0.85, 0.92, 1.00)
+        let warm = SIMD3<Float>(1.00, 0.86, 0.72)
+        let plain = SIMD3<Float>(1, 1, 1)
+        if dayPhase < 0.5 {
+            let t = min(1, max(0, (dayPhase - 0.2) / 0.3))
+            return cool + (plain - cool) * t
+        }
+        let t = min(1, max(0, (dayPhase - 0.5) / 0.3))
+        return plain + (warm - plain) * t
+    }
+
+    private func advanceDay(dt: Float, now: TimeInterval) {
+        dayPhase += dt / WaterRenderer.dayLength
+        if dayPhase >= 1 { dayPhase -= floor(dayPhase) }
+        guard now - dayPhaseSavedAt > 10 else { return }
+        dayPhaseSavedAt = now
+        UserDefaults.standard.set(dayPhase, forKey: WaterRenderer.dayKey)
+    }
 
     /// The tilt now, and the tilt the fingers asked for. The one eases toward
     /// the other so the camera never snaps.
@@ -699,8 +748,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
         if logFrames { recordFrame(now: now, dt: Double(dt)) }
         onFrame?(dt)
-        // The tilt eases toward what the fingers asked for.
+        // The tilt eases toward what the fingers asked for, and the day goes
+        // quietly on.
         pitch += (pitchTarget - pitch) * min(1, dt * 4)
+        advanceDay(dt: dt, now: now)
         accumulateHolds(dt: dt)
         accumulateSwell()
         releaseScheduledSplats(now: now)
@@ -957,19 +1008,25 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
 
         // --- water, then whatever floats on it ----------------------------------
 
+        // The hour tints the water and takes the edge off the caustics as the
+        // sun drops. The season's own tint stays underneath it.
+        let hour = dayColour()
+        let dayTint = SIMD4(floorLook.waterTint * hour,
+                            min(1, floorLook.waterTintStrength + 0.25 * (1 - noon)))
         var rp = RenderParams(size: gridSize, viewport: screenPixels,
-                              refraction: Tuning.refraction, causticGain: Tuning.causticGain,
+                              refraction: Tuning.refraction,
+                              causticGain: Tuning.causticGain * (0.55 + 0.45 * noon),
                               specGain: Tuning.specGain, time: Float(now - startTime),
                               crestGain: Tuning.crestGain, sparkleGain: Tuning.sparkleGain,
                               detailGain: Tuning.detailGain, dispersion: Tuning.dispersion,
-                              waterTint: SIMD4(floorLook.waterTint, floorLook.waterTintStrength),
+                              waterTint: dayTint,
                               style: SIMD4(style == .woodblock ? 1 : 0, 0, 0, 0),
                               inkColour: SIMD4(0.106, 0.106, 0.106, 1),
                               view: SIMD4(zoom, viewCentre.x * pointScale, viewCentre.y * pointScale, 0),
                               world: SIMD4(viewportSize.x, viewportSize.y,
                                            (iceTexture != nil && iceStrikeCount > 0 && crackTexture != nil) ? 1 : 0,
                                            Float(iceStrikeCount)),
-                              menuRect: menuRect, menuDim: menuDim)
+                              menuRect: menuRect, menuDim: menuDim, dayPhase: dayPhase)
 
         if let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) {
             encoder.setRenderPipelineState(drawPipeline)

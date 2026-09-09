@@ -294,11 +294,39 @@ final class SoundDirector {
 
     func whirlEnd(id: Int) { holdEnd(id: id) }
 
+    /// A stream running into the pond: the same water, low and steady, under
+    /// everything for as long as the level lasts.
+    func inletBegin(id: Int) {
+        guard held[id] == nil else { return }
+        guard let v = play("amb_stream", gain: 0.0, pitch: 1.05, loop: true) else { return }
+        held[id] = v
+        v.player.volume = 0.15
+    }
+
+    func inletEnd(id: Int) { holdEnd(id: id) }
+
     /// A gust crosses the pond: the reeds rustle and the air lifts with it.
     func gust(x: Float) {
         play("fx_reeds", x: x, gain: 0.75, pitch: 0.85)
         play("fx_splash_big", x: x, gain: 0.3, pitch: 0.7)
         liftAir(1.35, seconds: 1.4)
+    }
+
+    /// The wind that crosses the pond on its own: quieter than a thrown gust,
+    /// the reeds rustling and the season's air lifting behind it.
+    func breeze(x: Float) {
+        play("fx_reeds", x: x, gain: 0.38, pitch: 0.92)
+        liftAir(1.18, seconds: 1.8)
+    }
+
+    /// A drop off a branch onto the water.
+    func drip(x: Float) {
+        play(pick("fx_drop", 3), x: x, gain: 0.22, pitch: 1.35)
+    }
+
+    /// A fish mouthing at the surface: barely there.
+    func mouth(x: Float) {
+        play(pick("fx_splash_small", 3), x: x, gain: 0.18, pitch: 1.3)
     }
 
     /// The season's air swells for a moment, then settles back.

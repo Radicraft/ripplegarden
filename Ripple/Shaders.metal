@@ -43,7 +43,8 @@ struct RenderParams {
     float4 world;          // xy world size in pixels
     float4 menuRect;       // xy centre, zw radii of the clear water, world uv
     float  menuDim;        // 0...1, the cloud passing over the pond
-    float  _menuPad0, _menuPad1, _menuPad2;
+    float  dayPhase;       // 0...1 through the day, noon at a half
+    float  _menuPad1, _menuPad2;
 };
 
 // One Voronoi seed of the fractured sheet: mirrors `IceSeedGPU` in
@@ -893,14 +894,16 @@ kernel void ice_bake(texture2d<float, access::write> outTex  [[texture(0)]],
     outTex.write(float4(saturate(minD / 12.0), saturate(minG), radial, a.strike / 255.0), gid);
 }
 
-static float3 skyLook(float3 R, float3 L)
+/// `noon` is 1 in the middle of the day and 0 at either end of it: the sky
+/// the water throws back warms and dims as the sun drops.
+static float3 skyLook(float3 R, float3 L, float noon)
 {
     float up = saturate(R.z);
-    float3 zenith  = float3(0.075, 0.155, 0.225);
-    float3 horizon = float3(0.400, 0.530, 0.580);
+    float3 zenith  = mix(float3(0.090, 0.120, 0.175), float3(0.075, 0.155, 0.225), noon);
+    float3 horizon = mix(float3(0.500, 0.440, 0.400), float3(0.400, 0.530, 0.580), noon);
     float3 sky = mix(horizon, zenith, pow(up, 0.65));
     float sun = pow(saturate(dot(R, L)), 180.0);
-    sky += float3(1.00, 0.95, 0.86) * sun * 2.4;
+    sky += mix(float3(1.00, 0.80, 0.62), float3(1.00, 0.95, 0.86), noon) * sun * (1.6 + 0.8 * noon);
     return sky;
 }
 
@@ -1020,7 +1023,10 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     float caustic = clamp(-lap * p.causticGain, -0.6, 2.2);
     float crest = smoothstep(0.055, 0.20, hC);
 
-    float3 L = normalize(float3(-0.40, 0.56, 0.72));
+    // The sun crosses the day: it comes round from one side to the other and
+    // sits lower at both ends, so the sheen on the water moves with the hour.
+    float noon = 1.0 - min(abs(p.dayPhase - 0.5) * 2.0, 1.0);
+    float3 L = normalize(float3(-0.40 + 0.34 * (p.dayPhase - 0.5) * 2.0, 0.56, 0.40 + 0.36 * noon));
     float3 V = float3(0.0, 0.0, 1.0);
     float3 H = normalize(L + V);
     float tight = pow(max(dot(N, H), 0.0), 220.0);
@@ -1033,7 +1039,7 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         col *= 1.0 + min(caustic, 0.0) * 0.34;
         col += float3(0.62, 0.86, 0.92) * crest * p.crestGain;
         col += float3(0.85, 0.94, 1.00) * (tight * 1.5 + broad * 0.16) * p.specGain;
-        col = mix(col, skyLook(R, L), saturate(f * 1.5));
+        col = mix(col, skyLook(R, L, noon), saturate(f * 1.5));
 
         float cell  = hash21(floor(in.uv * p.viewport / 3.0) + floor(p.time * 18.0));
         float glint = step(0.9955, cell) * smoothstep(0.35, 1.3, caustic + crest);
@@ -1049,7 +1055,9 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // Shading in three flat steps rather than a gradient.
     float shade = saturate(broad * 0.9 + f * 1.2 + max(caustic, 0.0) * 0.12);
     float band = floor(shade * 3.0 + 0.5) / 3.0;
-    float3 lightCol = float3(0.78, 0.86, 0.84);
+    // The printed light warms as the day goes, the way the ink of a late
+    // impression does.
+    float3 lightCol = mix(float3(0.86, 0.76, 0.64), float3(0.78, 0.86, 0.84), noon);
     col = mix(col, lightCol, band * 0.45);
     col *= 1.0 + min(caustic, 0.0) * 0.18;
 

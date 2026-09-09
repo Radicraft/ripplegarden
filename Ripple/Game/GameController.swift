@@ -168,6 +168,22 @@ final class GameController: ObservableObject, TouchInput {
     }
     private var gust: Gust?
     private var lastGustAt: TimeInterval = 0
+
+    /// The wind the pond gets on its own, with nobody's hand in it: a front
+    /// of small dips marching across the water, the petals going with it and
+    /// the reeds leaning after it.
+    private struct Wind {
+        var direction: SIMD2<Float>
+        var origin: CGPoint
+        var age: Float = 0
+    }
+    private var wind: Wind?
+    private var nextWindAt: Float = 22
+    /// The stream's own voice. Negative, so it never meets a touch id.
+    private let inletSoundID = -8
+    private var inletSounding = false
+    /// When each stone last stirred the bed under it, so it does not fizz.
+    private var stoneStirAt: [Int: Float] = [:]
     /// The last plain tap, for reading a double tap out of two of them.
     private var lastTap: (point: CGPoint, at: TimeInterval)?
     /// Splats the gestures may lay this frame. Reset every frame so a wake,
@@ -219,7 +235,16 @@ final class GameController: ObservableObject, TouchInput {
         for id in Array(holdSounding) { sound.holdEnd(id: id) }
         holdSounding.removeAll()
         hushGestures()
+        hushInlet()
         renderer?.cancelAll()
+    }
+
+    /// The stream falls quiet: on the way out, and whenever the next level
+    /// has no stream of its own.
+    private func hushInlet() {
+        guard inletSounding else { return }
+        inletSounding = false
+        sound.inletEnd(id: inletSoundID)
     }
 
     /// Called from the path before the level screen appears.
@@ -242,8 +267,12 @@ final class GameController: ObservableObject, TouchInput {
             guard let self else { return }
             self.sound.holdRelease(charge: charge)
             self.haptics.holdRelease(charge: charge)
-            // A swell big enough throws water into the air.
-            if charge > 0.5 { self.garden.burstDroplets(at: at, power: charge) }
+            // A swell big enough throws water into the air, and the fish that
+            // was lying near it may answer with a leap of its own.
+            if charge > 0.5 {
+                self.garden.burstDroplets(at: at, power: charge)
+                self.garden.bigSplash(at: at)
+            }
         }
         renderer.onSwellStart = { [weak self] in
             self?.sound.swell()
@@ -278,6 +307,10 @@ final class GameController: ObservableObject, TouchInput {
         iceTouches.removeAll()
         holdSounding.removeAll()
         hushGestures()
+        hushInlet()
+        wind = nil
+        nextWindAt = Float.random(in: 20...45)
+        stoneStirAt = [:]
         lastTap = nil
         debris = []
         probeOrder = []
@@ -310,6 +343,16 @@ final class GameController: ObservableObject, TouchInput {
             DepthPainter.depth(at: CGPoint(x: p.x / size.width, y: p.y / size.height), level: spec, aspect: Float(size.width / size.height))
         }
         garden.configure(art: art, size: viewSize, bloomStage: progress.bloomStage(for: season.id))
+        // Mist lies thick over a cold pond and hardly at all over a warm one.
+        garden.mistAmount = ["winter": 1.0, "autumn": 0.8, "spring": 0.5, "summer": 0.15][season.id] ?? 0.5
+        // A stream running in, if this pond has one.
+        garden.inlet = spec.inlet.map { CGPoint(x: $0.x * viewSize.width, y: $0.y * viewSize.height) }
+        if garden.inlet != nil, !inletSounding {
+            inletSounding = true
+            sound.inletBegin(id: inletSoundID)
+        } else if garden.inlet == nil {
+            hushInlet()
+        }
         rocks = level.rocks.map { (CGPoint(x: $0.centre.x * viewSize.width, y: $0.centre.y * viewSize.height),
                                    $0.radius * viewSize.height) }
         garden.rocks = rocks
@@ -408,6 +451,7 @@ final class GameController: ObservableObject, TouchInput {
         sound.iceBreak(x: Float(point.x / viewSize.width), size: Float(min(1, total / 60000)))
         renderer?.addSplat(at: point, in: viewSize, radius: 22, amplitude: -0.45)
         garden.burstDroplets(at: point, power: 0.4 + 0.6 * Float(min(1, total / 60000)))
+        garden.bigSplash(at: point)
         // The shards themselves tip under the water; what floats afterwards
         // is a few pieces broken off the biggest of them, no two alike: a
         // different cut-out each, turned any way, from a sliver to a slab.
@@ -477,6 +521,8 @@ final class GameController: ObservableObject, TouchInput {
         gustBudget = GameTuning.gustSplatsPerFrame
         let vortex = updateWhirl(dt: dt)
         updateGust(dt: dt)
+        updateWind(dt: dt)
+        updateInlet(dt: dt)
 
         // Rain: drops land all over the water, small rings by the dozen and
         // now and then a fatter one, so the surface never rests.
@@ -489,6 +535,12 @@ final class GameController: ObservableObject, TouchInput {
             if Int.random(in: 0..<24) == 0 {
                 let p = CGPoint(x: CGFloat.random(in: 0...w), y: CGFloat.random(in: 0...h))
                 renderer.addSplat(at: p, in: viewSize, radius: 6, amplitude: -0.05)
+            }
+            // Rain brings its own wind with it: a broad, faint chop that never
+            // lets the surface lie flat.
+            for _ in 0..<2 {
+                let p = CGPoint(x: CGFloat.random(in: 0...w), y: CGFloat.random(in: 0...h))
+                renderer.addSplat(at: p, in: viewSize, radius: Float.random(in: 22...42), amplitude: -0.006)
             }
         }
 
@@ -544,10 +596,22 @@ final class GameController: ObservableObject, TouchInput {
             }
         }
 
-        // The garden lives regardless of the puzzle.
+        // The garden lives regardless of the puzzle. Drips come off the
+        // branches once the rain has passed, and on a spring morning while
+        // the pond is still new.
+        garden.dripping = (level.rain && phase != .playing) || (season.id == "spring" && elapsed < 20)
         garden.update(dt: dt, now: now)
         for s in garden.splashes { renderer.addSplat(at: s.at, in: viewSize, radius: s.radius, amplitude: s.amplitude) }
         garden.splashes.removeAll()
+        soundGarden()
+        // A stone shoved along the bed stirs the mud under it.
+        for d in debris where !d.cleared && d.cls == .heavy {
+            guard let kind = NaturalSolid.forSprite(d.sprite) else { continue }
+            if case .log = kind { continue }
+            guard simd_length(d.velocity) > 16, elapsed - (stoneStirAt[d.id] ?? -10) > 0.6 else { continue }
+            stoneStirAt[d.id] = elapsed
+            garden.addBubble(at: d.position)
+        }
 
         // Silt progress.
         cleaned = 1 - renderer.siltRemaining
@@ -849,11 +913,18 @@ final class GameController: ObservableObject, TouchInput {
         renderer.submergedSolids = underBodies
         renderer.solidTextures = paintings
         for s in garden.skaterSprites() { paper(s) }
+        // The stream's rocks carry their own shadow, and foam has no cut edge.
+        over += garden.inletSprites()
         for s in garden.petalSprites() { paper(s) }
         // Drops in the air are water, not paper: no cut edge under them.
         over += garden.dropletSprites()
+        over += garden.dripSprites()
+        // A leaping fish is a painting in the air, not a cut-out on the water.
+        over += garden.leapSprites()
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
         over += garden.skySprites()
+        // Mist lies over everything on the water and under the sky.
+        over += garden.mistSprites()
         // While a menu is up the pond's own things fade back so the ink reads.
         if let m = menu, m.dim > 0.01 {
             let keep = 1 - 0.92 * m.dim
@@ -1375,6 +1446,108 @@ final class GameController: ObservableObject, TouchInput {
         gust = g.age >= GameTuning.gustSeconds ? nil : g
     }
 
+    // MARK: - The pond's own weather
+
+    /// Wind the player did not ask for. Every half minute or so a front
+    /// crosses the pond: a line of small dips marching along at walking pace,
+    /// the petals blown with it, the reeds and the weeds leaning as it goes.
+    private func updateWind(dt: Float) {
+        guard let renderer, viewSize != .zero, phase != .complete else { return }
+        if wind == nil, elapsed > nextWindAt {
+            nextWindAt = elapsed + Float.random(in: 20...45)
+            startWind()
+        }
+        guard var g = wind else { return }
+        g.age += dt
+        let seconds: Float = 1.5
+        let front = CGFloat(400 * g.age)
+        let perp = SIMD2(-g.direction.y, g.direction.x)
+        let across = abs(perp.x) * Float(viewSize.width) + abs(perp.y) * Float(viewSize.height)
+        // Softest at the two ends of the sweep, fullest in the middle of it.
+        let body = sin(Float.pi * min(1, g.age / seconds))
+        let n = 10
+        for i in 0..<n {
+            let f = (Float(i) / Float(n - 1) - 0.5) * across * 1.05
+            // The front is not a ruled line: each dab sits a little ahead of
+            // or behind it.
+            let ahead = front + CGFloat.random(in: -16...16)
+            let at = CGPoint(x: g.origin.x + CGFloat(g.direction.x) * ahead + CGFloat(perp.x * f),
+                             y: g.origin.y + CGFloat(g.direction.y) * ahead + CGFloat(perp.y * f))
+            renderer.addSplat(at: at, in: viewSize, radius: 3, amplitude: -0.012 * (0.5 + 0.5 * body))
+        }
+        garden.blow(direction: g.direction, strength: 70 * dt)
+        garden.lean(direction: g.direction, strength: 2.6 * dt)
+        wind = g.age >= seconds ? nil : g
+    }
+
+    private func startWind() {
+        guard viewSize != .zero else { return }
+        let angle = Float.random(in: 0...(2 * .pi))
+        let direction = SIMD2(cos(angle), sin(angle))
+        let w = Float(viewSize.width), h = Float(viewSize.height)
+        let centre = SIMD2(w / 2, h / 2)
+        let span = abs(direction.x) * w + abs(direction.y) * h
+        let start = centre - direction * (span / 2 + 60)
+        wind = Wind(direction: direction, origin: CGPoint(x: CGFloat(start.x), y: CGFloat(start.y)))
+        sound.breeze(x: 0.5 - direction.x * 0.3)
+    }
+
+    /// The stream running in: a ripple train off the rocks, frame after
+    /// frame, and a slow current that leans the whole pond away from it.
+    private func updateInlet(dt: Float) {
+        guard let renderer, let flow = garden.inletFlow(), phase != .complete else { return }
+        let at = CGPoint(x: flow.at.x + flow.into.dx * 12 + CGFloat.random(in: -7...7),
+                         y: flow.at.y + flow.into.dy * 12 + CGFloat.random(in: -7...7))
+        renderer.addSplat(at: at, in: viewSize, radius: 8, amplitude: -0.03)
+        // It only ever adds up to a drift. A stroke along the bank is still
+        // much the stronger current, and this never fights it.
+        if simd_length(current) < GameTuning.inletCurrent {
+            current += SIMD2(Float(flow.into.dx), Float(flow.into.dy)) * GameTuning.inletCurrentGain * dt
+        }
+    }
+
+    /// What the garden did this frame that a hand would hear or feel.
+    private func soundGarden() {
+        guard viewSize.width > 0 else { garden.events.removeAll(); return }
+        for e in garden.events {
+            switch e {
+            case .leapOut(let p):
+                sound.holdRelease(charge: 1)
+                haptics.holdRelease(charge: 0.8)
+                garden.startle(at: p, in: viewSize)
+            case .leapIn(let p):
+                sound.holdRelease(charge: 0.65)
+                haptics.holdRelease(charge: 0.4)
+                garden.startle(at: p, in: viewSize)
+            case .drip(let p):
+                sound.drip(x: Float(p.x / viewSize.width))
+            case .mouth(let p):
+                sound.mouth(x: Float(p.x / viewSize.width))
+            case .dip(let p):
+                sound.drip(x: Float(p.x / viewSize.width))
+                haptics.tap(weight: 0.1)
+            }
+        }
+        garden.events.removeAll()
+    }
+
+    // MARK: - Scripted triggers
+
+    /// `-gestures "leap:@t"`: a koi goes up now, so the leap can be watched.
+    func scriptedLeap() { garden.leapNow() }
+
+    /// `-gestures "drip:@t"`: a drop leaves a branch now.
+    func scriptedDrip() {
+        garden.dripping = true
+        garden.dripNow()
+    }
+
+    /// `-gestures "dusk:@t"`: the day jumps to late light.
+    func scriptedDusk(_ phase: Float) { renderer?.dayPhase = phase }
+
+    /// `-gestures "wind:@t"`: the wind crosses now.
+    func scriptedWind() { startWind() }
+
     /// Two taps in one spot: a stone goes in. A deep splat, water thrown up,
     /// and everything nearby feels it land.
     private func dropStone(at point: CGPoint) {
@@ -1383,6 +1556,7 @@ final class GameController: ObservableObject, TouchInput {
                            amplitude: GameTuning.stoneAmplitude)
         garden.burstDroplets(at: point, power: 1)
         garden.startle(at: point, in: viewSize)
+        garden.bigSplash(at: point)
         waveBitesIce(from: point)
         sound.holdRelease(charge: 1)
         haptics.holdRelease(charge: 1)

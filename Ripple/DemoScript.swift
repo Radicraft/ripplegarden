@@ -65,13 +65,19 @@ enum DemoScript {
     /// shoving a body of water ahead of it. `tilt:` two fingers drawn 120 pt
     /// up the screen over 0.6s, laying the camera over toward the water
     /// (`tilt:-120` stands it up again). `tap:at` and `hold:at` are here too.
+    ///
+    /// The pond's own life can be called on as well: `leap:` sends a koi up,
+    /// `drip:` drops one bead off a branch, `wind:` runs a gust across, and
+    /// `dusk:` (or `dusk:0.2` for the morning) moves the day on.
     static func scheduleScriptedGestures(controller: GameController) {
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "-gestures"), i + 1 < args.count else { return }
         for item in args[i + 1].split(separator: ";") {
             let parts = item.split(separator: "@")
             guard parts.count == 2, let t = Double(parts[1]) else { continue }
-            let body = parts[0].split(separator: ":", maxSplits: 1)
+            // An item with nothing after the colon ("leap:") is still a
+            // gesture, so the empty half is kept.
+            let body = parts[0].split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard body.count == 2 else { continue }
             let kind = String(body[0]), arg = String(body[1])
             DispatchQueue.main.asyncAfter(deadline: .now() + t) {
@@ -125,6 +131,14 @@ enum DemoScript {
             let b = (ends.count == 2 ? point(ends[1]) : nil) ?? CGPoint(x: size.width * 0.62, y: size.height * 0.5)
             syntheticID += 1
             drag(controller, path: line(from: a, to: b, steps: 60), seconds: 1.5, id: syntheticID, size: size)
+        case "leap":
+            controller.scriptedLeap()
+        case "drip":
+            controller.scriptedDrip()
+        case "wind":
+            controller.scriptedWind()
+        case "dusk":
+            controller.scriptedDusk(Float(arg) ?? 0.85)
         case "tilt":
             // Two fingers side by side, drawn up the screen: the camera lies
             // over and the pond is seen more from its side.

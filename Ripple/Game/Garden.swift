@@ -26,6 +26,18 @@ final class Garden {
     /// Rocks in the pond, in points, so the koi go round them.
     var rocks: [(centre: CGPoint, radius: CGFloat)] = []
 
+    /// Something the garden did that a hand would hear or feel. Cleared at
+    /// the top of every frame, so a controller that ignores them loses
+    /// nothing but the sound.
+    enum Event {
+        case leapOut(CGPoint)
+        case leapIn(CGPoint)
+        case drip(CGPoint)
+        case mouth(CGPoint)
+        case dip(CGPoint)
+    }
+    var events: [Event] = []
+
     /// Where the camera is, laterally, in points. A slow breath, the phone's
     /// tilt if it has a gyroscope, and a small lean toward the last touch.
     private(set) var camera = SIMD2<Float>(0, 0)
@@ -57,6 +69,25 @@ final class Garden {
     private var droplets: [Droplet] = []
     /// Air rising from the bed under a finger that is pressing.
     private var bubbles: [Bubble] = []
+    /// Mist lying on the water, and how much of it this pond wants: thick on
+    /// a cold morning, next to nothing in high summer.
+    private var mists: [Mist] = []
+    var mistAmount: Float = 0.5
+    /// Seconds since this pond was laid out, for the mist burning off.
+    private var levelAge: Float = 0
+    /// Where a stream runs in, in points. Nil on a still pond.
+    var inlet: CGPoint?
+    private var foam: [Foam] = []
+    private var foamAccumulator: Float = 0
+    /// Drops falling off the branches, and whether any are falling at all.
+    var dripping = false
+    private var drips: [Drip] = []
+    private var nextDripAt: [TimeInterval] = []
+    /// A koi out of the water, and when the next one may go up.
+    private var leaps: [Leap] = []
+    private var nextLeapAt: TimeInterval = 0
+    /// The slow trickle of air out of the deep middle.
+    private var nextBedBubbleAt: TimeInterval = 0
     /// The bowl depth at a point, 0...1 (1 deep), set by the controller.
     var depthAt: (CGPoint) -> Float = { _ in 1 }
     /// How much of the pond is still under ice, 0...1. The koi stay deep
@@ -110,13 +141,168 @@ final class Garden {
     func addBubble(at point: CGPoint) {
         guard size.width > 0, bubbles.count < 60 else { return }
         let jitter = CGPoint(x: point.x + CGFloat.random(in: -14...14), y: point.y + CGFloat.random(in: -14...14))
-        bubbles.append(Bubble(at: jitter, size: CGFloat.random(in: 3...6)))
+        bubbles.append(Bubble(at: jitter, size: CGFloat.random(in: 4...9)))
     }
 
     /// A gust crosses the pond: whatever is in the air goes with it.
     func blow(direction: SIMD2<Float>, strength: Float) {
         for p in petals { p.blow(dx: CGFloat(direction.x * strength), dy: CGFloat(direction.y * strength)) }
         for d in droplets { d.blow(dx: CGFloat(direction.x * strength * 0.4), dy: CGFloat(direction.y * strength * 0.4)) }
+    }
+
+    /// The same gust on what is rooted: the weed strands are shoved the way
+    /// it goes and the reed tufts lean after it, both on their own springs,
+    /// so they come back upright once it has passed.
+    func lean(direction: SIMD2<Float>, strength: Float) {
+        for w in weeds {
+            let lateral = SIMD2(cos(w.lean), sin(w.lean))
+            w.bendVel += simd_dot(direction, lateral) * strength
+        }
+        for i in reeds.indices {
+            reeds[i].swayVel += direction.x * strength * 0.5
+        }
+    }
+
+    // MARK: - The leap
+
+    /// A koi throws itself clear of the water. Nothing else in the pond is
+    /// this loud, so it is rare on purpose.
+    func leapNow() {
+        guard leaps.isEmpty, size.width > 0 else { return }
+        let ready = koi.filter { !$0.leaping && $0.depth < 0.3 }
+        guard let k = ready.randomElement() else { return }
+        let from = k.position
+        let reach = CGFloat.random(in: 130...200)
+        let head = CGFloat(k.heading)
+        var to = CGPoint(x: from.x + cos(head) * reach, y: from.y + sin(head) * reach)
+        // A fish that would come down on the bank turns for open water
+        // instead: the whole arc has to happen over the pond.
+        let inset = CGPoint(x: 130, y: 260)
+        if to.x < inset.x || to.x > size.width - inset.x || to.y < inset.y || to.y > size.height - inset.y {
+            let dx = size.width / 2 - from.x, dy = size.height / 2 - from.y
+            let len = max(1, hypot(dx, dy))
+            to = CGPoint(x: from.x + dx / len * reach, y: from.y + dy / len * reach)
+        }
+        to.x = min(max(to.x, inset.x), max(inset.x, size.width - inset.x))
+        to.y = min(max(to.y, inset.y), max(inset.y, size.height - inset.y))
+        k.beginLeap()
+        leaps.append(Leap(koi: k, texture: Garden.leapPainting(for: k.texture), from: from, to: to,
+                          height: CGFloat.random(in: 60...110)))
+        splashes.append((from, 18, -0.34))
+        burstDroplets(at: from, power: 0.85)
+        events.append(.leapOut(from))
+    }
+
+    /// A big splash beside a fish that is up at the surface may bring its
+    /// leap forward, so a stone dropped in is now and then answered.
+    func bigSplash(at point: CGPoint) {
+        let near = koi.contains {
+            !$0.leaping && $0.depth < 0.3 && hypot($0.position.x - point.x, $0.position.y - point.y) < 280
+        }
+        guard near else { return }
+        nextLeapAt = min(nextLeapAt, time + Double.random(in: 2...15))
+    }
+
+    /// The leaping painting that matches the fish's own: 1 kohaku, 2 sanke,
+    /// 3 gold, picked off the last digit of the koi's texture name.
+    private static func leapPainting(for koiTexture: String) -> String {
+        let digit = koiTexture.last.flatMap { Int(String($0)) } ?? 1
+        return "koi_leap_\((max(1, digit) - 1) % 3 + 1)"
+    }
+
+    private func updateLeaps(dt: Float, now: TimeInterval) {
+        if nextLeapAt == 0 { nextLeapAt = now + Double.random(in: 40...90) }
+        if now > nextLeapAt {
+            nextLeapAt = now + Double.random(in: 40...90)
+            leapNow()
+        }
+        for l in leaps { l.update(dt: dt) }
+        for l in leaps where l.done {
+            splashes.append((l.to, 16, -0.30))
+            burstDroplets(at: l.to, power: 0.7)
+            events.append(.leapIn(l.to))
+            l.koi.land(at: l.to, heading: l.heading, now: now, in: size)
+        }
+        leaps.removeAll { $0.done }
+    }
+
+    // MARK: - The stream running in
+
+    /// Where the stream comes in and which way it points into the pond, for
+    /// the ripple train and the current the controller lays from it.
+    func inletFlow() -> (at: CGPoint, into: CGVector)? {
+        guard let inlet, size.width > 0 else { return nil }
+        let dx = size.width / 2 - inlet.x, dy = size.height / 2 - inlet.y
+        let len = max(1, hypot(dx, dy))
+        return (inlet, CGVector(dx: dx / len, dy: dy / len))
+    }
+
+    private func updateInlet(dt: Float) {
+        guard let flow = inletFlow() else {
+            foam.removeAll()
+            return
+        }
+        foamAccumulator += dt * 3
+        while foamAccumulator >= 1, foam.count < 9 {
+            foamAccumulator -= 1
+            let out = CGFloat.random(in: 4...26)
+            let p = CGPoint(x: flow.at.x + flow.into.dx * out + CGFloat.random(in: -12...12),
+                            y: flow.at.y + flow.into.dy * out + CGFloat.random(in: -12...12))
+            foam.append(Foam(at: p, drift: CGVector(dx: flow.into.dx * 16, dy: flow.into.dy * 16),
+                             size: CGFloat.random(in: 16...30)))
+        }
+        foamAccumulator = min(foamAccumulator, 1)
+        for f in foam { f.update(dt: dt) }
+        foam.removeAll { $0.dead }
+    }
+
+    // MARK: - Drips off the branches
+
+    /// Where the two branches hang lowest over the water. What falls off
+    /// them falls from here.
+    private func branchTips() -> [CGPoint] {
+        guard size.width > 0, !art.branch.isEmpty else { return [] }
+        let w = size.width
+        let side = w * art.branchScale
+        let small = side * art.branchRightScale
+        return [CGPoint(x: side * 0.60 - art.branchInset, y: side * 0.80 - art.branchInset),
+                CGPoint(x: w - small * 0.60 + art.branchInset, y: small * 0.80 + art.branchRightDrop)]
+    }
+
+    /// One drop leaves a branch now, whichever branch is nearest to ready.
+    func dripNow() {
+        let tips = branchTips()
+        guard let tip = tips.randomElement(), drips.count < 12 else { return }
+        addDrip(from: tip)
+    }
+
+    private func addDrip(from tip: CGPoint) {
+        let from = CGPoint(x: tip.x + CGFloat.random(in: -26...26), y: tip.y + CGFloat.random(in: -16...16))
+        let to = CGPoint(x: from.x + CGFloat.random(in: -6...6), y: from.y + CGFloat.random(in: 100...190))
+        drips.append(Drip(from: from, to: to))
+    }
+
+    private func updateDrips(dt: Float, now: TimeInterval) {
+        let tips = branchTips()
+        if nextDripAt.count != tips.count { nextDripAt = tips.map { _ in now + Double.random(in: 1...4) } }
+        if dripping {
+            for (i, tip) in tips.enumerated() where now > nextDripAt[i] {
+                nextDripAt[i] = now + Double.random(in: 2...5)
+                if drips.count < 12 { addDrip(from: tip) }
+            }
+        } else {
+            for i in nextDripAt.indices { nextDripAt[i] = max(nextDripAt[i], now + 2) }
+        }
+        for d in drips {
+            d.update(dt: dt)
+            if d.landed {
+                // Small, but a real ring: a drip off a branch is heard and
+                // seen as the circle it leaves, not as the bead that fell.
+                splashes.append((d.position, 7, -0.075))
+                events.append(.drip(d.position))
+            }
+        }
+        drips.removeAll { $0.landed }
     }
 
     func configure(art: ArtSet, size: CGSize, bloomStage: Float) {
@@ -171,6 +357,18 @@ final class Garden {
         nextHeronAt = time + Double.random(in: 25...45)
         heron = nil
         motes = (0..<70).map { _ in Mote(size: size) }
+        // A fresh pond: the mist is at its thickest, nothing is in the air,
+        // and the first leap is a long way off.
+        mists = (0..<Int.random(in: 4...6)).map { i in
+            Mist(texture: i % 2 == 0 ? "mist_1" : "mist_2", size: size)
+        }
+        levelAge = 0
+        leaps = []
+        drips = []
+        foam = []
+        nextDripAt = []
+        nextLeapAt = time + Double.random(in: 40...90)
+        nextBedBubbleAt = time + 2
         buildBed()
         buildShore()
         frog = art.frog.map { Frog(texture: $0.frog, pad: $0.pad, size: size) }
@@ -257,7 +455,7 @@ final class Garden {
     // MARK: - Koi
 
     func koiHit(at point: CGPoint) -> Koi? {
-        koi.first { $0.depth < 0.5 && hypot($0.position.x - point.x, $0.position.y - point.y) < 46 }
+        koi.first { !$0.leaping && $0.depth < 0.5 && hypot($0.position.x - point.x, $0.position.y - point.y) < 46 }
     }
 
     func dive(_ k: Koi) {
@@ -269,7 +467,9 @@ final class Garden {
 
     func update(dt: Float, now: TimeInterval) {
         time = now
+        events.removeAll(keepingCapacity: true)
         guard size.width > 0 else { return }
+        levelAge += dt
 
         // The camera: a slow breath, plus the phone's tilt, plus a lean toward
         // the last touch that eases off. Everything is smoothed so it flows.
@@ -296,12 +496,33 @@ final class Garden {
             w.bend += w.bendVel * dt
             w.bend = max(-0.9, min(0.9, w.bend))
         }
+        // Reeds lean the same way: a spring that a gust shoves and the stem
+        // pulls straight again.
+        for i in reeds.indices {
+            let force = -reeds[i].sway * 24 - reeds[i].swayVel * 4.5
+            reeds[i].swayVel += force * dt
+            reeds[i].sway += reeds[i].swayVel * dt
+            reeds[i].sway = max(-0.45, min(0.45, reeds[i].sway))
+        }
+
+        for m in mists { m.update(dt: dt, in: size) }
+        updateInlet(dt: dt)
+        updateDrips(dt: dt, now: now)
+        updateLeaps(dt: dt, now: now)
 
         for c in critters { c.update(dt: dt, now: now, in: size) }
         for s in shoals { s.update(dt: dt, now: now, in: size, rocks: rocks, koi: koi.map(\.position)) }
         for c in clouds { c.update(dt: dt, in: size) }
         if let f = dragonfly {
             f.update(dt: dt, now: now, in: size)
+            // It touches the water once before it darts off: a bead of a
+            // splat under it and the ring that spreads from it.
+            if let p = f.dip {
+                f.dip = nil
+                splashes.append((p, 4, -0.05))
+                splashes.append((p, 11, -0.02))
+                events.append(.dip(p))
+            }
             if f.done { dragonfly = nil; nextFlyerAt = now + Double.random(in: 25...50) }
         } else if now > nextFlyerAt, let name = art.flyers.first {
             dragonfly = Dragonfly(body: name, size: size, now: now)
@@ -330,8 +551,21 @@ final class Garden {
         // (The heron's shadow was cut: a flat silhouette sliding over the pond
         // read as a decal, not a bird. It will come back only with wings that beat.)
         // A surfaced koi mouths at the surface now and then: a small ring.
-        for k in koi where k.depth < 0.2 && Float.random(in: 0...1) < dt * 0.18 {
+        for k in koi where !k.leaping && k.depth < 0.2 && Float.random(in: 0...1) < dt * 0.18 {
             splashes.append((k.headPoint, 7, -0.09))
+            events.append(.mouth(k.headPoint))
+        }
+        // Air out of the bed. A fish going down stirs the mud it lay on, and
+        // the deep middle lets a bubble go on its own every couple of seconds.
+        for k in koi where k.justDived {
+            k.justDived = false
+            for _ in 0..<3 { addBubble(at: k.position) }
+        }
+        if now > nextBedBubbleAt {
+            nextBedBubbleAt = now + Double.random(in: 1.4...2.6)
+            let p = CGPoint(x: size.width * CGFloat.random(in: 0.32...0.68),
+                            y: size.height * CGFloat.random(in: 0.34...0.66))
+            if depthAt(p) > 0.75 { addBubble(at: p) }
         }
 
         if bloomRate > 0 {
@@ -339,7 +573,7 @@ final class Garden {
             if bloomStage >= bloomTarget { bloomRate = 0 }
         }
 
-        for k in koi {
+        for k in koi where !k.leaping {
             k.iceOver = iceCover
             let event = k.update(dt: dt, now: now, in: size, rocks: rocks)
             if let e = event { splashes.append(e) }
@@ -414,10 +648,13 @@ final class Garden {
         // Air on its way up: paler and a little bigger the nearer the surface.
         for b in bubbles {
             let rise = 1 - b.depth
-            out.append(Sprite("mote", at: b.position, size: CGSize(width: b.size * CGFloat(0.7 + 0.5 * rise),
-                                                                   height: b.size * CGFloat(0.7 + 0.5 * rise)),
-                              mode: .submerged, alpha: 0.35 + 0.45 * rise, depth: b.depth,
-                              tint: [0.88, 0.95, 1.0, 1], z: -0.9 + 0.8 * rise))
+            let side = b.size * CGFloat(1.6 + 1.0 * rise)
+            // Air is the one thing down there that carries its own light, so
+            // it is handed a shallower depth than it has and the water hazes
+            // it far less than it would a stone.
+            out.append(Sprite("bubble", at: b.position, size: CGSize(width: side, height: side),
+                              mode: .submerged, alpha: 0.5 + 0.45 * rise, depth: b.depth * 0.5,
+                              tint: [1.2, 1.3, 1.4, 1], z: -0.9 + 0.8 * rise))
         }
 
         if let n = newt {
@@ -453,7 +690,7 @@ final class Garden {
             }
         }
         koiSpines = []
-        for k in koi where k.depth < 0.98 {
+        for k in koi where k.depth < 0.98 && !k.leaping {
             let d = k.depth
             let w = k.width
             let h = w * k.aspect
@@ -567,8 +804,80 @@ final class Garden {
             out.append(Sprite(r.texture, at: CGPoint(x: r.position.x + 6, y: r.position.y + height * 0.35),
                               size: CGSize(width: width, height: height * 0.55), rotation: 0,
                               mode: .shadow, alpha: 0.3, z: 0))
-            out.append(Sprite(r.texture, at: r.position, size: sz, rotation: r.rotation, alpha: 1,
+            out.append(Sprite(r.texture, at: r.position, size: sz, rotation: r.rotation + r.sway, alpha: 1,
                               wave: Float(time) * 0.9 + r.phase, z: 0, stands: true))
+        }
+        return out
+    }
+
+    /// The stream's mouth: the rocks it falls over, sat on the bank with its
+    /// trickle meeting the water, and the foam it throws into the pond.
+    func inletSprites() -> [Sprite] {
+        guard let inlet, size.width > 0 else { return [] }
+        var out: [Sprite] = []
+        let t = textureSize("inlet_rocks")
+        let w: CGFloat = 150
+        let h = w * t.height / max(1, t.width)
+        // The water end of the painting is its foot, so the picture sits
+        // above the point the stream runs in at.
+        out.append(Sprite("inlet_rocks", at: CGPoint(x: inlet.x + 6, y: inlet.y - h * 0.34),
+                          size: CGSize(width: w, height: h), mode: .shadow, alpha: 0.3, z: 0.09))
+        out.append(Sprite("inlet_rocks", at: CGPoint(x: inlet.x, y: inlet.y - h * 0.42),
+                          size: CGSize(width: w, height: h), alpha: 1, z: 0.1))
+        // Foam is cloud art printed pale: the tint is well over one so a grey
+        // wisp comes out as white water rather than a grey lump.
+        let wisp = art.clouds.first ?? "cloud_1"
+        for f in foam {
+            out.append(Sprite(wisp, at: f.position, size: CGSize(width: f.size * 1.7, height: f.size),
+                              alpha: f.alpha, tint: [2.0, 2.1, 2.2, 1], z: 0.02))
+        }
+        return out
+    }
+
+    /// Mist on the water: wide white-blue wisps, thickest when the pond is
+    /// first seen and thinning as the morning warms.
+    func mistSprites() -> [Sprite] {
+        // A quarter of it is still there after a minute and a half.
+        let burn = max(0.25, 1 - levelAge / 90)
+        let scale = mistAmount * burn
+        guard scale > 0.02 else { return [] }
+        return mists.map { m in
+            Sprite(m.texture, at: m.position, size: CGSize(width: m.width, height: m.width * m.aspect),
+                   mode: .floater, alpha: m.alpha * scale, tint: [0.93, 0.97, 1.0, 1], z: 0.4)
+        }
+    }
+
+    /// Drops on their way off the branches to the water. Each has its own
+    /// dark mark on the water under it, so the eye reads the fall.
+    func dripSprites() -> [Sprite] {
+        var out: [Sprite] = []
+        for d in drips {
+            out.append(Sprite("mote", at: d.to, size: CGSize(width: 5, height: 3),
+                              mode: .shadow, alpha: 0.2, z: 0.04))
+            out.append(Sprite("mote", at: d.position, size: CGSize(width: 5, height: 8), alpha: 0.95,
+                              tint: [1.5, 1.7, 1.9, 1], z: 0.55))
+        }
+        return out
+    }
+
+    /// A koi out of the water: its painting arcing over the pond with its
+    /// shadow running along underneath it.
+    func leapSprites() -> [Sprite] {
+        var out: [Sprite] = []
+        for l in leaps {
+            let t = textureSize(l.texture)
+            let h: CGFloat = 130
+            let w = h * t.width / max(1, t.height)
+            let p = l.position
+            let lift = l.lift
+            // The shadow stays on the water, and shrinks as the fish climbs.
+            let shrink = 1 - 0.3 * lift / max(1, l.height)
+            out.append(Sprite(l.texture, at: CGPoint(x: p.x + lift * 0.25, y: p.y + lift * 0.4),
+                              size: CGSize(width: w * shrink, height: h * shrink * 0.55),
+                              mode: .shadow, alpha: Float(0.5 * shrink), flipX: l.flipped, z: 0.05))
+            out.append(Sprite(l.texture, at: CGPoint(x: p.x, y: p.y - lift),
+                              size: CGSize(width: w, height: h), alpha: 1, flipX: l.flipped,
+                              z: 0.6 + Float(lift) * 0.002))
         }
         return out
     }
@@ -664,6 +973,10 @@ final class Koi {
     private(set) var roll: Float = 0
     /// Ice cover over the pond; above a half the fish will not surface.
     var iceOver: Float = 0
+    /// The fish is in the air: nothing steers it and nothing draws its body.
+    private(set) var leaping = false
+    /// Set the frame it goes down, so air can leave the bed under it.
+    var justDived = false
     private var target = CGPoint.zero
     private var speed: CGFloat = 34
     private var stateUntil: TimeInterval
@@ -938,7 +1251,30 @@ final class Koi {
         depthTarget = 1
         depthRate = quick ? 1.4 : 0.45
         if quick { speed = 70 }
+        justDived = true
         stateUntil = now + Double.random(in: quick ? 6...11 : 4...9)
+    }
+
+    /// The fish leaves the water. Its painting in the air is the whole of it
+    /// until it comes down.
+    func beginLeap() {
+        leaping = true
+        depth = 0
+    }
+
+    /// It lands a body length or two on, goes under, and swims back up to
+    /// the surface over the next second.
+    func land(at p: CGPoint, heading h: Float, now: TimeInterval, in size: CGSize) {
+        leaping = false
+        position = p
+        heading = h
+        straightTrail()
+        depth = 0.8
+        depthTarget = 0.12
+        depthRate = 0.7
+        stateUntil = now + Double.random(in: 9...15)
+        pickTarget(in: size)
+        speed = 46
     }
 
     /// A tap nearby: the fish bolts away from it with a burst of speed and
@@ -1066,7 +1402,8 @@ final class Bubble {
     init(at p: CGPoint, size: CGFloat) {
         position = p
         depth = Float.random(in: 0.75...1.0)
-        rate = Float.random(in: 1.1...1.9)
+        // Slow enough to be watched all the way up.
+        rate = Float.random(in: 0.55...0.95)
         self.size = size
         phase = Float.random(in: 0...(2 * .pi))
     }
@@ -1084,6 +1421,120 @@ final class Bubble {
     }
 }
 
+
+/// A bank of mist lying on the water. It drifts across the pond, comes round
+/// the other side, and thins as the level warms up.
+final class Mist {
+    let texture: String
+    private(set) var position: CGPoint
+    let width: CGFloat
+    let aspect: CGFloat
+    let alpha: Float
+    private let speed: CGFloat
+    private var phase: Float
+
+    init(texture: String, size: CGSize) {
+        self.texture = texture
+        width = size.width * CGFloat.random(in: 0.75...1.3)
+        aspect = CGFloat.random(in: 0.24...0.40)
+        position = CGPoint(x: CGFloat.random(in: -0.2...1.2) * size.width,
+                           y: size.height * CGFloat.random(in: 0.12...0.88))
+        alpha = Float.random(in: 0.18...0.35)
+        speed = CGFloat.random(in: 3...8) * (Bool.random() ? 1 : -1)
+        phase = Float.random(in: 0...(2 * .pi))
+    }
+
+    func update(dt: Float, in bounds: CGSize) {
+        phase += dt * 0.35
+        position.x += speed * CGFloat(dt)
+        position.y += CGFloat(sin(phase)) * 4 * CGFloat(dt)
+        if position.x - width > bounds.width { position.x = -width }
+        if position.x + width < 0 { position.x = bounds.width + width }
+    }
+}
+
+/// A wisp of foam thrown off the stream's mouth, carried a little way into
+/// the pond before it thins away.
+final class Foam {
+    private(set) var position: CGPoint
+    private let drift: CGVector
+    let size: CGFloat
+    private var age: Float = 0
+    private let life: Float = 3.2
+
+    var alpha: Float { 0.3 * max(0, 1 - age / life) }
+    var dead: Bool { age >= life }
+
+    init(at p: CGPoint, drift: CGVector, size: CGFloat) {
+        position = p
+        self.drift = drift
+        self.size = size
+    }
+
+    func update(dt: Float) {
+        age += dt
+        position.x += drift.dx * CGFloat(dt)
+        position.y += drift.dy * CGFloat(dt)
+    }
+}
+
+/// A drop of water leaving a branch. It falls faster the further it has
+/// come, and rings the water where it lands.
+final class Drip {
+    private let from: CGPoint
+    let to: CGPoint
+    private var age: Float = 0
+    private let fall: Float = 0.5
+
+    var landed: Bool { age >= fall }
+    var position: CGPoint {
+        let t = CGFloat(min(1, age / fall))
+        let g = t * t
+        return CGPoint(x: from.x + (to.x - from.x) * g, y: from.y + (to.y - from.y) * g)
+    }
+
+    init(from: CGPoint, to: CGPoint) {
+        self.from = from
+        self.to = to
+    }
+
+    func update(dt: Float) { age += dt }
+}
+
+/// A koi in the air. It leaves the water at one point and comes down at
+/// another, and while it is up its painting is the whole of the fish.
+final class Leap {
+    let koi: Koi
+    let texture: String
+    let from: CGPoint
+    let to: CGPoint
+    let height: CGFloat
+    private var age: Float = 0
+    private let span: Float = 0.7
+
+    init(koi: Koi, texture: String, from: CGPoint, to: CGPoint, height: CGFloat) {
+        self.koi = koi
+        self.texture = texture
+        self.from = from
+        self.to = to
+        self.height = height
+    }
+
+    var done: Bool { age >= span }
+    /// The painting is drawn nose to the right, so a fish going left is flipped.
+    var flipped: Bool { to.x < from.x }
+    var heading: Float { atan2(Float(to.y - from.y), Float(to.x - from.x)) }
+
+    var position: CGPoint {
+        let t = CGFloat(min(1, age / span))
+        return CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t)
+    }
+
+    /// Height over the water in points: up, over, and down again.
+    var lift: CGFloat { height * CGFloat(sin(Double(min(1, age / span)) * .pi)) }
+
+    func update(dt: Float) { age += dt }
+}
 
 /// A strand of pondweed rooted in the bed, bending as a spring.
 final class Weed {
@@ -1242,6 +1693,9 @@ final class Dragonfly {
     private(set) var done = false
     private var bob: Float = 0
     private let startedAt: TimeInterval
+    /// Where it touched the water, once per hover, drained by the garden.
+    var dip: CGPoint?
+    private var dipped = false
 
     init(body: String, size: CGSize, now: TimeInterval) {
         self.body = body
@@ -1260,7 +1714,15 @@ final class Dragonfly {
         let dx = Float(target.x - position.x), dy = Float(target.y - position.y)
         let dist = hypot(dx, dy)
         if dist < 6 {
-            if hoverUntil == 0 { hoverUntil = now + Double.random(in: 1.5...3.0) }
+            if hoverUntil == 0 {
+                hoverUntil = now + Double.random(in: 1.5...3.0)
+                dipped = false
+            }
+            // It drops onto the water for an instant before it goes.
+            if !dipped, now > hoverUntil - 0.4 {
+                dipped = true
+                dip = position
+            }
             if now > hoverUntil {
                 hops += 1
                 hoverUntil = 0
@@ -1336,13 +1798,16 @@ struct BedPiece {
     let depth: Float
 }
 
-/// A tuft of reeds standing in the shallows.
+/// A tuft of reeds standing in the shallows. A gust leans it over; the stem
+/// is a spring that stands it back up.
 struct Reed {
     let texture: String
     let position: CGPoint
     let size: CGFloat
     let rotation: Float
     let phase: Float
+    var sway: Float = 0
+    var swayVel: Float = 0
 }
 
 /// A frog on a lily pad near the bank. It turns its head now and then, and

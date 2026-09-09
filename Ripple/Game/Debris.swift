@@ -32,6 +32,12 @@ enum GameTuning {
     static let currentPushLight: Float = 1.0
     static let currentPushHeavy: Float = 0.25
 
+    /// A stream running into the pond. The drift it builds, in points per
+    /// second, and how fast it gets there. A stroke along the bank still
+    /// beats it several times over.
+    static let inletCurrent: Float = 13
+    static let inletCurrentGain: Float = 2.4
+
     /// Touches starting inside this band count as edge strokes once they move.
     static let edgeBand: CGFloat = 30
     static let edgeStrokeMinTravel: CGFloat = 12
