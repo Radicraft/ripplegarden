@@ -549,7 +549,8 @@ final class GameController: ObservableObject, TouchInput {
                 }
             }
         }
-        let tidy = debris.allSatisfy(\.cleared) && (iceField.map { $0.fraction < 0.06 } ?? true)
+        // Chunks of broken ice melt on their own and are not waited for.
+        let tidy = debris.filter { $0.meltsIn == nil }.allSatisfy(\.cleared) && (iceField.map { $0.fraction < 0.06 } ?? true)
                 && targets.allSatisfy(\.woke)
             if level.mosaicRadius <= 0 ? tidy : (cleaned >= 0.94 && heavyOverTile().isEmpty) { finish() }
         }
@@ -814,6 +815,7 @@ final class GameController: ObservableObject, TouchInput {
         }
         for line in words {
             line.onSurface = true
+            line.screenScale = CGFloat(1 / max(0.3, renderer.zoom))
             over += line.sprites(textures: renderer.textures)
         }
         over += menuArt?.surface ?? []

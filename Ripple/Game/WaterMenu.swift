@@ -57,6 +57,9 @@ final class WaterWords {
     /// On a frozen pond the words lie on the ice rather than under it, or
     /// the sheet would hide them.
     var onSurface = false
+    /// World points per screen point right now (1 / zoom): words are sized
+    /// on the screen, so pulling the camera back never shrinks them.
+    var screenScale: CGFloat = 1
     /// The middle of the block, in world points.
     var centre: CGPoint
     /// How wide wrapped copy may run, in world points.
@@ -112,12 +115,22 @@ final class WaterWords {
                 ? LabelSprites.words(line.text, points: line.points, textures: textures, width: width / Water.labelScale / 2)
                 : LabelSprites.caption(line.text, points: line.points, textures: textures)
             names.append(name)
-            sizes.append(Water.size(name, textures: textures))
+            let s = Water.size(name, textures: textures)
+            sizes.append(CGSize(width: s.width * screenScale, height: s.height * screenScale))
         }
-        let gap: CGFloat = 6
+        let gap: CGFloat = 6 * screenScale
         let total = sizes.reduce(CGFloat(0)) { $0 + $1.height } + gap * CGFloat(max(0, lines.count - 1))
         var y = centre.y - total / 2
         var out: [Sprite] = []
+        // Reading words get a soft dark shade under the block, like a cloud
+        // passing over that patch of water, so pale ink holds anywhere.
+        if onSurface, let widest = sizes.map(\.width).max() {
+            let p0 = progress(row: 0)
+            if p0 > 0.001 {
+                out.append(Sprite("cloud_1", at: centre, size: CGSize(width: widest * 1.35 + 40 * screenScale, height: total * 1.9 + 30 * screenScale),
+                                  mode: .floater, alpha: 0.5 * min(1, p0 * 1.6), tint: [0.02, 0.03, 0.04, 1], z: 0.015))
+            }
+        }
         for i in lines.indices {
             let s = sizes[i]
             let p = progress(row: i)
