@@ -66,9 +66,9 @@ final class GameController: ObservableObject, TouchInput {
     private(set) var cleaned: Float = 0
     private var rocks: [(centre: CGPoint, radius: CGFloat)] = []
     /// Lily pads in world points: ripples stop at them, taps on them do nothing.
-    private var pads: [(centre: CGPoint, radius: CGFloat, sprite: String)] = []
+    private(set) var pads: [(centre: CGPoint, radius: CGFloat, sprite: String)] = []
     /// Things a crest wakes.
-    private var targets: [Target] = []
+    private(set) var targets: [Target] = []
     private var targetProbeStart = 0
 
     private let diagnostics = ProcessInfo.processInfo.arguments.contains("-diag")

@@ -122,6 +122,31 @@ enum DemoScript {
                 }
             }
         }
+        // Something sleeping on the water: send crests at it from the open
+        // side, a tap one beat and a held swell the next, from wherever is
+        // not a pad, a rock or the thing itself.
+        if let target = controller.targets.first(where: { !$0.woke }) {
+            let blocked: [(CGPoint, CGFloat)] = controller.pads.map { ($0.centre, $0.radius * 1.2) } + controller.level.rocks.map {
+                (CGPoint(x: $0.centre.x * size.width, y: $0.centre.y * size.height), $0.radius * size.height * 1.3)
+            }
+            var spot: CGPoint?
+            for k in 0..<16 {
+                let a = CGFloat(k) / 16 * 2 * .pi + CGFloat(beats) * 0.37
+                for r in [95.0, 140.0, 190.0] as [CGFloat] {
+                    let p = CGPoint(x: target.position.x + cos(a) * r, y: target.position.y + sin(a) * r)
+                    guard p.x > 40, p.y > 40, p.x < size.width - 40, p.y < size.height - 40 else { continue }
+                    if blocked.contains(where: { hypot($0.0.x - p.x, $0.0.y - p.y) < $0.1 }) { continue }
+                    spot = p
+                    break
+                }
+                if spot != nil { break }
+            }
+            if let p = spot {
+                NSLog("[demo] target at (%.0f,%.0f): %@ from (%.0f,%.0f)", target.position.x, target.position.y, beats % 2 == 0 ? "hold" : "tap", p.x, p.y)
+                if beats % 2 == 0 { hold(controller, at: p, size: size, for: 1.4) } else { tap(controller, at: p, size: size) }
+                return
+            }
+        }
         // A tidying level: push each piece toward its nearest bank.
         if controller.level.mosaicRadius <= 0 {
             guard let piece = live.min(by: { edgeDistance($0.position, size) < edgeDistance($1.position, size) }) else { return }
@@ -183,7 +208,13 @@ enum DemoScript {
     private static func tap(_ controller: GameController, at world: CGPoint, size: CGSize) {
         syntheticID += 1
         let id = syntheticID
-        let p = controller.screenPoint(world)
+        var at = world
+        for pad in controller.pads where hypot(pad.centre.x - at.x, pad.centre.y - at.y) < pad.radius * 1.15 {
+            let dx = at.x - pad.centre.x, dy = at.y - pad.centre.y
+            let len = max(1, hypot(dx, dy))
+            at = CGPoint(x: pad.centre.x + dx / len * pad.radius * 1.4, y: pad.centre.y + dy / len * pad.radius * 1.4)
+        }
+        let p = controller.screenPoint(at)
         let screen = screenSizeOf(controller) ?? size
         controller.touchBegan(id: id, at: p, in: screen, weight: 0.4)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
