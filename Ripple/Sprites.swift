@@ -85,15 +85,7 @@ final class TextureCache {
     /// edge and a little body without anyone having to paint one.
     func normal(_ name: String) -> MTLTexture? {
         if let t = normals[name] { return t }
-        let cg: CGImage
-        if let drawn = registered[name] {
-            cg = drawn
-        } else {
-            guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
-                  let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                  let loaded = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-            cg = loaded
-        }
+        guard let cg = cgImage(name) else { return nil }
         let w = cg.width, h = cg.height
         var alpha = [UInt8](repeating: 0, count: w * h)
         alpha.withUnsafeMutableBytes { raw in
@@ -160,6 +152,49 @@ final class TextureCache {
             }
         }
         return dst
+    }
+
+    /// The picture behind a name, for the passes that read its pixels rather
+    /// than hand it to the GPU.
+    private func cgImage(_ name: String) -> CGImage? {
+        if let drawn = registered[name] { return drawn }
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
+    private var tailCentres: [String: Float] = [:]
+
+    /// Where the tail of a fish painting lies across its width, 0 to 1. A koi
+    /// is painted swimming, so its fan is rarely on the middle line, and the
+    /// fin that carries it has to be sampled where the paint actually is.
+    /// Read off the alpha in the band the fan lives in, just past the tip.
+    func tailCentre(_ name: String) -> Float {
+        if let c = tailCentres[name] { return c }
+        var centre: Float = 0.5
+        if let cg = cgImage(name) {
+            let w = cg.width, h = cg.height
+            var alpha = [UInt8](repeating: 0, count: w * h)
+            alpha.withUnsafeMutableBytes { raw in
+                guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                          bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+                                          bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue) else { return }
+                // A bitmap context keeps its rows top down in memory, so row
+                // zero is the top of the picture: the end the texture's own
+                // v starts at, where the tail is painted.
+                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+            }
+            var lo = w, hi = -1
+            for y in Int(Double(h) * 0.03)...Int(Double(h) * 0.16) {
+                for x in 0..<w where alpha[y * w + x] > 60 {
+                    lo = min(lo, x)
+                    hi = max(hi, x)
+                }
+            }
+            if hi >= lo { centre = Float(lo + hi) * 0.5 / Float(w) }
+        }
+        tailCentres[name] = centre
+        return centre
     }
 
     /// Images drawn at run time (labels on washi), kept for their normals.

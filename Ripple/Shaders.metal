@@ -1246,7 +1246,8 @@ struct SolidInstance {
     float4 colourA;        // main body colour
     float4 colourB;        // band / cap / moss / cut wood colour
     int    spine;          // spine in the shared buffer that bends a koi, or -1
-    float  pad0, pad1, pad2;
+    float  paintCentre;    // where a koi's tail sits across its painting, 0 to 1
+    float  pad1, pad2;
 };
 
 struct SolidParams {
@@ -1284,6 +1285,7 @@ struct SolidOut {
     float  wpz;            // height above the water plane, in points
     uint   shape;
     float2 cap;            // where on the cap (disc) or the painting (koi) this is
+    float  fan;            // where a koi's tail sits across its painting
 };
 
 // Hash noise for the bodies that are not smooth. A stone's lumps are worked
@@ -1459,6 +1461,7 @@ vertex SolidOut solid_vertex(SolidVertexIn vin                  [[stage_in]],
     out.wpz = P.z;
     out.shape = s.shape;
     out.cap = capUV;
+    out.fan = s.paintCentre;
     return out;
 }
 
@@ -1492,14 +1495,19 @@ fragment float4 solid_fragment(SolidOut in [[stage_in]],
         // flank lands on the edge of the painted body. Wrapping the whole
         // width instead would lay the painting's empty margin, and its
         // spread fins, down the widest part of the fish.
-        float across = 0.5 + in.lp.y * 0.38;
+        //
+        // The tail end of the painting is not on the middle line: the fish
+        // was painted swimming, so its fan lies off to one side. Over the
+        // fin the middle of the sample slides across to meet it.
+        float mid = mix(in.fan, 0.5, smoothstep(0.10, 0.22, in.v));
+        float across = mid + in.lp.y * 0.38;
         float4 px = painting.sample(smp, float2(across, in.cap.y));
+        // The fin is a plain ribbon. What cuts the fork out of it is the
+        // painting itself: where the fan is not painted there is no fin.
+        if (in.v < 0.21 && px.a < 0.35) { discard_fragment(); }
         float belly = 0.5 - 0.5 * cos(in.cap.x);
         base = px.rgb * (1.0 - 0.3 * belly);
         if (px.a < 0.25) { base = in.colourA.rgb; }
-        // The tail is cut off square. Kept dark, the cut reads as the shadow
-        // inside a fin rather than a bright stump.
-        if (in.part > 0.5) { base *= 0.45; }
         spec = 0.4;
     } else if (in.shape == 0u) {
         // A can: a printed body between two silver lids.

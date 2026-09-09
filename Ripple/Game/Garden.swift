@@ -479,7 +479,8 @@ final class Garden {
     /// wearing the fish's own painting. `depthScale` is points per pond unit.
     /// Fish under the surface go into the floor; a surfaced one (depth under
     /// 0.1) rides with its back just clear of the water.
-    func koiBodies(depthScale: Float, textureIndex: (String) -> UInt32) -> (under: [SolidInstance], surface: [SolidInstance]) {
+    func koiBodies(depthScale: Float, textureIndex: (String) -> UInt32,
+                   tailCentre: (String) -> Float) -> (under: [SolidInstance], surface: [SolidInstance]) {
         var under: [SolidInstance] = []
         var surface: [SolidInstance] = []
         for (k, spine) in koiSpines {
@@ -495,7 +496,8 @@ final class Garden {
             let body = SolidInstance(position: SIMD2(Float(k.position.x), Float(k.position.y)), lift: lift,
                                      yaw: k.phase, roll: k.roll, texture: textureIndex(k.texture),
                                      tilt: SIMD2(k.waveAmp * 0.42, 0), length: h, radius: radius, shape: 5,
-                                     alpha: 1, colourA: [0.9, 0.86, 0.78, 1], colourB: [0.9, 0.86, 0.78, 1], spine: Int32(spine))
+                                     alpha: 1, colourA: [0.9, 0.86, 0.78, 1], colourB: [0.9, 0.86, 0.78, 1],
+                                     spine: Int32(spine), paintCentre: tailCentre(k.texture))
             if d < 0.1 { surface.append(body) } else { under.append(body) }
         }
         return (under, surface)

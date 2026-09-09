@@ -34,7 +34,11 @@ struct SolidInstance {
     /// Which spine in the shared buffer bends this body, or -1 for a body
     /// that stands on its own axis.
     var spine: Int32 = -1
-    var pad0: Float = 0
+    /// Where the tail of a koi's painting sits across its width, 0 to 1. A
+    /// koi is painted swimming, so its tail is rarely on the middle line and
+    /// the fin that carries it has to be sampled where the paint is. Every
+    /// other body ignores it.
+    var paintCentre: Float = 0.5
     var pad1: Float = 0
     var pad2: Float = 0
 }
@@ -314,39 +318,62 @@ enum SolidMesh {
         return (verts, idx)
     }
 
-    static let koiRings = 20
     static let koiSegments = 12
     /// How much thinner a fish is top to bottom than side to side.
     static let koiFlatten: Float = 0.8
+    /// Where along the painting the tail fin gives way to the body. The
+    /// fragment stops cutting the shape out of the painting's alpha past it,
+    /// and stops looking for the fan off the middle line.
+    static let koiFinEnd: Float = 0.20
 
-    /// A koi's body: a spindle turned along its length, flattened a little.
-    /// `v` runs 0 at the tail to 1 at the nose, which is the same way the
-    /// spine samples run, so the vertex shader lays each ring on the path the
-    /// head actually swam. `ang` is measured from the back, so the painting
-    /// wraps round the body from the spine down to the belly on either side.
+    /// A koi's body: a spindle turned along its length, flattened a little,
+    /// with the tail fin carried on past it as a ribbon. `v` runs 0 at the tip
+    /// of the tail to 1 at the nose, which is the same way the spine samples
+    /// run, so the vertex shader lays each ring on the path the head actually
+    /// swam, and the same way the painting runs, so every ring wears the part
+    /// of the fish painted at that point. `ang` is measured from the back, so
+    /// the painting wraps round the body from the spine down to the belly on
+    /// either side.
+    ///
+    /// The first rings are the fin: wide across and almost no thickness, a
+    /// ribbon rather than a body. Nothing here draws the fork in it. The
+    /// painting does, by its own alpha, in the fragment.
     static func koi() -> ([SolidVertex], [UInt16]) {
-        let rows = koiRings, cols = koiSegments + 1
+        let cols = koiSegments + 1
         var verts: [SolidVertex] = []
         var idx: [UInt16] = []
 
-        // Widest a little behind the shoulder, nothing at the nose, a thin
-        // stalk at the tail.
-        func profile(_ v: Float) -> Float {
-            if v >= 0.6 {
-                let t = (1 - v) / 0.4
+        // The body: widest a little behind the shoulder, nothing at the nose,
+        // a thin stalk where the fin takes over.
+        func body(_ v: Float) -> Float {
+            let u = (v - koiFinEnd) / (1 - koiFinEnd)
+            if u >= 0.55 {
+                let t = (1 - u) / 0.45
                 return 0.5 * pow(sin(t * Float.pi / 2), 0.8)
             }
-            return 0.15 + 0.35 * pow(v / 0.6, 0.7)
+            return 0.12 + 0.38 * pow(u / 0.55, 0.7)
         }
+
+        // Each ring: where it sits along the painting, how far across it
+        // reaches, and how much of that it stands top to bottom. The fin's
+        // rings are given more width than the painted fan needs, since what
+        // is not painted is thrown away rather than drawn.
+        var rings: [(v: Float, r: Float, flat: Float)] = [(0.00, 0.32, 0.05), (0.035, 0.42, 0.05),
+                                                          (0.075, 0.44, 0.06), (0.12, 0.34, 0.09),
+                                                          (0.16, 0.21, 0.26)]
+        for i in 0..<16 {
+            let u = Float(i) / 15
+            let v = koiFinEnd + (1 - koiFinEnd) * u
+            rings.append((v, body(v), koiFlatten))
+        }
+        let rows = rings.count
 
         var pos = [SIMD3<Float>](repeating: .zero, count: rows * cols)
         var normals = [SIMD3<Float>](repeating: .zero, count: rows * cols)
-        for i in 0..<rows {
-            let v = Float(i) / Float(rows - 1)
-            let r = profile(v)
+        for (i, ring) in rings.enumerated() {
             for s in 0...koiSegments {
                 let a = Float(s) / Float(koiSegments) * 2 * Float.pi
-                pos[i * cols + s] = SIMD3(v - 0.5, sin(a) * r, cos(a) * r * koiFlatten)
+                pos[i * cols + s] = SIMD3(ring.v - 0.5, sin(a) * ring.r, cos(a) * ring.r * ring.flat)
             }
         }
         for i in 0..<(rows - 1) {
@@ -369,8 +396,7 @@ enum SolidMesh {
             normals[i * cols] = n
             normals[i * cols + koiSegments] = n
         }
-        for i in 0..<rows {
-            let v = Float(i) / Float(rows - 1)
+        for (i, ring) in rings.enumerated() {
             for s in 0...koiSegments {
                 let k = i * cols + s
                 let p = pos[k]
@@ -378,24 +404,12 @@ enum SolidMesh {
                 if simd_dot(n, SIMD3<Float>(0, p.y, p.z)) < 0 { n = -n }
                 n = simd_length(n) > 1e-6 ? simd_normalize(n) : SIMD3(0, p.y, p.z)
                 verts.append(SolidVertex(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
-                                         v: v, ang: Float(s) / Float(koiSegments) * 2 * Float.pi,
-                                         part: 0, rad: 1))
+                                         v: ring.v, ang: Float(s) / Float(koiSegments) * 2 * Float.pi,
+                                         part: ring.flat < 0.5 ? 1 : 0, rad: 1))
             }
         }
-
-        // The tail end is cut off square, so nothing is seen inside it.
-        let r0 = profile(0)
-        let centre = UInt16(verts.count)
-        verts.append(SolidVertex(px: -0.5, py: 0, pz: 0, nx: -1, ny: 0, nz: 0, v: 0, ang: 0, part: 1, rad: 0))
-        for s in 0...koiSegments {
-            let a = Float(s) / Float(koiSegments) * 2 * Float.pi
-            verts.append(SolidVertex(px: -0.5, py: sin(a) * r0, pz: cos(a) * r0 * koiFlatten,
-                                     nx: -1, ny: 0, nz: 0, v: 0, ang: a, part: 1, rad: 1))
-        }
-        for s in 0..<koiSegments {
-            let a = centre + 1 + UInt16(s)
-            idx += [centre, a, a + 1]
-        }
+        // No lid at either end: the fin's own tip is where the fish stops,
+        // and there the painting has nothing left to draw.
         return (verts, idx)
     }
 

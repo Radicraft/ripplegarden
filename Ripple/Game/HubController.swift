@@ -493,7 +493,8 @@ final class HubController: ObservableObject, TouchInput {
             paintings.append(name)
             return UInt32(paintings.count)
         }
-        let koiBodies = garden.koiBodies(depthScale: WaterRenderer.depthScale, textureIndex: painting)
+        let koiBodies = garden.koiBodies(depthScale: WaterRenderer.depthScale, textureIndex: painting,
+                                              tailCentre: { renderer.textures.tailCentre($0) })
         var underBodies = koiBodies.under
         underBodies += garden.bedStoneBodies(depthScale: WaterRenderer.depthScale, mossy: true)
         for pool in pools {
