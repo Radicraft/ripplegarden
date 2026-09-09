@@ -69,6 +69,7 @@ struct LevelView: View {
 
             if let hint = controller.hint {
                 HintBubble(text: hint.text)
+                    .floatingPaper(seed: 1)
                     .padding(.bottom, 92)
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
@@ -78,11 +79,37 @@ struct LevelView: View {
                                hasNext: Library.level(after: controller.level) != nil,
                                next: { controller.next() },
                                garden: onExit)
+                .floatingPaper(seed: 2)
                 .padding(.bottom, 86)
                 .transition(.opacity.combined(with: .offset(y: 16)))
+                .onAppear { controller.paperLanded(atScreenFraction: CGPoint(x: 0.5, y: 0.8)) }
             }
         }
     }
+}
+
+/// Paper on the water: it rides a slow swell, tilting a little as it bobs,
+/// and its shadow moves with it. Every card and bubble in the game floats.
+struct FloatingPaper: ViewModifier {
+    let seed: Double
+
+    func body(content: Content) -> some View {
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate + seed * 3.7
+            let bob = sin(t * 0.9) * 3 + sin(t * 1.7 + 1) * 1.2
+            let tiltX = sin(t * 0.75 + 0.4) * 2.2
+            let tiltY = sin(t * 0.55 + 2) * 1.6
+            content
+                .rotation3DEffect(.degrees(tiltX), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+                .rotation3DEffect(.degrees(tiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                .offset(y: bob)
+                .shadow(color: .black.opacity(0.28), radius: 10 + bob * 0.6, x: 2 + tiltY, y: 8 + bob)
+        }
+    }
+}
+
+extension View {
+    func floatingPaper(seed: Double) -> some View { modifier(FloatingPaper(seed: seed)) }
 }
 
 struct HintBubble: View {

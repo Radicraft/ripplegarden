@@ -690,6 +690,15 @@ final class GameController: ObservableObject, TouchInput {
     // MARK: - Touches
 
     /// Screen point to world point through the current view.
+    /// A card has landed on the water at this fraction of the screen: the
+    /// water takes it with a soft ring.
+    func paperLanded(atScreenFraction f: CGPoint) {
+        guard screenSize != .zero else { return }
+        let p = worldPoint(CGPoint(x: screenSize.width * f.x, y: screenSize.height * f.y))
+        renderer?.addSplat(at: p, in: viewSize, radius: 60, amplitude: -0.12)
+        haptics.plop()
+    }
+
     /// Pull back until the whole pond is on screen (the demo uses it on
     /// frozen levels, where the sheet runs beyond the default view).
     func showWholePond() {
