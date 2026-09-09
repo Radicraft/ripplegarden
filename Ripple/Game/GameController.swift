@@ -965,6 +965,8 @@ final class GameController: ObservableObject, TouchInput {
     private func updateHints() {
         guard phase == .playing else { return }
         if let h = level.hint, !touchedYet, elapsed > 4.0 { show(h) }
+        // Once, a little way in: how to look at the pond from the side.
+        if elapsed > 30, touchedYet, !HintMemory.seen(.tilt), hintWords == nil { show(.tilt) }
         if level.hint == .ice, touchedYet, let f = iceField, f.fraction > 0.97, elapsed > 12 { show(.ice) }
         // The tile is mostly clean but a heavy piece still shades it, and the
         // player has stalled: they need the hold.
@@ -1751,6 +1753,19 @@ enum DepthPainter {
     /// Depth of dry ground. Below `dryDepth` no ripple reaches a piece.
     static let dryDepth: Float = 0.03
 
+    /// How far out a point is, 0 at the middle and 1 at the pond's edge. No
+    /// pond is a rectangle: the edge is a rounded shape with soft corners,
+    /// and it swells and pinches a little round its length.
+    static func rimAt(bx: Float, by: Float, aspect: Float) -> Float {
+        let rx = abs(bx) / (0.5 * aspect), ry = abs(by) / 0.5
+        let n: Float = 5
+        let rounded = pow(pow(rx, n) + pow(ry, n), 1 / n)
+        // Sampled on a circle so the wobble meets itself round the back.
+        let angle = atan2(by, bx)
+        let swell = (ShoreNoise.value(cos(angle) * 1.6 + 10, sin(angle) * 1.6 + 10) - 0.5) * 0.14
+        return rounded / (1 + swell)
+    }
+
     /// The bowl shelving up to the bank at the world's rim, on a shoreline
     /// that wanders. `d` is the bowl's depth here.
     private static func shore(_ d: Float, rim: Float, px: Float, py: Float) -> Float {
@@ -1767,7 +1782,7 @@ enum DepthPainter {
     static func ground(at p: CGPoint, aspect: Float) -> Float {
         let px = Float(p.x), py = Float(p.y)
         let bx = (px - 0.5) * aspect, by = py - 0.5
-        let rim = max(abs(bx) / (0.5 * aspect), abs(by) / 0.5)
+        let rim = rimAt(bx: bx, by: by, aspect: aspect)
         return shore(1 - 0.62 * smoothstep(0.55, 1.0, rim), rim: rim, px: px, py: py)
     }
 
@@ -1775,7 +1790,7 @@ enum DepthPainter {
     static func depth(at p: CGPoint, level: LevelSpec, aspect: Float) -> Float {
         let px = Float(p.x), py = Float(p.y)
         let bx = (px - 0.5) * aspect, by = py - 0.5
-        let rim = max(abs(bx) / (0.5 * aspect), abs(by) / 0.5)
+        let rim = rimAt(bx: bx, by: by, aspect: aspect)
         var d: Float = 1 - 0.62 * smoothstep(0.55, 1.0, rim)
         d = shore(d, rim: rim, px: px, py: py)
         for s in level.shallows {
@@ -1803,7 +1818,7 @@ enum DepthPainter {
                 // The pond is a bowl: deep in the middle, shelving to the banks,
                 // so waves slow near the edge and the bed shows there.
                 let bx = (px - 0.5) * aspect, by = py - 0.5
-                let rim = max(abs(bx) / (0.5 * aspect), abs(by) / 0.5)
+                let rim = rimAt(bx: bx, by: by, aspect: aspect)
                 var d: Float = 1 - 0.62 * smoothstep(0.55, 1.0, rim)
                 d = shore(d, rim: rim, px: px, py: py)
                 for s in level.shallows {

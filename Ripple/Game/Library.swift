@@ -179,7 +179,7 @@ struct Shape {
 }
 
 enum Hint: String {
-    case tap, hold, swell, current, bounce, ice, target, twin, lens, order
+    case tap, hold, swell, current, bounce, ice, target, twin, lens, order, tilt
 
     var text: String {
         switch self {
@@ -191,6 +191,7 @@ enum Hint: String {
         case .bounce: return "Ripples bounce off the stones. A curve of them throws a ripple back."
         case .target: return "Something sleeps among the pads. Only a wave through the gap will wake it."
         case .twin: return "Two ripples arriving together lift what one cannot."
+        case .tilt: return "Two fingers drawn slowly up the screen tilt the view. Pinch to zoom."
         case .lens: return "Shallow water slows a ripple and bends it. A wave that crosses a sandbank still arrives tall."
         case .order: return "No water passes a log or a can. Move what is in the way first."
         }

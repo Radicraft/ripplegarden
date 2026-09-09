@@ -517,14 +517,16 @@ fragment float4 floor_compose_fragment(VertexOut in                             
         float focus = 1.0 / max(1.0 + lap * 55.0 * depthHere, 0.25);
         float caustic = clamp(focus - 1.0, -0.6, 2.5);
         float3 sun = p.shallow.rgb * 0.5 + 0.5;
-        col += sun * max(caustic, 0.0) * 0.55 * mix(1.0, 0.5, deepness);
-        col *= 1.0 + min(caustic, 0.0) * 0.45;
+        // Only water carries the light to the bed: nothing on dry ground.
+        float underWater = smoothstep(0.05, 0.14, d);
+        col += sun * max(caustic, 0.0) * 0.55 * mix(1.0, 0.5, deepness) * underWater;
+        col *= 1.0 + min(caustic, 0.0) * 0.45 * underWater;
         (void)hC;
     }
 
     float shaftCoord = q.x * 2.2 + q.y * 0.8 + tm * 0.03;
     float shafts = pow(0.5 + 0.5 * sin(shaftCoord * 6.28318), 4.0) * (0.4 + 0.6 * fbm(float2(shaftCoord * 1.7, tm * 0.02), 2));
-    col += (p.shallow.rgb * 0.6 + 0.25) * shafts * deepness * 0.45;
+    col += (p.shallow.rgb * 0.6 + 0.25) * shafts * deepness * 0.45 * smoothstep(0.05, 0.14, d);
     if (d < 0.98) {
         float grain = 0.85 + 0.30 * fbm(q * 30.0, 3);
         float3 sand = mix(p.shallow.rgb, float3(0.70, 0.62, 0.42), 0.6) * grain;
@@ -936,12 +938,19 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     if (any(wuv < 0.0) || any(wuv > 1.0)) {
         // Beyond the water the shelf keeps rising as the bank: the same
         // pebbles and sand, dry, mirrored back so the texture continues.
+        // The ground carries on past the edge of the pond. Right at the edge it
+        // is the bank as painted; further out it settles into plain earth with
+        // its own grain, so nothing repeats or mirrors.
         float2 m = abs(wuv);
         m = 1.0 - abs(1.0 - m);
         float2 bankUV = clamp(m, 0.0, 1.0);
         float3 dry = floorTex.sample(smp, bankUV).rgb;
         float lum = dot(dry, float3(0.3, 0.59, 0.11));
         dry = mix(float3(lum), dry, 0.6) * float3(1.05, 1.0, 0.9) * 0.9;
+        float2 beyond = max(max(-wuv, wuv - 1.0), 0.0);
+        float away = smoothstep(0.0, 0.10, max(beyond.x, beyond.y));
+        float3 earth = float3(0.36, 0.33, 0.28) * (0.85 + 0.3 * fbm(wuv * 40.0, 3));
+        dry = mix(dry, earth, away);
         float paper = fbm(in.uv * p.viewport / 6.0, 2);
         dry *= 0.92 + 0.14 * paper;
         return float4(menuShade(dry, wuv, p), 1.0);
