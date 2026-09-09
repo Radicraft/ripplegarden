@@ -53,8 +53,113 @@ enum DemoScript {
         }
     }
 
+    /// `-gestures "flick:0.3,0.5>0.7,0.5@4;stir:0.5,0.5@8;drop:0.5,0.6@12;gust:>@16"`:
+    /// one water gesture per item, played without a finger at world fractions
+    /// and seconds after launch, so each can be seen in the Simulator.
+    ///
+    /// `flick:from>to` a stroke over 0.35s, fast enough to lay a wake.
+    /// `stir:centre` two turns of a circle over 1.2s (`stir:centre:r` for a
+    /// radius as a fraction of the pond's height). `drop:at` two taps 0.2s
+    /// apart. `gust:from>to` two parallel flicks; `gust:>` sweeps the middle
+    /// of the pond left to right. `tap:at` and `hold:at` are here too.
+    static func scheduleScriptedGestures(controller: GameController) {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-gestures"), i + 1 < args.count else { return }
+        for item in args[i + 1].split(separator: ";") {
+            let parts = item.split(separator: "@")
+            guard parts.count == 2, let t = Double(parts[1]) else { continue }
+            let body = parts[0].split(separator: ":", maxSplits: 1)
+            guard body.count == 2 else { continue }
+            let kind = String(body[0]), arg = String(body[1])
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) {
+                guard let size = controller.worldSize, size.width > 0 else { return }
+                NSLog("[gestures] %@ %@", kind, arg)
+                play(kind: kind, arg: arg, controller: controller, size: size)
+            }
+        }
+    }
+
+    private static func play(kind: String, arg: String, controller: GameController, size: CGSize) {
+        // "0.3,0.5" is a point as a fraction of the pond.
+        func point(_ s: Substring) -> CGPoint? {
+            let xy = s.split(separator: ",").compactMap { Double($0) }
+            guard xy.count == 2 else { return nil }
+            return CGPoint(x: size.width * xy[0], y: size.height * xy[1])
+        }
+        let ends = arg.split(separator: ">", omittingEmptySubsequences: false)
+        switch kind {
+        case "tap":
+            guard let p = point(arg[...]) else { return }
+            tap(controller, at: p, size: size)
+        case "hold":
+            guard let p = point(arg[...]) else { return }
+            hold(controller, at: p, size: size, for: 1.6)
+        case "drop":
+            guard let p = point(arg[...]) else { return }
+            tap(controller, at: p, size: size)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { tap(controller, at: p, size: size) }
+        case "flick":
+            guard ends.count == 2, let a = point(ends[0]), let b = point(ends[1]) else { return }
+            syntheticID += 1
+            drag(controller, path: line(from: a, to: b, steps: 22), seconds: 0.35, id: syntheticID, size: size)
+        case "stir":
+            // An optional radius after the centre: "stir:0.5,0.5:0.16".
+            let bits = arg.split(separator: ":")
+            guard let c = point(bits[0]) else { return }
+            let r = bits.count > 1 ? (Double(bits[1]) ?? 0.13) : 0.13
+            let radius = min(size.width, size.height) * CGFloat(r)
+            var path: [CGPoint] = []
+            let steps = 75
+            for k in 0...steps {
+                let a = Double(k) / Double(steps) * 4 * .pi   // two turns
+                path.append(CGPoint(x: c.x + radius * CGFloat(cos(a)), y: c.y + radius * CGFloat(sin(a))))
+            }
+            syntheticID += 1
+            drag(controller, path: path, seconds: 1.2, id: syntheticID, size: size)
+        case "gust":
+            let a = (ends.count == 2 ? point(ends[0]) : nil) ?? CGPoint(x: size.width * 0.15, y: size.height * 0.5)
+            let b = (ends.count == 2 ? point(ends[1]) : nil) ?? CGPoint(x: size.width * 0.85, y: size.height * 0.5)
+            let dx = b.x - a.x, dy = b.y - a.y
+            let len = max(1, hypot(dx, dy))
+            // Two fingers side by side, thrown the same way.
+            let off = CGPoint(x: -dy / len * 32, y: dx / len * 32)
+            for sign in [CGFloat(1), CGFloat(-1)] {
+                syntheticID += 1
+                let from = CGPoint(x: a.x + off.x * sign, y: a.y + off.y * sign)
+                let to = CGPoint(x: b.x + off.x * sign, y: b.y + off.y * sign)
+                drag(controller, path: line(from: from, to: to, steps: 22), seconds: 0.35, id: syntheticID, size: size)
+            }
+        default:
+            break
+        }
+    }
+
+    private static func line(from: CGPoint, to: CGPoint, steps: Int) -> [CGPoint] {
+        (0...steps).map { k in
+            let t = CGFloat(k) / CGFloat(steps)
+            return CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t)
+        }
+    }
+
+    /// A finger drawn along a path in world points: down at the first point,
+    /// a move every 16 ms, up at the last.
+    private static func drag(_ controller: GameController, path: [CGPoint], seconds: Double, id: Int, size: CGSize) {
+        guard path.count > 1 else { return }
+        let screen = screenSizeOf(controller) ?? size
+        controller.touchBegan(id: id, at: controller.screenPoint(path[0]), in: screen, weight: 0.4)
+        for (k, p) in path.enumerated().dropFirst() {
+            let t = seconds * Double(k) / Double(path.count - 1)
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) {
+                let at = controller.screenPoint(p)
+                controller.touchMoved(id: id, to: at, in: screen)
+                if k == path.count - 1 { controller.touchEnded(id: id, at: at, in: screen) }
+            }
+        }
+    }
+
     static func startIfRequested(controller: GameController) {
         scheduleScriptedTaps(controller: controller)
+        scheduleScriptedGestures(controller: controller)
         guard isEnabled, timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             Task { @MainActor in beat(controller: controller) }

@@ -577,6 +577,7 @@ final class HubController: ObservableObject, TouchInput {
         }
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
+        over += garden.dropletSprites()
         for s in stretchBranches { paper(s, cast: 18) }
         for (i, m) in sourceMist.enumerated() {
             guard let name = cloud(i) else { break }
@@ -691,6 +692,7 @@ final class HubController: ObservableObject, TouchInput {
            let pool = pools.first(where: { hypot($0.centre.x - point.x, $0.centre.y - point.y) < $0.radius }),
            progress.isUnlocked(level: pool.level) {
             renderer.addSplat(at: pool.centre, in: viewSize, radius: 40, amplitude: -0.6)
+            garden.burstDroplets(at: pool.centre, power: 1)
             sound.dive()
             haptics.holdRelease(charge: 1)
             // The dive: the camera drops toward the pool as the water closes.

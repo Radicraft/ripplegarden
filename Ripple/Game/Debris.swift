@@ -46,6 +46,73 @@ enum GameTuning {
 
     /// How long the finger must stay before a hold counts as one, for sound.
     static let holdSoundAfter: Float = 0.18
+
+    // MARK: - Gestures on open water
+
+    /// A finger crossing open water faster than this lays a wake instead of
+    /// pressing a hold, in world points per second.
+    static let wakeSpeed: Float = 90
+    /// Points along the stroke between wake splats, and their shape.
+    static let wakeSpacing: CGFloat = 6
+    static let wakeRadius: Float = 5
+    static let wakeAmplitude: Float = -0.05
+    /// The speed the wake reads as full strength at.
+    static let wakeFullSpeed: Float = 420
+    /// Splats a frame the wake and the whirlpool may share, so the rain and
+    /// everything else still fit inside the renderer's budget.
+    static let stirBudgetPerFrame = 12
+
+    /// A stroke that turns this far within `stirWindow` seconds is a stir.
+    static let stirTurn: Float = 1.5 * .pi
+    static let stirWindow: TimeInterval = 1.5
+    /// The whirl is wider than the circle the finger drew.
+    static let stirRadiusScale: CGFloat = 1.6
+    /// Turn at the rim in radians per second, and how much faster the middle
+    /// of the whirl goes round than the rim.
+    static let stirOmega: Float = 1.2
+    static let stirCoreGain: Float = 1.4
+    /// How hard the whirl pulls its pieces toward the middle, as a fraction
+    /// of the way round.
+    static let stirInward: Float = 0.14
+    static let stirHalfLife: Float = 4.0
+    static let stirSplatsPerFrame = 8
+    static let stirSplatRadius: Float = 4
+    static let stirSplatAmplitude: Float = -0.03
+    static let stirPushLight: Float = 1.0
+    static let stirPushHeavy: Float = 0.3
+
+    /// Two taps this close in time and place drop a stone in.
+    static let doubleTapSeconds: TimeInterval = 0.3
+    static let doubleTapDistance: CGFloat = 30
+    static let stoneRadius: Float = 24
+    static let stoneAmplitude: Float = -0.5
+
+    /// Two fingers this fast, this near the same heading, are a gust.
+    static let gustSpeed: Float = 200
+    static let gustAngle: Float = 20 * .pi / 180
+    static let gustSeconds: Float = 0.5
+    static let gustSplatsPerFrame = 9
+    static let gustRadius: Float = 26
+    static let gustAmplitude: Float = -0.05
+    /// Seconds before another gust may be called, so one swipe is one gust.
+    static let gustCooldown: TimeInterval = 0.8
+
+    /// Bubbles a second under a finger at full charge, and the charge below
+    /// which the press has not pushed hard enough to raise any.
+    static let bubbleRate: Float = 28
+    static let bubbleCharge: Float = 0.3
+}
+
+/// A whirl a finger stirred into the pond. Pieces caught in it are carried
+/// round and drawn slowly inward; it keeps turning after the hand goes.
+struct Vortex {
+    var centre: SIMD2<Float>
+    /// Points from the middle out to the rim.
+    var radius: Float
+    /// Signed radians per second at the rim.
+    var omega: Float
+    /// 1 while a finger stirs it, then it fades.
+    var strength: Float
 }
 
 /// Something floating on the pond that the water can move.
@@ -105,7 +172,7 @@ enum DebrisPhysics {
 
     /// One step for one piece. `sample` is what the water was doing under it
     /// last frame; `current` is the edge current in points per second.
-    static func integrate(_ d: Debris, sample: FieldSample?, current: SIMD2<Float>, dt: Float) {
+    static func integrate(_ d: Debris, sample: FieldSample?, current: SIMD2<Float>, vortex: Vortex? = nil, dt: Float) {
         var force = SIMD2<Float>(0, 0)
 
         if let s = sample {
@@ -135,6 +202,24 @@ enum DebrisPhysics {
         // as a pull toward that velocity rather than a force.
         let target = current * currentPush
         d.velocity += (target - d.velocity) * min(1, dt * 1.5)
+
+        // The whirl carries what is inside it round the middle, faster in
+        // than out, the way tea goes round a stirred cup, and draws it in a
+        // little as it goes.
+        if let v = vortex, v.strength > 0.01, v.radius > 1 {
+            let rel = SIMD2(Float(d.position.x), Float(d.position.y)) - v.centre
+            let r = simd_length(rel)
+            if r < v.radius, r > 0.5 {
+                let n = rel / r
+                let tangent = SIMD2(-n.y, n.x)
+                // Radians per second at this distance: the rim's rate plus a
+                // faster core, so the middle wraps the piece round quickly.
+                let omega = v.omega * (1 + GameTuning.stirCoreGain * (1 - r / v.radius))
+                let carry = tangent * omega * r - n * abs(omega) * r * GameTuning.stirInward
+                let push = (d.cls == .light ? GameTuning.stirPushLight : GameTuning.stirPushHeavy) * d.kind.currentPush
+                d.velocity += (carry * push * v.strength - d.velocity) * min(1, dt * 1.6)
+            }
+        }
 
         d.velocity += force / d.mass * dt
         d.velocity *= exp(-d.drag * dt)

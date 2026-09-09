@@ -49,6 +49,9 @@ final class SoundDirector {
     /// Held sounds (a swell building, a current running) keyed by touch.
     private var held: [Int: Voice] = [:]
     private var duck: Float = 1
+    /// A gust lifts the air above 1 for a moment; it eases back on its own.
+    private var airLift: Float = 1
+    private var airLiftUntil: TimeInterval = 0
     private var fadeTimer: Timer?
 
     private var enabled: Bool { Settings.shared.soundOn }
@@ -139,8 +142,9 @@ final class SoundDirector {
 
     /// Volumes ease toward their targets: ambience crossfades, holds swell.
     private func tick() {
+        if CACurrentMediaTime() > airLiftUntil { airLift += (1 - airLift) * 0.08 }
         for l in layers {
-            let want = l.target * duck
+            let want = l.target * duck * airLift
             l.player.volume += (want - l.player.volume) * 0.08
             if l.target == 0, l.player.volume < 0.005, l.player.isPlaying { l.player.stop() }
         }
@@ -257,6 +261,51 @@ final class SoundDirector {
     }
 
     func currentEnd(id: Int) { holdEnd(id: id) }
+
+    /// A finger cutting across open water: water rushing past it, up with
+    /// the speed of the hand.
+    func wakeBegin(id: Int) {
+        guard held[id] == nil else { return }
+        guard let v = play("amb_stream", gain: 0.0, pitch: 1.35, loop: true) else { return }
+        held[id] = v
+    }
+
+    func wakeLevel(id: Int, speed: Float) {
+        guard let v = held[id] else { return }
+        let want = 0.04 + 0.34 * min(1, speed / 600)
+        v.player.volume += (want - v.player.volume) * 0.2
+    }
+
+    func wakeEnd(id: Int) { holdEnd(id: id) }
+
+    /// A whirl turning in the pond: the same stream, slowed, low under
+    /// everything else for as long as it lasts.
+    func whirlBegin(id: Int) {
+        guard held[id] == nil else { return }
+        guard let v = play("amb_stream", gain: 0.0, pitch: 0.9, loop: true) else { return }
+        held[id] = v
+    }
+
+    func whirlLevel(id: Int, strength: Float) {
+        guard let v = held[id] else { return }
+        let want = 0.28 * min(1, max(0, strength))
+        v.player.volume += (want - v.player.volume) * 0.12
+    }
+
+    func whirlEnd(id: Int) { holdEnd(id: id) }
+
+    /// A gust crosses the pond: the reeds rustle and the air lifts with it.
+    func gust(x: Float) {
+        play("fx_reeds", x: x, gain: 0.75, pitch: 0.85)
+        play("fx_splash_big", x: x, gain: 0.3, pitch: 0.7)
+        liftAir(1.35, seconds: 1.4)
+    }
+
+    /// The season's air swells for a moment, then settles back.
+    private func liftAir(_ amount: Float, seconds: TimeInterval) {
+        airLift = amount
+        airLiftUntil = CACurrentMediaTime() + seconds
+    }
 
     /// A piece reaches the bank: a pebble tick that climbs as the pond clears.
     func clearNote(index: Int, of total: Int) {

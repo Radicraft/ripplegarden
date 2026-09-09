@@ -48,6 +48,10 @@ final class Garden {
     private var heron: Heron?
     private var nextHeronAt: TimeInterval = 0
     private var motes: [Mote] = []
+    /// Water thrown into the air by a big splash, on its way back down.
+    private var droplets: [Droplet] = []
+    /// Air rising from the bed under a finger that is pressing.
+    private var bubbles: [Bubble] = []
     /// The bowl depth at a point, 0...1 (1 deep), set by the controller.
     var depthAt: (CGPoint) -> Float = { _ in 1 }
     /// How much of the pond is still under ice, 0...1. The koi stay deep
@@ -75,6 +79,40 @@ final class Garden {
 
     /// Pixel size of a named texture, for keeping aspect; set by the controller.
     var textureSize: (String) -> CGSize = { _ in CGSize(width: 1, height: 1) }
+
+    // MARK: - Water thrown about
+
+    /// A splash big enough to throw water into the air. Every big splash in
+    /// the game comes through here, so drops always fly and land alike.
+    /// - Parameters:
+    ///   - point: where the water was struck.
+    ///   - power: 0 to 1, how big the splash was.
+    func burstDroplets(at point: CGPoint, power: Float) {
+        guard size.width > 0 else { return }
+        let p = min(max(power, 0), 1)
+        let n = max(3, Int(Float.random(in: 10...16) * (0.4 + 0.6 * p)))
+        guard droplets.count + n < 160 else { return }
+        for _ in 0..<n {
+            let angle = CGFloat.random(in: 0...(2 * .pi))
+            let out = CGFloat.random(in: 18...70) * CGFloat(0.5 + 0.5 * p)
+            let up = CGFloat.random(in: 60...140) * CGFloat(0.55 + 0.45 * p)
+            droplets.append(Droplet(at: point, velocity: CGVector(dx: cos(angle) * out, dy: sin(angle) * out * 0.75),
+                                    up: up, size: CGFloat.random(in: 4...7)))
+        }
+    }
+
+    /// One bubble of air leaves the bed under a pressing finger.
+    func addBubble(at point: CGPoint) {
+        guard size.width > 0, bubbles.count < 60 else { return }
+        let jitter = CGPoint(x: point.x + CGFloat.random(in: -14...14), y: point.y + CGFloat.random(in: -14...14))
+        bubbles.append(Bubble(at: jitter, size: CGFloat.random(in: 3...6)))
+    }
+
+    /// A gust crosses the pond: whatever is in the air goes with it.
+    func blow(direction: SIMD2<Float>, strength: Float) {
+        for p in petals { p.blow(dx: CGFloat(direction.x * strength), dy: CGFloat(direction.y * strength)) }
+        for d in droplets { d.blow(dx: CGFloat(direction.x * strength * 0.4), dy: CGFloat(direction.y * strength * 0.4)) }
+    }
 
     func configure(art: ArtSet, size: CGSize, bloomStage: Float) {
         self.art = art
@@ -267,8 +305,22 @@ final class Garden {
         frog?.update(dt: dt, now: now)
         if let f = frog, f.justJumped {
             splashes.append((f.position, 14, -0.30))
+            burstDroplets(at: f.position, power: 0.5)
             f.justJumped = false
         }
+
+        // Drops in the air fall back and each one lands as its own small ring.
+        for d in droplets {
+            d.update(dt: dt)
+            if d.landed { splashes.append((d.position, Float.random(in: 2.5...4.5), Float.random(in: -0.05 ... -0.025))) }
+        }
+        droplets.removeAll { $0.landed }
+        // Bubbles rise through the water and pop when they reach the surface.
+        for b in bubbles {
+            b.update(dt: dt)
+            if b.popped { splashes.append((b.position, Float(b.size) * 0.6, -0.02)) }
+        }
+        bubbles.removeAll { $0.popped }
         newt?.update(dt: dt, now: now, in: size)
         // (The heron's shadow was cut: a flat silhouette sliding over the pond
         // read as a decal, not a bird. It will come back only with wings that beat.)
@@ -351,6 +403,14 @@ final class Garden {
         for m in motes {
             out.append(Sprite("mote", at: m.position, size: CGSize(width: m.size, height: m.size),
                               mode: .submerged, alpha: m.alpha, depth: -m.z * 0.7, z: m.z))
+        }
+        // Air on its way up: paler and a little bigger the nearer the surface.
+        for b in bubbles {
+            let rise = 1 - b.depth
+            out.append(Sprite("mote", at: b.position, size: CGSize(width: b.size * CGFloat(0.7 + 0.5 * rise),
+                                                                   height: b.size * CGFloat(0.7 + 0.5 * rise)),
+                              mode: .submerged, alpha: 0.35 + 0.45 * rise, depth: b.depth,
+                              tint: [0.88, 0.95, 1.0, 1], z: -0.9 + 0.8 * rise))
         }
 
         if let n = newt {
@@ -477,6 +537,24 @@ final class Garden {
                    rotation: p.rotation, mode: p.landed ? .floater : .plain, alpha: p.alpha,
                    z: p.landed ? 0 : 0.5)
         }
+    }
+
+    /// Over the surface: drops of water still in the air. Each is drawn at
+    /// its height above the point it will land on, with a small dark mark on
+    /// the water beneath it so the eye reads the gap.
+    func dropletSprites() -> [Sprite] {
+        var out: [Sprite] = []
+        for d in droplets {
+            let lift = d.lift
+            if lift > 6 {
+                out.append(Sprite("mote", at: d.position, size: CGSize(width: d.size * 0.7, height: d.size * 0.5),
+                                  mode: .shadow, alpha: 0.25, z: 0.05))
+            }
+            out.append(Sprite("mote", at: CGPoint(x: d.position.x, y: d.position.y - lift),
+                              size: CGSize(width: d.size * 0.85, height: d.size * 1.15),
+                              alpha: 0.9, tint: [0.90, 0.96, 1.0, 1], z: 0.55 + Float(lift) * 0.002))
+        }
+        return out
     }
 
     /// The frame: branches at the top corners and the bank along the bottom.
@@ -871,6 +949,84 @@ final class FallingPetal {
         landed = true
         vx = 0
         vy = 0
+    }
+
+    /// The wind takes it. A petal already on the water stays put.
+    func blow(dx: CGFloat, dy: CGFloat) {
+        guard !landed else { return }
+        vx += dx
+        vy += dy
+    }
+}
+
+/// A drop of water thrown up by a splash. It travels across the pond and
+/// falls at the same time, and where it comes down it makes its own ring.
+final class Droplet {
+    private(set) var position: CGPoint
+    private var velocity: CGVector
+    /// Height above the surface in points, and the speed it is climbing at.
+    private(set) var lift: CGFloat = 0
+    private var liftVel: CGFloat
+    let size: CGFloat
+    private(set) var landed = false
+
+    /// Points per second squared. A drop thrown up at 100 is back in
+    /// half a second.
+    private static let gravity: CGFloat = 400
+
+    init(at p: CGPoint, velocity: CGVector, up: CGFloat, size: CGFloat) {
+        position = p
+        self.velocity = velocity
+        liftVel = up
+        self.size = size
+    }
+
+    func blow(dx: CGFloat, dy: CGFloat) {
+        velocity.dx += dx
+        velocity.dy += dy
+    }
+
+    func update(dt: Float) {
+        let d = CGFloat(dt)
+        position.x += velocity.dx * d
+        position.y += velocity.dy * d
+        liftVel -= Droplet.gravity * d
+        lift += liftVel * d
+        if lift <= 0 {
+            lift = 0
+            landed = true
+        }
+    }
+}
+
+/// A bubble of air leaving the bed and rising to the surface, where it pops.
+final class Bubble {
+    private(set) var position: CGPoint
+    /// 1 at the bed, 0 at the surface.
+    private(set) var depth: Float
+    private let rate: Float
+    let size: CGFloat
+    private var phase: Float
+    private(set) var popped = false
+
+    init(at p: CGPoint, size: CGFloat) {
+        position = p
+        depth = Float.random(in: 0.75...1.0)
+        rate = Float.random(in: 1.1...1.9)
+        self.size = size
+        phase = Float.random(in: 0...(2 * .pi))
+    }
+
+    func update(dt: Float) {
+        phase += dt * 5
+        depth -= rate * dt
+        // A bubble wanders a little as it climbs.
+        position.x += CGFloat(sin(phase) * 9) * CGFloat(dt)
+        position.y -= CGFloat(dt) * 4
+        if depth <= 0 {
+            depth = 0
+            popped = true
+        }
     }
 }
 

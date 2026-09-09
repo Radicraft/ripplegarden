@@ -105,8 +105,60 @@ final class GameController: ObservableObject, TouchInput {
     /// level changes, or a stale one would finish over the next level.
     private var celebration: Task<Void, Never>?
     private var edgeStrokes: [Int: EdgeStroke] = [:]
-    private var pondTouches: [Int: Float] = [:]
+
+    /// A finger on open water. Held still it charges a swell, which the
+    /// renderer owns; drawn across it lays a wake; drawn round it stirs a
+    /// whirl; two of them thrown the same way are a gust.
+    private struct PondTouch {
+        var held: Float = 0
+        var last: CGPoint          // world
+        var lastAt: TimeInterval
+        var speed: Float = 0
+        var isWake = false
+        var sinceSplat: CGFloat = 0
+        var heading: SIMD2<Float>?
+        /// The last stretch of the stroke: where it went and how far it
+        /// turned at each step, for reading a circle out of it.
+        var path: [(at: TimeInterval, point: CGPoint, turn: Float)] = []
+        var stirring = false
+        /// A finger spent on a gust: it lays no more wake behind it.
+        var spent = false
+    }
+    private var pondTouches: [Int: PondTouch] = [:]
     private var holdSounding: Set<Int> = []
+    private var wakeSounding: Set<Int> = []
+
+    /// A whirl stirred into the pond, turning on after the hand has gone.
+    private struct Whirl {
+        var centre: CGPoint
+        var radius: CGFloat
+        var omega: Float
+        var strength: Float
+        /// The finger still stirring it, if there is one.
+        var stirring: Int?
+        var phase: Float
+    }
+    private var whirl: Whirl?
+    /// The whirl's own voice. Negative, so it never meets a touch id.
+    private let whirlSoundID = -7
+
+    /// A gust of wind crossing the pond: a shallow line of water marching
+    /// along the direction the two fingers threw.
+    private struct Gust {
+        var direction: SIMD2<Float>
+        var origin: CGPoint
+        var length: CGFloat
+        var age: Float = 0
+    }
+    private var gust: Gust?
+    private var lastGustAt: TimeInterval = 0
+    /// The last plain tap, for reading a double tap out of two of them.
+    private var lastTap: (point: CGPoint, at: TimeInterval)?
+    /// Splats the gestures may lay this frame. Reset every frame so a wake,
+    /// a whirl or a gust never crowds out the rain and the garden.
+    private var stirBudget = 0
+    private var gustBudget = 0
+    private var bubbleAccumulator: Float = 0
 
     init(level: LevelSpec, style: WaterStyle) {
         self.level = level
@@ -150,6 +202,7 @@ final class GameController: ObservableObject, TouchInput {
         sound.stopAmbience()
         for id in Array(holdSounding) { sound.holdEnd(id: id) }
         holdSounding.removeAll()
+        hushGestures()
         renderer?.cancelAll()
     }
 
@@ -169,10 +222,12 @@ final class GameController: ObservableObject, TouchInput {
         renderer.style = style
         garden.textureSize = { [weak renderer] name in renderer?.textures.size(name) ?? CGSize(width: 1, height: 1) }
         renderer.onFrame = { [weak self] dt in self?.frame(dt: dt) }
-        renderer.onChargedRelease = { [weak self] charge in
+        renderer.onChargedRelease = { [weak self] charge, at in
             guard let self else { return }
             self.sound.holdRelease(charge: charge)
             self.haptics.holdRelease(charge: charge)
+            // A swell big enough throws water into the air.
+            if charge > 0.5 { self.garden.burstDroplets(at: at, power: charge) }
         }
         renderer.onSwellStart = { [weak self] in
             self?.sound.swell()
@@ -206,6 +261,8 @@ final class GameController: ObservableObject, TouchInput {
         pondTouches.removeAll()
         iceTouches.removeAll()
         holdSounding.removeAll()
+        hushGestures()
+        lastTap = nil
         debris = []
         probeOrder = []
 
@@ -313,6 +370,7 @@ final class GameController: ObservableObject, TouchInput {
         haptics.iceBreak(size: Float(min(1, total / 60000)))
         sound.iceBreak(x: Float(point.x / viewSize.width), size: Float(min(1, total / 60000)))
         renderer?.addSplat(at: point, in: viewSize, radius: 22, amplitude: -0.45)
+        garden.burstDroplets(at: point, power: 0.4 + 0.6 * Float(min(1, total / 60000)))
         // The shards themselves tip under the water; what floats afterwards
         // is a few pieces broken off the biggest of them, no two alike: a
         // different cut-out each, turned any way, from a sliver to a slab.
@@ -377,6 +435,11 @@ final class GameController: ObservableObject, TouchInput {
         if simd_length(current) > 0.01 {
             current *= exp(-dt * log(2) / GameTuning.currentHalfLife)
         }
+        // The gestures get their ration of splats back each frame.
+        stirBudget = GameTuning.stirBudgetPerFrame
+        gustBudget = GameTuning.gustSplatsPerFrame
+        let vortex = updateWhirl(dt: dt)
+        updateGust(dt: dt)
 
         // Rain: drops land all over the water, small rings by the dozen and
         // now and then a fatter one, so the surface never rests.
@@ -424,7 +487,7 @@ final class GameController: ObservableObject, TouchInput {
         }
         if phase == .playing {
             for d in debris where !d.cleared {
-                DebrisPhysics.integrate(d, sample: byID[d.id], current: current, dt: dt)
+                DebrisPhysics.integrate(d, sample: byID[d.id], current: current, vortex: vortex, dt: dt)
                 keepOffRocks(d)
                 if let m = d.meltsIn {
                     d.meltsIn = m - dt
@@ -512,16 +575,29 @@ final class GameController: ObservableObject, TouchInput {
         }
         renderer.setProbes(cells)
 
-        for (id, held) in pondTouches {
-            pondTouches[id] = held + dt
+        for (id, touch) in pondTouches {
+            var t = touch
+            t.held += dt
+            pondTouches[id] = t
+            // A finger that has become a wake is no longer pressing.
+            guard !t.isWake, !t.spent else { continue }
             let charge = renderer.charge(of: id)
-            if charge > 0.12, held + dt > GameTuning.holdSoundAfter, !holdSounding.contains(id) {
+            if charge > 0.12, t.held > GameTuning.holdSoundAfter, !holdSounding.contains(id) {
                 holdSounding.insert(id)
                 sound.holdBegin(id: id)
                 haptics.holdBegin()
             }
             if holdSounding.contains(id) { sound.holdLevel(id: id, charge: charge) }
+            // The press pushes air out of the bed: bubbles climb under it.
+            if charge > GameTuning.bubbleCharge {
+                bubbleAccumulator += GameTuning.bubbleRate * charge * dt
+                while bubbleAccumulator >= 1 {
+                    bubbleAccumulator -= 1
+                    garden.addBubble(at: t.last)
+                }
+            }
         }
+        if pondTouches.isEmpty { bubbleAccumulator = 0 }
 
         updateHints()
 
@@ -681,6 +757,8 @@ final class GameController: ObservableObject, TouchInput {
         renderer.solids = solids + (menuArt?.solids ?? [])
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
+        // Drops in the air are water, not paper: no cut edge under them.
+        over += garden.dropletSprites()
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
         over += garden.skySprites()
         // While a menu is up the pond's own things fade back so the ink reads.
@@ -850,9 +928,16 @@ final class GameController: ObservableObject, TouchInput {
         let dist = hypot(a.x - b.x, a.y - b.y)
         if !p.active {
             guard abs(dist - p.startDistance) > 18 else { return }
+            // Two fingers thrown the same way are a gust, and a gust must not
+            // be read as a pinch just because the hand spread a little.
+            if gustPair() != nil { return }
             p.active = true
             r.cancelAll()
-            for pid in p.ids { pondTouches.removeValue(forKey: pid); if holdSounding.remove(pid) != nil { sound.holdEnd(id: pid) } }
+            for pid in p.ids {
+                pondTouches.removeValue(forKey: pid)
+                if holdSounding.remove(pid) != nil { sound.holdEnd(id: pid) }
+                if wakeSounding.remove(pid) != nil { sound.wakeEnd(id: pid); haptics.slideEnd() }
+            }
         }
         let z = max(0.8, min(1.8, p.startZoom * Float(dist / max(1, p.startDistance))))
         zoomTarget = z
@@ -860,6 +945,261 @@ final class GameController: ObservableObject, TouchInput {
         let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
         centreTarget = p.anchorWorld - SIMD2(Float(mid.x - screenSize.width / 2), Float(mid.y - screenSize.height / 2)) / z
         pinch = p
+    }
+
+    // MARK: - Gestures on open water
+
+    /// Every gesture splat goes through here, so none of them can eat the
+    /// frame's whole splat budget.
+    @discardableResult
+    private func budgetedSplat(at p: CGPoint, radius: Float, amplitude: Float) -> Bool {
+        guard stirBudget > 0, viewSize != .zero else { return false }
+        stirBudget -= 1
+        renderer?.addSplat(at: p, in: viewSize, radius: radius, amplitude: amplitude)
+        return true
+    }
+
+    /// Stops any gesture voice still running, and forgets the whirl.
+    private func hushGestures() {
+        for id in Array(wakeSounding) { sound.wakeEnd(id: id) }
+        wakeSounding.removeAll()
+        if whirl != nil { sound.whirlEnd(id: whirlSoundID) }
+        whirl = nil
+        gust = nil
+        haptics.slideEnd()
+    }
+
+    /// A finger travelling over open water. Slowly it is still a hold and the
+    /// renderer keeps charging it; past `wakeSpeed` it cuts a wake instead,
+    /// and the hold is dropped. A stroke that keeps turning stirs a whirl.
+    private func strokeWater(id: Int, at point: CGPoint, in size: CGSize) {
+        guard var t = pondTouches[id], let renderer else { return }
+        let now = CACurrentMediaTime()
+        let step = hypot(point.x - t.last.x, point.y - t.last.y)
+        let dx = point.x - t.last.x, dy = point.y - t.last.y
+        let elapsedSince = max(1.0 / 240, now - t.lastAt)
+        let instant = Float(step / CGFloat(elapsedSince))
+        t.speed += (instant - t.speed) * 0.4
+
+        // The turning of the stroke, step by step, kept for as long as a
+        // circle may take to draw.
+        if step > 2 {
+            let dir = SIMD2(Float(dx), Float(dy)) / Float(step)
+            var turn: Float = 0
+            if let last = t.heading {
+                turn = atan2(last.x * dir.y - last.y * dir.x, simd_dot(last, dir))
+            }
+            t.heading = dir
+            t.path.append((now, point, turn))
+        }
+        t.path.removeAll { now - $0.at > GameTuning.stirWindow }
+
+        if !t.isWake, !t.spent, t.speed > GameTuning.wakeSpeed {
+            t.isWake = true
+            renderer.cancelHold(id: id)
+            if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
+            sound.wakeBegin(id: id)
+            wakeSounding.insert(id)
+            haptics.slideBegin()
+        }
+
+        if t.isWake, !t.spent {
+            let strength = min(1.6, max(0.35, t.speed / GameTuning.wakeFullSpeed))
+            sound.wakeLevel(id: id, speed: t.speed)
+            // Water is glassy under a moving finger; a whirl drags harder.
+            haptics.slide(speed: t.speed, grain: t.stirring ? 0.2 : 0.1, travel: Float(step))
+            t.sinceSplat += step
+            if t.sinceSplat >= GameTuning.wakeSpacing {
+                let n = min(Int(t.sinceSplat / GameTuning.wakeSpacing), 6)
+                t.sinceSplat -= CGFloat(n) * GameTuning.wakeSpacing
+                for i in 1...n {
+                    let f = CGFloat(i) / CGFloat(n)
+                    budgetedSplat(at: CGPoint(x: t.last.x + dx * f, y: t.last.y + dy * f),
+                                  radius: GameTuning.wakeRadius,
+                                  amplitude: GameTuning.wakeAmplitude * strength)
+                }
+                // Once every few points, not every frame: the fish scatter
+                // ahead of the hand without the camera jerking after it.
+                garden.startle(at: point, in: size)
+            }
+        } else if !t.spent {
+            // Still a slow drag: the renderer lays its own trail behind it.
+            renderer.touchMoved(id: id, to: point, in: size)
+        }
+
+        // A circle: the stroke has turned a turn and a half without stopping.
+        let turned = t.path.reduce(Float(0)) { $0 + $1.turn }
+        if abs(turned) >= GameTuning.stirTurn, t.path.count > 6 {
+            t.stirring = true
+            stir(id: id, path: t.path.map(\.point), turn: turned)
+        } else if t.stirring {
+            t.stirring = false
+            if whirl?.stirring == id { whirl?.stirring = nil }
+        }
+
+        t.last = point
+        t.lastAt = now
+        pondTouches[id] = t
+        checkGust()
+    }
+
+    /// The stroke went round: a whirl at the middle of the circle it drew,
+    /// turning the way the hand did, as wide as the circle and half again.
+    private func stir(id: Int, path: [CGPoint], turn: Float) {
+        guard !path.isEmpty else { return }
+        var sum = CGPoint.zero
+        for p in path { sum.x += p.x; sum.y += p.y }
+        let centre = CGPoint(x: sum.x / CGFloat(path.count), y: sum.y / CGFloat(path.count))
+        var mean: CGFloat = 0
+        for p in path { mean += hypot(p.x - centre.x, p.y - centre.y) }
+        let radius = max(30, mean / CGFloat(path.count)) * GameTuning.stirRadiusScale
+        let omega = GameTuning.stirOmega * (turn > 0 ? 1 : -1)
+        if var w = whirl, w.stirring == nil || w.stirring == id {
+            // The hand carries the whirl with it rather than starting a new one.
+            w.centre.x += (centre.x - w.centre.x) * 0.12
+            w.centre.y += (centre.y - w.centre.y) * 0.12
+            w.radius += (radius - w.radius) * 0.12
+            w.omega += (omega - w.omega) * 0.12
+            w.strength = 1
+            w.stirring = id
+            whirl = w
+            return
+        }
+        guard whirl == nil else { return }
+        whirl = Whirl(centre: centre, radius: radius, omega: omega, strength: 1, stirring: id,
+                      phase: Float.random(in: 0...(2 * .pi)))
+        sound.whirlBegin(id: whirlSoundID)
+    }
+
+    /// The whirl draws itself into the water as a spiral of small splats going
+    /// round, so what the pond shows is the sim's own answer to it. Returns
+    /// the term the floaters are integrated with.
+    private func updateWhirl(dt: Float) -> Vortex? {
+        guard var w = whirl else { return nil }
+        // The finger that was stirring it may have gone without a word (it
+        // became half a pinch); the whirl must still be let go.
+        if let id = w.stirring, pondTouches[id] == nil { w.stirring = nil }
+        if w.stirring == nil {
+            w.strength *= exp(-dt * log(2) / GameTuning.stirHalfLife)
+        }
+        guard w.strength > 0.03 else {
+            whirl = nil
+            sound.whirlEnd(id: whirlSoundID)
+            return nil
+        }
+        w.phase += w.omega * dt
+        let n = min(GameTuning.stirSplatsPerFrame, stirBudget)
+        if n > 1 {
+            for i in 0..<n {
+                // Spread across the whirl, the inner ones running ahead, so
+                // the ring of splats reads as a spiral being wound in.
+                let frac = 0.32 + 0.62 * Float(i) / Float(n - 1)
+                let angle = w.phase * (1 + 0.6 * (1 - frac)) + Float(i) * 2 * .pi / Float(n)
+                let r = w.radius * CGFloat(frac)
+                budgetedSplat(at: CGPoint(x: w.centre.x + cos(CGFloat(angle)) * r,
+                                          y: w.centre.y + sin(CGFloat(angle)) * r),
+                              radius: GameTuning.stirSplatRadius,
+                              amplitude: GameTuning.stirSplatAmplitude * w.strength)
+            }
+        }
+        sound.whirlLevel(id: whirlSoundID, strength: w.strength)
+        whirl = w
+        return Vortex(centre: SIMD2(Float(w.centre.x), Float(w.centre.y)),
+                      radius: Float(w.radius), omega: w.omega, strength: w.strength)
+    }
+
+    /// Two fingers thrown across the pond the same way are wind, not two
+    /// wakes and not a pinch: they must both be moving now, both quick, and
+    /// both pointing much the same way.
+    private func gustPair() -> (ids: [Int], direction: SIMD2<Float>)? {
+        let now = CACurrentMediaTime()
+        let fast = pondTouches.filter {
+            $0.value.speed > GameTuning.gustSpeed && $0.value.heading != nil && !$0.value.spent
+                && now - $0.value.lastAt < 0.12
+        }
+        guard fast.count >= 2 else { return nil }
+        let list = Array(fast)
+        for i in 0..<list.count {
+            for j in (i + 1)..<list.count {
+                guard let a = list[i].value.heading, let b = list[j].value.heading else { continue }
+                guard acos(max(-1, min(1, simd_dot(a, b)))) <= GameTuning.gustAngle else { continue }
+                return ([list[i].key, list[j].key], simd_normalize(a + b))
+            }
+        }
+        return nil
+    }
+
+    private func checkGust() {
+        guard gust == nil, pinch?.active != true,
+              CACurrentMediaTime() - lastGustAt > GameTuning.gustCooldown,
+              let pair = gustPair() else { return }
+        startGust(direction: pair.direction, ids: pair.ids)
+    }
+
+    /// The wind crosses the whole pond: a shallow line of water marching from
+    /// the upwind bank to the far one, and everything in the air goes with it.
+    private func startGust(direction: SIMD2<Float>, ids: [Int]) {
+        guard viewSize != .zero else { return }
+        lastGustAt = CACurrentMediaTime()
+        for id in ids {
+            if var t = pondTouches[id] {
+                t.spent = true
+                t.isWake = false
+                pondTouches[id] = t
+            }
+            renderer?.cancelHold(id: id)
+            if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
+            if wakeSounding.remove(id) != nil { sound.wakeEnd(id: id) }
+        }
+        haptics.slideEnd()
+        let w = Float(viewSize.width), h = Float(viewSize.height)
+        let centre = SIMD2(w / 2, h / 2)
+        let span = abs(direction.x) * w + abs(direction.y) * h
+        let start = centre - direction * (span / 2 + 40)
+        gust = Gust(direction: direction, origin: CGPoint(x: CGFloat(start.x), y: CGFloat(start.y)),
+                    length: CGFloat(span + 80))
+        // The two fingers spent themselves on the wind: they are not a pinch
+        // on the way, and the view must not jump after them.
+        pinch = nil
+        garden.blow(direction: direction, strength: 90)
+        sound.gust(x: 0.5)
+        haptics.swell()
+    }
+
+    private func updateGust(dt: Float) {
+        guard var g = gust, let renderer, viewSize != .zero else { return }
+        g.age += dt
+        let t = min(1, g.age / GameTuning.gustSeconds)
+        let along = g.length * CGFloat(t)
+        let mid = CGPoint(x: g.origin.x + CGFloat(g.direction.x) * along,
+                          y: g.origin.y + CGFloat(g.direction.y) * along)
+        let perp = SIMD2(-g.direction.y, g.direction.x)
+        let across = abs(perp.x) * Float(viewSize.width) + abs(perp.y) * Float(viewSize.height)
+        let n = GameTuning.gustSplatsPerFrame
+        // Softest at the two ends of the sweep, fullest in the middle of it.
+        let body = sin(Float.pi * t)
+        for i in 0..<n {
+            guard gustBudget > 0 else { break }
+            gustBudget -= 1
+            let f = (Float(i) / Float(n - 1) - 0.5) * across
+            renderer.addSplat(at: CGPoint(x: mid.x + CGFloat(perp.x * f), y: mid.y + CGFloat(perp.y * f)),
+                              in: viewSize, radius: GameTuning.gustRadius,
+                              amplitude: GameTuning.gustAmplitude * (0.55 + 0.45 * body))
+        }
+        gust = g.age >= GameTuning.gustSeconds ? nil : g
+    }
+
+    /// Two taps in one spot: a stone goes in. A deep splat, water thrown up,
+    /// and everything nearby feels it land.
+    private func dropStone(at point: CGPoint) {
+        guard viewSize != .zero else { return }
+        renderer?.addSplat(at: point, in: viewSize, radius: GameTuning.stoneRadius,
+                           amplitude: GameTuning.stoneAmplitude)
+        garden.burstDroplets(at: point, power: 1)
+        garden.startle(at: point, in: viewSize)
+        waveBitesIce(from: point)
+        sound.holdRelease(charge: 1)
+        haptics.holdRelease(charge: 1)
     }
 
     func touchBegan(id: Int, at screen: CGPoint, in screenBounds: CGSize, weight: Float) {
@@ -912,7 +1252,7 @@ final class GameController: ObservableObject, TouchInput {
             haptics.plop()
         }
         renderer?.touchDown(id: id, at: point, in: size, weight: weight)
-        pondTouches[id] = 0
+        pondTouches[id] = PondTouch(last: point, lastAt: CACurrentMediaTime())
         sound.tap(x: Float(point.x / size.width), weight: weight)
         haptics.tap(weight: weight)
     }
@@ -954,6 +1294,10 @@ final class GameController: ObservableObject, TouchInput {
             }
             stroke.last = screen
             edgeStrokes[id] = stroke
+            return
+        }
+        if pondTouches[id] != nil {
+            strokeWater(id: id, at: point, in: size)
             return
         }
         renderer?.touchMoved(id: id, to: point, in: size)
@@ -1036,7 +1380,27 @@ final class GameController: ObservableObject, TouchInput {
             }
             return
         }
-        pondTouches.removeValue(forKey: id)
+        if let t = pondTouches.removeValue(forKey: id) {
+            if wakeSounding.remove(id) != nil {
+                sound.wakeEnd(id: id)
+                haptics.slideEnd()
+            }
+            // The whirl keeps turning on its own once the hand has gone.
+            if whirl?.stirring == id { whirl?.stirring = nil }
+            if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
+            renderer?.touchUp(id: id)
+            // A plain tap, and one just landed beside it: a stone drops in.
+            let plain = !t.isWake && !t.spent && t.held < Float(GameTuning.doubleTapSeconds)
+            let now = CACurrentMediaTime()
+            if plain, let last = lastTap, now - last.at < GameTuning.doubleTapSeconds,
+               hypot(last.point.x - point.x, last.point.y - point.y) < GameTuning.doubleTapDistance {
+                lastTap = nil
+                dropStone(at: CGPoint(x: (last.point.x + point.x) / 2, y: (last.point.y + point.y) / 2))
+            } else {
+                lastTap = plain ? (point, now) : nil
+            }
+            return
+        }
         if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
         renderer?.touchUp(id: id)
     }

@@ -314,7 +314,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// `menuRect` names (xy centre, zw radii, in world uv).
     var menuDim: Float = 0
     var menuRect = SIMD4<Float>(0.5, 0.5, 0.35, 0.35)
-    var onChargedRelease: ((Float) -> Void)?
+    /// The charge that was let go, and the world point it was let go at.
+    var onChargedRelease: ((Float, CGPoint) -> Void)?
     var onSwellStart: (() -> Void)?
     var onFrame: ((Float) -> Void)?
     var depthPainter: ((Int, Int) -> [Float])?
@@ -600,10 +601,18 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         let rad = Tuning.tapRadius * (1.0 + Tuning.holdRadiusGrowth * hold.charge)
         let amp = Tuning.tapAmplitude * Tuning.holdReleaseKick * hold.charge
         addSplat(at: hold.position, in: hold.viewSize, radius: rad, amplitude: amp)
-        onChargedRelease?(hold.charge)
+        onChargedRelease?(hold.charge, hold.position)
     }
 
     func charge(of id: Int) -> Float { holds[id]?.charge ?? 0 }
+
+    /// Drops one hold with no release kick. A stroke that turned into a wake
+    /// is no longer a finger pressing on one spot.
+    func cancelHold(id: Int) {
+        holds.removeValue(forKey: id)
+        if holds.count < 2 { swellLast = nil; swellActive = false }
+    }
+
     func cancelAll() { holds.removeAll(); swellLast = nil; swellActive = false }
 
     func reset() {
