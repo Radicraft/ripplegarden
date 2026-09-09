@@ -182,9 +182,7 @@ struct SettingsSheet: View {
         NavigationStack {
             List {
                 Section {
-                    if !SoundDirector.killSwitch {
-                        Toggle("Sound", isOn: $settings.soundOn)
-                    }
+                    Toggle("Sound", isOn: $settings.soundOn)
                     Toggle("Haptics", isOn: $settings.hapticsOn)
                 }
                 Section {

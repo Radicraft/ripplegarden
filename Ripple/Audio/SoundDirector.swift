@@ -1,175 +1,264 @@
+import AVFoundation
 import Foundation
 import QuartzCore
 
-/// What the pond sounds like. The water is the instrument: every gesture has
-/// its own tone, and every tone sits in the season's pentatonic scale so
-/// nothing the player does can sound wrong.
+/// What the pond sounds like. Everything is a recording: the season's air
+/// as layered ambience underneath, and a sampled sound for every touch and
+/// event on the water, each one varied a little in pitch and panned to
+/// where it happened, so nothing repeats exactly. The owner's rule: natural
+/// backgrounds like a calm-app soundscape, never synthesised.
 final class SoundDirector {
 
-    private let synth = Synth()
-    private var root: Float = 523.25
-    private var holdVoices: [Int: (chord: [Int], base: Float)] = [:]
-    private var currentVoices: [Int: Int] = [:]
-    private var windVoice: Int?
-    private var birdTimer: Timer?
-    private var lastTapAt: TimeInterval = 0
-    private var lastTapNote = 0
+    struct Entry: Decodable {
+        let name: String
+        let file: String
+        let kind: String
+        var gain: Float = 1
+        var loop: Bool = false
+        var pitchVariation: Float = 0
+    }
 
-    /// Major pentatonic, two octaves.
-    private let scale: [Float] = [1, 9.0 / 8, 5.0 / 4, 3.0 / 2, 5.0 / 3, 2, 9.0 / 4, 5.0 / 2, 3, 10.0 / 3]
+    private let engine = AVAudioEngine()
+    private let ambienceMix = AVAudioMixerNode()
+    private let effectMix = AVAudioMixerNode()
+    private var buffers: [String: AVAudioPCMBuffer] = [:]
+    private var entries: [String: Entry] = [:]
+    private var started = false
+    private var loaded = false
 
-    /// Owner's call, 2026-09-08: no sounds at all for now. Nothing below runs
-    /// while this is on, and the audio engine is never started.
-    static let killSwitch = true
+    /// Two ambience layers so one can fade into the next.
+    private final class Layer {
+        let player = AVAudioPlayerNode()
+        var name = ""
+        var target: Float = 0
+    }
+    private var layers = [Layer(), Layer()]
+    private var front = 0
 
-    private var enabled: Bool { !SoundDirector.killSwitch && Settings.shared.soundOn }
+    /// A small pool of one-shot voices, each with its own varispeed for pitch.
+    private final class Voice {
+        let player = AVAudioPlayerNode()
+        let speed = AVAudioUnitVarispeed()
+        var busyUntil: TimeInterval = 0
+    }
+    private var voices: [Voice] = (0..<10).map { _ in Voice() }
+    /// Held sounds (a swell building, a current running) keyed by touch.
+    private var held: [Int: Voice] = [:]
+    private var duck: Float = 1
+    private var fadeTimer: Timer?
+
+    private var enabled: Bool { Settings.shared.soundOn }
+
+    // MARK: - Setup
+
+    private func setUp() {
+        guard !started else { return }
+        started = true
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.ambient, options: [.mixWithOthers])
+            try session.setActive(true)
+        } catch {}
+        engine.attach(ambienceMix)
+        engine.attach(effectMix)
+        engine.connect(ambienceMix, to: engine.mainMixerNode, format: nil)
+        engine.connect(effectMix, to: engine.mainMixerNode, format: nil)
+        for l in layers {
+            engine.attach(l.player)
+            engine.connect(l.player, to: ambienceMix, format: nil)
+            l.player.volume = 0
+        }
+        for v in voices {
+            engine.attach(v.player)
+            engine.attach(v.speed)
+            engine.connect(v.player, to: v.speed, format: nil)
+            engine.connect(v.speed, to: effectMix, format: nil)
+        }
+        loadManifest()
+        try? engine.start()
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in self?.tick() }
+    }
+
+    private func loadManifest() {
+        guard !loaded else { return }
+        loaded = true
+        let url = Bundle.main.url(forResource: "manifest", withExtension: "json")
+            ?? Bundle.main.url(forResource: "manifest", withExtension: "json", subdirectory: "Sounds")
+        guard let url, let data = try? Data(contentsOf: url),
+              let list = try? JSONDecoder().decode([Entry].self, from: data) else { return }
+        for e in list { entries[e.name] = e }
+    }
+
+    private func buffer(_ name: String) -> AVAudioPCMBuffer? {
+        if let b = buffers[name] { return b }
+        guard let e = entries[name] else { return nil }
+        let base = (e.file as NSString).deletingPathExtension
+        let ext = (e.file as NSString).pathExtension
+        guard let url = Bundle.main.url(forResource: base, withExtension: ext)
+                ?? Bundle.main.url(forResource: base, withExtension: ext, subdirectory: "Sounds"),
+              let file = try? AVAudioFile(forReading: url),
+              let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else { return nil }
+        try? file.read(into: buf)
+        buffers[name] = buf
+        return buf
+    }
+
+    /// Volumes ease toward their targets: ambience crossfades, holds swell.
+    private func tick() {
+        for l in layers {
+            let want = l.target * duck
+            l.player.volume += (want - l.player.volume) * 0.08
+            if l.target == 0, l.player.volume < 0.005, l.player.isPlaying { l.player.stop() }
+        }
+    }
 
     // MARK: - Ambience
 
-    func startAmbience(root: Float) {
-        self.root = root
+    /// The air of a season, or the stream on the map: one loop fading into
+    /// the last, with the same file left alone.
+    func startAmbience(named name: String) {
         guard enabled else { return }
-        synth.start()
-        if windVoice == nil {
-            windVoice = synth.wash(amp: 0.045, cutoffHz: 420, attack: 4.0, lfoRate: 0.07, lfoDepth: 0.8)
-        }
-        scheduleBird()
+        setUp()
+        guard layers[front].name != name else { return }
+        guard let buf = buffer(name), let e = entries[name] else { return }
+        layers[front].target = 0
+        front = 1 - front
+        let l = layers[front]
+        l.name = name
+        l.player.stop()
+        l.player.scheduleBuffer(buf, at: nil, options: [.loops])
+        l.player.volume = 0
+        l.target = e.gain
+        l.player.play()
+    }
+
+    func startAmbience(root: Float) {
+        // Kept for older call sites: the season decides.
+        startAmbience(named: "amb_spring")
     }
 
     func stopAmbience() {
-        if let w = windVoice { synth.release(id: w, over: 2); windVoice = nil }
-        birdTimer?.invalidate()
-        birdTimer = nil
+        for l in layers { l.target = 0; l.name = "" }
     }
 
-    private func scheduleBird() {
-        birdTimer?.invalidate()
-        birdTimer = Timer.scheduledTimer(withTimeInterval: Double.random(in: 7...16), repeats: false) { [weak self] _ in
-            self?.bird()
-            self?.scheduleBird()
-        }
-    }
+    /// Cards on the water push the air back a little.
+    func duck(_ on: Bool) { duck = on ? 0.55 : 1 }
 
-    /// Two or three quick rising chirps, far away.
-    private func bird() {
-        guard enabled else { return }
-        let base = Float.random(in: 2400...3600)
-        let n = Int.random(in: 2...3)
-        for i in 0..<n {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.19) { [synth] in
-                synth.sweep(from: base * 0.85, to: base * Float.random(in: 1.05...1.25),
-                            amp: 0.035, decay: 0.16, glide: 0.07)
-            }
-        }
-    }
+    // MARK: - Effects
 
-    // MARK: - Gestures
-
-    /// Where the finger lands picks the note: left is low, right is high.
-    func tap(x: Float, weight: Float) {
-        guard enabled else { return }
-        synth.start()
-        let idx = max(0, min(scale.count - 3, Int(x * Float(scale.count - 2))))
+    /// One sound, once. `x` is 0...1 across the pond for the pan; `pitch` is
+    /// a multiplier on top of the file's own variation; nil leaves it be.
+    @discardableResult
+    private func play(_ name: String, x: Float? = nil, gain: Float = 1, pitch: Float = 1, loop: Bool = false) -> Voice? {
+        guard enabled else { return nil }
+        setUp()
+        guard let buf = buffer(name), let e = entries[name] else { return nil }
         let now = CACurrentMediaTime()
-        // Quick repeated taps walk up the scale rather than repeating.
-        let note = (now - lastTapAt < 0.5 && idx == lastTapNote) ? min(scale.count - 1, idx + 1) : idx
-        lastTapAt = now
-        lastTapNote = idx
-        let freq = root * scale[note] * (weight > 0.6 ? 0.5 : 1)
-        synth.pluck(freq: freq, amp: 0.30 + 0.15 * weight, decay: 0.55,
-                    partials: [(1, 1), (2.01, 0.28), (3.0, 0.10), (4.2, 0.04)])
-        synth.burst(amp: 0.06, cutoffHz: 1800, decay: 0.05)
+        guard let v = voices.first(where: { $0.busyUntil <= now && held.values.contains { $0 === $0 } == false || $0.busyUntil <= now })
+                ?? voices.min(by: { $0.busyUntil < $1.busyUntil }) else { return nil }
+        if held.values.contains(where: { $0 === v }) { return nil }
+        v.player.stop()
+        let vary = 1 + Float.random(in: -e.pitchVariation...e.pitchVariation)
+        v.speed.rate = max(0.5, min(2, pitch * vary))
+        v.player.volume = e.gain * gain
+        v.player.pan = x.map { max(-0.7, min(0.7, ($0 - 0.5) * 1.4)) } ?? 0
+        v.player.scheduleBuffer(buf, at: nil, options: loop ? [.loops] : [])
+        v.player.play()
+        let seconds = Double(buf.frameLength) / buf.format.sampleRate / Double(v.speed.rate)
+        v.busyUntil = loop ? .greatestFiniteMagnitude : now + seconds
+        return v
     }
 
-    /// A held finger opens a chord that swells with the charge.
+    private func pick(_ base: String, _ n: Int) -> String {
+        let k = Int.random(in: 1...n)
+        return entries["\(base)_\(k)"] != nil ? "\(base)_\(k)" : base
+    }
+
+    /// A drop of water: heavier fingers make a deeper plop.
+    func tap(x: Float, weight: Float) {
+        play(pick("fx_drop", 3), x: x, gain: 0.7 + 0.3 * weight, pitch: 1.15 - 0.35 * weight)
+    }
+
+    /// A swell building under a still finger: rushing water rising with the charge.
     func holdBegin(id: Int) {
-        guard enabled else { return }
-        let base = root * 0.5
-        let chord = [
-            synth.sustain(freq: base, amp: 0.0, attack: 0.6, partials: [(1, 1), (2, 0.2)]),
-            synth.sustain(freq: base * 1.5, amp: 0.0, attack: 0.8, partials: [(1, 0.8), (2, 0.15)]),
-            synth.sustain(freq: base * 2, amp: 0.0, attack: 1.0, partials: [(1, 0.6), (3, 0.05)]),
-        ]
-        holdVoices[id] = (chord, base)
+        guard let v = play("amb_stream", gain: 0.0, pitch: 0.7, loop: true) else { return }
+        held[id] = v
     }
 
     func holdLevel(id: Int, charge: Float) {
-        guard let h = holdVoices[id] else { return }
-        let level = 0.05 + 0.18 * charge
-        for (i, v) in h.chord.enumerated() {
-            synth.set(id: v, targetAmp: level * (1 - Float(i) * 0.2))
-        }
+        guard let v = held[id] else { return }
+        v.player.volume += ((0.05 + 0.5 * charge) - v.player.volume) * 0.15
     }
 
-    /// The finger lifted before or after a charge; the chord fades.
     func holdEnd(id: Int) {
-        guard let h = holdVoices.removeValue(forKey: id) else { return }
-        for v in h.chord { synth.release(id: v, over: 0.5) }
+        guard let v = held.removeValue(forKey: id) else { return }
+        v.player.stop()
+        v.busyUntil = 0
     }
 
-    /// A charged release: a bell whose size matches the swell.
+    /// The swell leaves the finger: a splash sized by the charge.
     func holdRelease(charge: Float) {
-        guard enabled else { return }
-        let freq = root * (charge > 0.6 ? 0.5 : 1)
-        let bell: [(ratio: Float, gain: Float)] = [(1, 1), (2.0, 0.5), (2.76, 0.28), (4.1, 0.14), (5.4, 0.06)]
-        synth.pluck(freq: freq, amp: 0.22 + 0.28 * charge, decay: 1.6 + 1.6 * charge, partials: bell, attack: 0.01)
-        synth.pluck(freq: freq * 1.5, amp: 0.10 * charge, decay: 1.4, partials: bell, attack: 0.02)
+        if charge > 0.55 { play("fx_splash_big", gain: 0.5 + 0.5 * charge, pitch: 1.1 - 0.25 * charge) }
+        else { play(pick("fx_splash_small", 3), gain: 0.6 + 0.4 * charge) }
     }
 
-    /// Two fingers sweeping: a broad low wash.
+    /// Two fingers sweeping: a broad wash.
     func swell() {
-        guard enabled else { return }
-        synth.burst(amp: 0.22, cutoffHz: 380, decay: 0.9)
-        synth.pluck(freq: root * 0.25, amp: 0.16, decay: 1.2, partials: [(1, 1), (1.5, 0.3)], attack: 0.08)
+        play("fx_splash_big", gain: 0.55, pitch: 0.85)
     }
 
-    /// A stroke along the bank: a thin sustained hiss that follows the hand.
+    /// A stroke along the bank: water running, louder as the current builds.
     func currentBegin(id: Int) {
-        guard enabled else { return }
-        currentVoices[id] = synth.wash(amp: 0.02, cutoffHz: 900, attack: 0.4)
+        guard let v = play("amb_stream", gain: 0.0, pitch: 1.15, loop: true) else { return }
+        held[id] = v
     }
 
     func currentLevel(id: Int, strength: Float) {
-        guard let v = currentVoices[id] else { return }
-        synth.set(id: v, targetAmp: 0.02 + 0.06 * strength)
+        guard let v = held[id] else { return }
+        v.player.volume += ((0.04 + 0.3 * strength) - v.player.volume) * 0.2
     }
 
-    func currentEnd(id: Int) {
-        guard let v = currentVoices.removeValue(forKey: id) else { return }
-        synth.release(id: v, over: 1.2)
-    }
+    func currentEnd(id: Int) { holdEnd(id: id) }
 
-    // MARK: - Events
-
-    /// Each cleared piece climbs the scale; the last one lands on the octave.
+    /// A piece reaches the bank: a pebble tick that climbs as the pond clears.
     func clearNote(index: Int, of total: Int) {
-        guard enabled else { return }
-        let step = min(scale.count - 1, Int(Float(index) / Float(max(1, total)) * 6))
-        let freq = root * 2 * scale[step]
-        synth.pluck(freq: freq, amp: 0.20, decay: 1.1,
-                    partials: [(1, 1), (2, 0.2), (3, 0.05)], attack: 0.006)
-        synth.pluck(freq: freq * 2, amp: 0.05, decay: 0.7, attack: 0.006)
+        let t = Float(index) / Float(max(1, total))
+        play("fx_pebbles", gain: 0.5, pitch: 0.9 + 0.35 * t)
     }
 
-    /// The koi dives.
-    func plop() {
-        guard enabled else { return }
-        synth.sweep(from: root * 0.6, to: root * 0.28, amp: 0.25, decay: 0.16, glide: 0.09)
-        synth.burst(amp: 0.08, cutoffHz: 1200, decay: 0.08)
-    }
+    func plop() { play(pick("fx_splash_small", 3), gain: 0.7) }
 
-    /// The pond is clear: a slow rising arpeggio with a long tail.
     func complete() {
-        guard enabled else { return }
-        let bell: [(ratio: Float, gain: Float)] = [(1, 1), (2.0, 0.4), (2.76, 0.22), (4.1, 0.1)]
-        let notes: [Float] = [1, 5.0 / 4, 3.0 / 2, 2, 5.0 / 2]
-        for (i, n) in notes.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.22) { [synth, root] in
-                synth.pluck(freq: root * n, amp: 0.22, decay: 3.2, partials: bell, attack: 0.015)
-            }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [synth] in
-            synth.burst(amp: 0.05, cutoffHz: 2400, decay: 1.8)
+        play("fx_chime_complete", gain: 0.9)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.play("fx_bird_flutter", gain: 0.5) }
+    }
+
+    // MARK: - Things on the water
+
+    func iceCrack(x: Float) { play(pick("fx_ice_crack", 3), x: x, gain: 0.9) }
+
+    func iceBreak(x: Float, size: Float) {
+        play(pick("fx_ice_break", 2), x: x, gain: 0.6 + 0.4 * size, pitch: 1.1 - 0.3 * size)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            self?.play(self?.pick("fx_splash_small", 3) ?? "fx_splash_small", x: x, gain: 0.5)
         }
     }
+
+    func iceSlide(x: Float, speed: Float) {
+        // A slide over frost is a faint rustle; the reed rustle at a low rate does it.
+        guard speed > 120 else { return }
+        play("fx_reeds", x: x, gain: min(0.35, speed / 2000), pitch: 0.8)
+    }
+
+    func can(x: Float) { play(pick("fx_can", 2), x: x, gain: 0.8) }
+    func bottle(x: Float) { play("fx_bottle", x: x, gain: 0.8) }
+    func wood(x: Float) { play("fx_wood_knock", x: x, gain: 0.7) }
+    func bell(x: Float) { play("fx_bell", x: x, gain: 0.9) }
+    func bud(x: Float) { play("fx_bird_flutter", x: x, gain: 0.45, pitch: 1.2) }
+    func frog(x: Float) { play("fx_frog_jump", x: x, gain: 0.7) }
+    func reeds(x: Float) { play("fx_reeds", x: x, gain: 0.5) }
+    /// The camera drops into a pool on the map.
+    func dive() { play("fx_splash_big", gain: 0.9, pitch: 0.9) }
+    /// A card lands on the water.
+    func paper() { play("fx_paper", gain: 0.6) }
 }

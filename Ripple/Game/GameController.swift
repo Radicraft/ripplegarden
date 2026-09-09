@@ -166,7 +166,7 @@ final class GameController: ObservableObject, TouchInput {
             try? await Task.sleep(for: .seconds(2.6))
             self?.showTitle = false
         }
-        sound.startAmbience(root: season.rootNote)
+        sound.startAmbience(named: "amb_\(season.id)")
     }
 
     private func place() {

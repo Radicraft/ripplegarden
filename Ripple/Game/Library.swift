@@ -179,7 +179,7 @@ struct Shape {
 }
 
 enum Hint: String {
-    case tap, hold, swell, current, bounce, ice, target, twin
+    case tap, hold, swell, current, bounce, ice, target, twin, lens, order
 
     var text: String {
         switch self {
@@ -191,6 +191,8 @@ enum Hint: String {
         case .bounce: return "Ripples bounce off the stones. A curve of them throws a ripple back."
         case .target: return "Something sleeps among the pads. Only a wave through the gap will wake it."
         case .twin: return "Two ripples arriving together lift what one cannot."
+        case .lens: return "Shallow water slows a ripple and bends it. A wave that crosses a sandbank still arrives tall."
+        case .order: return "No water passes a log or a can. Move what is in the way first."
         }
     }
 }
@@ -380,6 +382,136 @@ enum Library {
 
     static let designed: [String: LevelSpec] = {
         var out: [String: LevelSpec] = [:]
+        winterLevels(into: &out)
+        springLevels(into: &out)
+        summerLevels(into: &out)
+        autumnLevels(into: &out)
+        return out
+    }()
+
+    /// Light pieces from a list of places, each a different cut-out, each
+    /// turned its own way.
+    private static func strewn(_ points: [CGPoint], from first: Int = 0, kind: DebrisKind = .natural) -> [DebrisPlacement] {
+        points.enumerated().map { i, p in
+            DebrisPlacement(cls: .light, at: p, variant: first + i, scale: 1,
+                            rotation: Float(i) * 0.83, kind: kind)
+        }
+    }
+
+    // MARK: Winter
+
+    private static func winterLevels(into out: inout [String: LevelSpec]) {
+
+        // Winter one, "the sheet": the pond under one lid of ice. A first tap
+        // only cracks a ring; a second inside that ring takes it out, and ice
+        // away from open water is solid, so the hole has to be worked outward
+        // until the sheet is gone.
+        do {
+            out["winter-1"] = LevelSpec(id: "winter-1", seasonID: "winter", index: 1, title: "Winter, one",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.5), mosaicRadius: 0, debris: [],
+                                        hint: .ice, bloomTarget: 0.5, frozen: true)
+        }
+
+        // Winter two, "under the ice": a can lies frozen in under the sheet.
+        // The ice has to be opened over it first, and then a ring passes the
+        // can by; only a held swell shifts it.
+        do {
+            let snow = [CGPoint(x: 0.28, y: 0.30), CGPoint(x: 0.70, y: 0.32),
+                        CGPoint(x: 0.32, y: 0.66), CGPoint(x: 0.68, y: 0.62)]
+            var debris = strewn(snow)
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.50, y: 0.46),
+                                          variant: 0, scale: 1, rotation: 0.7, kind: .can))
+            out["winter-2"] = LevelSpec(id: "winter-2", seasonID: "winter", index: 2, title: "Winter, two",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.46), mosaicRadius: 0, debris: debris,
+                                        hint: .hold, bloomTarget: 1.0, frozen: true)
+        }
+
+        // Winter three, "the drift": snow packed into one drift under the ice,
+        // and a crisp packet beside it. Single taps only knock the drift into
+        // itself; two fingers move the whole of it at once.
+        do {
+            let drift = [CGPoint(x: 0.36, y: 0.26), CGPoint(x: 0.45, y: 0.24), CGPoint(x: 0.40, y: 0.32),
+                         CGPoint(x: 0.48, y: 0.33), CGPoint(x: 0.33, y: 0.35), CGPoint(x: 0.52, y: 0.27),
+                         CGPoint(x: 0.43, y: 0.39)]
+            var debris = strewn(drift)
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.64, y: 0.58),
+                                          variant: 0, scale: 1, rotation: 0.5, kind: .packet))
+            out["winter-3"] = LevelSpec(id: "winter-3", seasonID: "winter", index: 3, title: "Winter, three",
+                                        mosaicCentre: CGPoint(x: 0.44, y: 0.32), mosaicRadius: 0, debris: debris,
+                                        hint: .swell, bloomTarget: 1.5, frozen: true)
+        }
+
+        // Winter four, "the floe": a slab of ice wedged in the gap between two
+        // stones. Taps from opposite sides cancel each other and it sits
+        // there; two struck together on the same side drive it through.
+        do {
+            let stones = [Shape(centre: CGPoint(x: 0.30, y: 0.42), radius: 0.042),
+                          Shape(centre: CGPoint(x: 0.70, y: 0.42), radius: 0.042)]
+            let snow = [CGPoint(x: 0.22, y: 0.60), CGPoint(x: 0.76, y: 0.64), CGPoint(x: 0.44, y: 0.76),
+                        CGPoint(x: 0.58, y: 0.22), CGPoint(x: 0.32, y: 0.20)]
+            var debris = strewn(snow)
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.50, y: 0.42),
+                                          variant: 0, scale: 1, rotation: 0.15))
+            out["winter-4"] = LevelSpec(id: "winter-4", seasonID: "winter", index: 4, title: "Winter, four",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.42), mosaicRadius: 0, debris: debris,
+                                        rocks: stones, hint: .twin, bloomTarget: 2.0)
+        }
+
+        // Winter five, "meltwater": a sandbar right across the pond. A ripple
+        // shelves on it and arrives at the far snow too flat to carry
+        // anything; a current drawn along the bank crosses the bar unbothered,
+        // and the bag goes wherever the current goes.
+        do {
+            let bar = [Shape(centre: CGPoint(x: 0.32, y: 0.52), radius: 0.12),
+                       Shape(centre: CGPoint(x: 0.68, y: 0.52), radius: 0.12)]
+            let snow = [CGPoint(x: 0.26, y: 0.24), CGPoint(x: 0.40, y: 0.19), CGPoint(x: 0.62, y: 0.20),
+                        CGPoint(x: 0.74, y: 0.26), CGPoint(x: 0.30, y: 0.78), CGPoint(x: 0.70, y: 0.76)]
+            var debris = strewn(snow)
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.50, y: 0.26),
+                                          variant: 0, scale: 1, rotation: 0.9, kind: .bag))
+            out["winter-5"] = LevelSpec(id: "winter-5", seasonID: "winter", index: 5, title: "Winter, five",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.5), mosaicRadius: 0, debris: debris,
+                                        shallows: bar, hint: .current, bloomTarget: 2.5)
+        }
+
+        // Winter six, "the thaw": a bell hangs under a curve of stones. A tap
+        // beside it passes just under the note it needs; the same ripple sent
+        // out at the curve comes back doubled and rings it. The can and the
+        // bottle are the winter's leftovers.
+        do {
+            let bell = CGPoint(x: 0.50, y: 0.36)
+            let arc = ring(5, centre: bell, radius: 0.15, from: -2.6, to: -0.54).map { Shape(centre: $0, radius: 0.032) }
+            let snow = [CGPoint(x: 0.20, y: 0.40), CGPoint(x: 0.80, y: 0.44), CGPoint(x: 0.44, y: 0.80),
+                        CGPoint(x: 0.62, y: 0.76), CGPoint(x: 0.24, y: 0.74)]
+            var debris = strewn(snow)
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.30, y: 0.62),
+                                          variant: 0, scale: 1, rotation: 0.3, kind: .can))
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.70, y: 0.66),
+                                          variant: 0, scale: 1, rotation: 1.2, kind: .bottle))
+            out["winter-6"] = LevelSpec(id: "winter-6", seasonID: "winter", index: 6, title: "Winter, six",
+                                        mosaicCentre: bell, mosaicRadius: 0, debris: debris,
+                                        rocks: arc,
+                                        targets: [TargetSpec(kind: .bell, at: bell, threshold: 0.044)],
+                                        hint: .bounce, bloomTarget: 3.0)
+        }
+    }
+
+    // MARK: Spring
+
+    private static func springLevels(into out: inout [String: LevelSpec]) {
+
+        // Spring one, "first blossom": petals ring a mossy stone in the middle
+        // of the pond. The one place a tap would clear the lot is the stone
+        // itself, which takes no ripple at all, so each petal wants a tap on
+        // its pond side to send it out to the bank.
+        do {
+            let stone = CGPoint(x: 0.50, y: 0.46)
+            let petals = ring(7, centre: stone, radius: 0.115, from: 0, to: 2 * .pi * 6 / 7)
+            out["spring-1"] = LevelSpec(id: "spring-1", seasonID: "spring", index: 1, title: "Spring, one",
+                                        mosaicCentre: stone, mosaicRadius: 0, debris: strewn(petals),
+                                        rocks: [Shape(centre: stone, radius: 0.05)],
+                                        hint: .tap, bloomTarget: 0.5)
+        }
 
         // Spring two, "the stone arc": a can lies at the centre of a curve
         // of stones. A ripple sent out from near the can comes back off the
@@ -415,6 +547,85 @@ enum Library {
                                         hint: .twin, bloomTarget: 1.5)
         }
 
+        // Spring four, "the raft": blossom packed so tight that a tap dropped
+        // into the middle of it sends half the raft out and half of it deeper
+        // into the pond. Two fingers take the whole raft one way.
+        do {
+            let raft = [CGPoint(x: 0.370, y: 0.340), CGPoint(x: 0.440, y: 0.340), CGPoint(x: 0.510, y: 0.340),
+                        CGPoint(x: 0.335, y: 0.375), CGPoint(x: 0.405, y: 0.375), CGPoint(x: 0.475, y: 0.375),
+                        CGPoint(x: 0.545, y: 0.375), CGPoint(x: 0.370, y: 0.410), CGPoint(x: 0.440, y: 0.410),
+                        CGPoint(x: 0.510, y: 0.410)]
+            out["spring-4"] = LevelSpec(id: "spring-4", seasonID: "spring", index: 4, title: "Spring, four",
+                                        mosaicCentre: CGPoint(x: 0.44, y: 0.375), mosaicRadius: 0, debris: strewn(raft),
+                                        rocks: [Shape(centre: CGPoint(x: 0.32, y: 0.56), radius: 0.055)],
+                                        hint: .swell, bloomTarget: 2.0)
+        }
+
+        // Spring five, "the near bank": stones stand between every piece and
+        // the bank it is nearest to, so a ripple that would carry one ashore
+        // bounces off the stone and pushes it back out. A current drawn along
+        // the pond slides everything past them to the ends instead, and the
+        // bag goes furthest of all.
+        do {
+            let stones = [Shape(centre: CGPoint(x: 0.18, y: 0.36), radius: 0.05),
+                          Shape(centre: CGPoint(x: 0.18, y: 0.60), radius: 0.05),
+                          Shape(centre: CGPoint(x: 0.82, y: 0.42), radius: 0.05),
+                          Shape(centre: CGPoint(x: 0.82, y: 0.66), radius: 0.05)]
+            let petals = [CGPoint(x: 0.35, y: 0.34), CGPoint(x: 0.34, y: 0.62), CGPoint(x: 0.66, y: 0.40),
+                          CGPoint(x: 0.65, y: 0.58), CGPoint(x: 0.63, y: 0.74)]
+            var debris = strewn(petals)
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.36, y: 0.48),
+                                          variant: 0, scale: 1, rotation: 0.6, kind: .bag))
+            out["spring-5"] = LevelSpec(id: "spring-5", seasonID: "spring", index: 5, title: "Spring, five",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.5), mosaicRadius: 0, debris: debris,
+                                        rocks: stones, hint: .current, bloomTarget: 2.5)
+        }
+
+        // Spring six, "the bud in the pads": a bud closed inside a ring of
+        // pads with one gap facing down the pond, and a curve of stones set
+        // below it. Taps on the pads do nothing and the water near the gap is
+        // too little; a ripple thrown out at the curve comes back gathered on
+        // the bud and opens it.
+        do {
+            let bud = CGPoint(x: 0.50, y: 0.34)
+            var pads = ring(6, centre: bud, radius: 0.070, from: -2.42, to: 2.42).map { Shape(centre: $0, radius: 0.027) }
+            pads.removeAll { abs($0.centre.x - bud.x) < 0.02 && $0.centre.y > bud.y }
+            let arc = ring(5, centre: bud, radius: 0.17, from: 0.5, to: 2.64).map { Shape(centre: $0, radius: 0.032) }
+            let petals = [CGPoint(x: 0.22, y: 0.62), CGPoint(x: 0.34, y: 0.78), CGPoint(x: 0.56, y: 0.82),
+                          CGPoint(x: 0.26, y: 0.24), CGPoint(x: 0.74, y: 0.24), CGPoint(x: 0.14, y: 0.50)]
+            var debris = strewn(petals)
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.74, y: 0.68),
+                                          variant: 0, scale: 1, rotation: 0.5, kind: .can))
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.78, y: 0.56),
+                                          variant: 0, scale: 1, rotation: 1.4, kind: .bottle))
+            out["spring-6"] = LevelSpec(id: "spring-6", seasonID: "spring", index: 6, title: "Spring, six",
+                                        mosaicCentre: bud, mosaicRadius: 0, debris: debris,
+                                        rocks: arc, shallows: [], pads: pads,
+                                        targets: [TargetSpec(kind: .bud, at: bud, threshold: 0.034)],
+                                        hint: .bounce, bloomTarget: 3.0)
+        }
+    }
+
+    // MARK: Summer
+
+    private static func summerLevels(into out: inout [String: LevelSpec]) {
+
+        // Summer one, "duckweed": pads lie over the water where the hand
+        // wants to go, and a finger on a pad presses a leaf, not the pond.
+        // The weed has to be moved from the lanes between them.
+        do {
+            let pads = [Shape(centre: CGPoint(x: 0.34, y: 0.38), radius: 0.033),
+                        Shape(centre: CGPoint(x: 0.62, y: 0.34), radius: 0.033),
+                        Shape(centre: CGPoint(x: 0.40, y: 0.62), radius: 0.030),
+                        Shape(centre: CGPoint(x: 0.66, y: 0.60), radius: 0.033),
+                        Shape(centre: CGPoint(x: 0.50, y: 0.50), radius: 0.036)]
+            let weed = [CGPoint(x: 0.50, y: 0.36), CGPoint(x: 0.34, y: 0.52), CGPoint(x: 0.64, y: 0.48),
+                        CGPoint(x: 0.50, y: 0.66), CGPoint(x: 0.24, y: 0.30), CGPoint(x: 0.76, y: 0.44)]
+            out["summer-1"] = LevelSpec(id: "summer-1", seasonID: "summer", index: 1, title: "Summer, one",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.5), mosaicRadius: 0, debris: strewn(weed),
+                                        pads: pads, hint: .tap, bloomTarget: 0.5)
+        }
+
         // Summer two, "the lens": a lily bud sleeps inside a ring of pads
         // with one gap facing down the pond. Below the gap a sandbank
         // shallows the water; a ripple crossing it slows in the middle and
@@ -435,8 +646,208 @@ enum Library {
                                         targets: [TargetSpec(kind: .bud, at: c, threshold: 0.036)],
                                         hint: .target, bloomTarget: 1.0)
         }
-        return out
-    }()
+
+        // Summer three, "glass": a can among three bottles. The swell that is
+        // big enough to move the can throws every bottle across the pond, and
+        // a bottle skates on anything, so the bottles want sending ashore
+        // first and the can lifting after.
+        do {
+            let weed = [CGPoint(x: 0.22, y: 0.66), CGPoint(x: 0.78, y: 0.30), CGPoint(x: 0.66, y: 0.74)]
+            var debris = strewn(weed)
+            for (i, p) in [CGPoint(x: 0.36, y: 0.36), CGPoint(x: 0.62, y: 0.52), CGPoint(x: 0.40, y: 0.58)].enumerated() {
+                debris.append(DebrisPlacement(cls: .light, at: p, variant: 0, scale: 1,
+                                              rotation: Float(i) * 1.1, kind: .bottle))
+            }
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.50, y: 0.44),
+                                          variant: 0, scale: 1, rotation: 0.25, kind: .can))
+            out["summer-3"] = LevelSpec(id: "summer-3", seasonID: "summer", index: 3, title: "Summer, three",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.46), mosaicRadius: 0, debris: debris,
+                                        hint: .order, bloomTarget: 1.5)
+        }
+
+        // Summer four, "round the stones": a bud at the top of the pond with a
+        // bar of stone straight below it, so nothing sent up the middle ever
+        // arrives. The shallows either side hold a ripple together and bend it
+        // inward, and a wave sent up the flank comes round the bar to the bud.
+        do {
+            let bud = CGPoint(x: 0.50, y: 0.22)
+            let bar = [Shape(centre: CGPoint(x: 0.395, y: 0.40), radius: 0.05),
+                       Shape(centre: CGPoint(x: 0.605, y: 0.40), radius: 0.05)]
+            let banks = [Shape(centre: CGPoint(x: 0.26, y: 0.40), radius: 0.11),
+                         Shape(centre: CGPoint(x: 0.74, y: 0.40), radius: 0.11)]
+            let weed = [CGPoint(x: 0.24, y: 0.66), CGPoint(x: 0.50, y: 0.72), CGPoint(x: 0.76, y: 0.64),
+                        CGPoint(x: 0.20, y: 0.50)]
+            var debris = strewn(weed)
+            for (i, p) in [CGPoint(x: 0.34, y: 0.80), CGPoint(x: 0.66, y: 0.78)].enumerated() {
+                debris.append(DebrisPlacement(cls: .light, at: p, variant: 0, scale: 1,
+                                              rotation: Float(i) * 1.5, kind: .bottle))
+            }
+            out["summer-4"] = LevelSpec(id: "summer-4", seasonID: "summer", index: 4, title: "Summer, four",
+                                        mosaicCentre: bud, mosaicRadius: 0, debris: debris,
+                                        rocks: bar, shallows: banks,
+                                        targets: [TargetSpec(kind: .bud, at: bud, threshold: 0.034)],
+                                        hint: .lens, bloomTarget: 2.0)
+        }
+
+        // Summer five, "the bag in the pads": pads boxed round a carrier bag
+        // on all four sides. Every place a ring could start is a leaf, so the
+        // ring never starts. A current runs under the pads as if they were not
+        // there, and a bag follows a current harder than anything else does.
+        do {
+            let pads = [Shape(centre: CGPoint(x: 0.50, y: 0.30), radius: 0.033),
+                        Shape(centre: CGPoint(x: 0.50, y: 0.56), radius: 0.033),
+                        Shape(centre: CGPoint(x: 0.30, y: 0.42), radius: 0.033),
+                        Shape(centre: CGPoint(x: 0.70, y: 0.42), radius: 0.033),
+                        Shape(centre: CGPoint(x: 0.24, y: 0.60), radius: 0.030),
+                        Shape(centre: CGPoint(x: 0.76, y: 0.26), radius: 0.030)]
+            let weed = [CGPoint(x: 0.22, y: 0.24), CGPoint(x: 0.78, y: 0.68), CGPoint(x: 0.40, y: 0.76),
+                        CGPoint(x: 0.62, y: 0.20), CGPoint(x: 0.16, y: 0.44)]
+            var debris = strewn(weed)
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.50, y: 0.42),
+                                          variant: 0, scale: 1, rotation: 0.4, kind: .bag))
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.26, y: 0.72),
+                                          variant: 0, scale: 1, rotation: 1.0, kind: .packet))
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.72, y: 0.80),
+                                          variant: 0, scale: 1, rotation: 1.9, kind: .bottle))
+            out["summer-5"] = LevelSpec(id: "summer-5", seasonID: "summer", index: 5, title: "Summer, five",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.46), mosaicRadius: 0, debris: debris,
+                                        pads: pads, hint: .current, bloomTarget: 2.5)
+        }
+
+        // Summer six, "the channel": two lines of pads make a lane up the
+        // pond with a can sitting in it and a bell at the far end. The lane
+        // keeps a swell together instead of letting it spread, so one hold at
+        // the mouth drives the can out and carries on to ring the bell.
+        do {
+            var pads: [Shape] = []
+            for y in [0.34, 0.42, 0.50, 0.58] {
+                pads.append(Shape(centre: CGPoint(x: 0.32, y: CGFloat(y)), radius: 0.030))
+                pads.append(Shape(centre: CGPoint(x: 0.68, y: CGFloat(y)), radius: 0.030))
+            }
+            let bell = CGPoint(x: 0.50, y: 0.24)
+            let weed = [CGPoint(x: 0.20, y: 0.26), CGPoint(x: 0.80, y: 0.30), CGPoint(x: 0.22, y: 0.66),
+                        CGPoint(x: 0.80, y: 0.70), CGPoint(x: 0.50, y: 0.78)]
+            var debris = strewn(weed)
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.50, y: 0.46),
+                                          variant: 0, scale: 1, rotation: 0.2, kind: .can))
+            for (i, p) in [CGPoint(x: 0.17, y: 0.48), CGPoint(x: 0.84, y: 0.54)].enumerated() {
+                debris.append(DebrisPlacement(cls: .light, at: p, variant: 0, scale: 1,
+                                              rotation: Float(i) * 1.3, kind: .bottle))
+            }
+            out["summer-6"] = LevelSpec(id: "summer-6", seasonID: "summer", index: 6, title: "Summer, six",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.44), mosaicRadius: 0, debris: debris,
+                                        pads: pads,
+                                        targets: [TargetSpec(kind: .bell, at: bell, threshold: 0.040)],
+                                        hint: .hold, bloomTarget: 3.0)
+        }
+    }
+
+    // MARK: Autumn
+
+    private static func autumnLevels(into out: inout [String: LevelSpec]) {
+
+        // Autumn one, "the drift of leaves": a long line of leaves lying
+        // across the pond, longer than any one ripple. A tap dropped into the
+        // middle of it sends as many leaves out into the water as it sends
+        // ashore, so the line wants working from one end.
+        do {
+            var leaves: [CGPoint] = []
+            for i in 0..<12 {
+                let t = CGFloat(i)
+                leaves.append(CGPoint(x: 0.20 + 0.0545 * t, y: 0.66 - 0.0327 * t + (i % 2 == 0 ? 0.02 : -0.02)))
+            }
+            out["autumn-1"] = LevelSpec(id: "autumn-1", seasonID: "autumn", index: 1, title: "Autumn, one",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.48), mosaicRadius: 0, debris: strewn(leaves),
+                                        hint: .tap, bloomTarget: 0.5)
+        }
+
+        // Autumn two, "driftwood": a log across the middle of the pond. A
+        // tap's ring runs under it and leaves it where it lies; a held swell
+        // lifts the water enough to roll it out.
+        do {
+            let leaves = [CGPoint(x: 0.22, y: 0.28), CGPoint(x: 0.44, y: 0.22), CGPoint(x: 0.70, y: 0.26),
+                          CGPoint(x: 0.78, y: 0.52), CGPoint(x: 0.28, y: 0.62), CGPoint(x: 0.56, y: 0.74),
+                          CGPoint(x: 0.36, y: 0.80)]
+            var debris = strewn(leaves)
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.50, y: 0.46), variant: 0, scale: 1, rotation: 0))
+            out["autumn-2"] = LevelSpec(id: "autumn-2", seasonID: "autumn", index: 2, title: "Autumn, two",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.46), mosaicRadius: 0, debris: debris,
+                                        hint: .hold, bloomTarget: 1.0)
+        }
+
+        // Autumn three, "the weir": two logs and two stones close the pond
+        // right across, and the leaves are penned above them. No water gets
+        // past a log, so the leaves sit in its lee whatever is tapped below.
+        // The logs go first, then the leaves follow them out.
+        do {
+            let stones = [Shape(centre: CGPoint(x: 0.16, y: 0.48), radius: 0.05),
+                          Shape(centre: CGPoint(x: 0.84, y: 0.48), radius: 0.05)]
+            let leaves = [CGPoint(x: 0.26, y: 0.30), CGPoint(x: 0.40, y: 0.26), CGPoint(x: 0.54, y: 0.30),
+                          CGPoint(x: 0.68, y: 0.26), CGPoint(x: 0.34, y: 0.38), CGPoint(x: 0.60, y: 0.38),
+                          CGPoint(x: 0.32, y: 0.68), CGPoint(x: 0.66, y: 0.72)]
+            var debris = strewn(leaves)
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.38, y: 0.50), variant: 0, scale: 1, rotation: 0))
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.60, y: 0.50), variant: 0, scale: 1, rotation: 0))
+            out["autumn-3"] = LevelSpec(id: "autumn-3", seasonID: "autumn", index: 3, title: "Autumn, three",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.44), mosaicRadius: 0, debris: debris,
+                                        rocks: stones, hint: .order, bloomTarget: 1.5)
+        }
+
+        // Autumn four, "windfall": a raft of leaves pinned between two
+        // stones. Tap into it and the leaves knock against the stones and
+        // come back; two fingers carry the raft out whole, along the pond
+        // rather than across it.
+        do {
+            var leaves: [CGPoint] = []
+            for row in 0..<4 {
+                for col in 0..<3 {
+                    leaves.append(CGPoint(x: 0.42 + 0.08 * CGFloat(col), y: 0.36 + 0.04 * CGFloat(row)))
+                }
+            }
+            let stones = [Shape(centre: CGPoint(x: 0.24, y: 0.44), radius: 0.055),
+                          Shape(centre: CGPoint(x: 0.76, y: 0.44), radius: 0.055)]
+            out["autumn-4"] = LevelSpec(id: "autumn-4", seasonID: "autumn", index: 4, title: "Autumn, four",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.44), mosaicRadius: 0, debris: strewn(leaves),
+                                        rocks: stones, hint: .swell, bloomTarget: 2.0)
+        }
+
+        // Autumn five, "silt": most of the pond has silted up, and a ripple
+        // shelves and dies within a hand's reach of where it started. A
+        // current laid along the bank leans the whole pond one way at once
+        // and takes the leaves and the bag with it.
+        do {
+            let banks = [Shape(centre: CGPoint(x: 0.50, y: 0.62), radius: 0.14),
+                         Shape(centre: CGPoint(x: 0.30, y: 0.34), radius: 0.10),
+                         Shape(centre: CGPoint(x: 0.72, y: 0.38), radius: 0.10)]
+            let leaves = [CGPoint(x: 0.20, y: 0.26), CGPoint(x: 0.36, y: 0.20), CGPoint(x: 0.58, y: 0.24),
+                          CGPoint(x: 0.76, y: 0.32), CGPoint(x: 0.22, y: 0.50), CGPoint(x: 0.74, y: 0.54),
+                          CGPoint(x: 0.34, y: 0.66), CGPoint(x: 0.66, y: 0.72)]
+            var debris = strewn(leaves)
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.50, y: 0.46),
+                                          variant: 0, scale: 1, rotation: 0.8, kind: .bag))
+            out["autumn-5"] = LevelSpec(id: "autumn-5", seasonID: "autumn", index: 5, title: "Autumn, five",
+                                        mosaicCentre: CGPoint(x: 0.5, y: 0.48), mosaicRadius: 0, debris: debris,
+                                        shallows: banks, hint: .current, bloomTarget: 2.5)
+        }
+
+        // Autumn six, "last light": a bell hangs over open water with nothing
+        // near enough to ring it. One ring passes just under the note; two
+        // taps struck together on either side meet under the bell and sound
+        // it. The log and the bag are the year's last things to tidy.
+        do {
+            let bell = CGPoint(x: 0.50, y: 0.30)
+            let leaves = [CGPoint(x: 0.20, y: 0.22), CGPoint(x: 0.42, y: 0.18), CGPoint(x: 0.72, y: 0.24),
+                          CGPoint(x: 0.80, y: 0.46), CGPoint(x: 0.22, y: 0.76), CGPoint(x: 0.56, y: 0.80)]
+            var debris = strewn(leaves)
+            debris.append(DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.34, y: 0.60), variant: 0, scale: 1, rotation: 0.6))
+            debris.append(DebrisPlacement(cls: .light, at: CGPoint(x: 0.68, y: 0.64),
+                                          variant: 0, scale: 1, rotation: 1.1, kind: .bag))
+            out["autumn-6"] = LevelSpec(id: "autumn-6", seasonID: "autumn", index: 6, title: "Autumn, six",
+                                        mosaicCentre: bell, mosaicRadius: 0, debris: debris,
+                                        targets: [TargetSpec(kind: .bell, at: bell, threshold: 0.044)],
+                                        hint: .twin, bloomTarget: 3.0)
+        }
+    }
 
     static let springOne: LevelSpec = levels.first { $0.id == "spring-1" }!
 
