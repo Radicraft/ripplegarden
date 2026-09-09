@@ -20,15 +20,31 @@ struct HubView: View {
                     ForEach(hub.marks) { mark in
                         if mark.screen.y > -80, mark.screen.y < geo.size.height + 80 {
                             label(mark)
-                                .position(x: mark.screen.x, y: mark.screen.y + mark.radius * 0.85)
-                            if mark.first {
-                                Text(mark.season.name)
-                                    .font(Ink.title(26))
-                                    .foregroundStyle(Ink.paper)
-                                    .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
-                                    .position(x: geo.size.width / 2, y: mark.screen.y - mark.radius * 1.55)
-                            }
+                                .position(x: mark.screen.x - mark.radius * 0.3, y: mark.screen.y - mark.radius * 0.95)
                         }
+                    }
+                }
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+
+            GeometryReader { geo in
+                ZStack {
+                    ForEach(Array(hub.seasonMarks.enumerated()), id: \.offset) { _, m in
+                        if m.screen.y > -60, m.screen.y < geo.size.height + 60 {
+                            Text(m.name)
+                                .font(Ink.title(26))
+                                .foregroundStyle(Ink.paper)
+                                .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+                                .position(x: geo.size.width / 2, y: m.screen.y)
+                        }
+                    }
+                    if hub.titleScreen.y > -60, hub.titleScreen.y < geo.size.height + 60 {
+                        Text("Ripple Garden")
+                            .font(Ink.title(32))
+                            .foregroundStyle(Ink.paper)
+                            .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+                            .position(x: geo.size.width / 2, y: hub.titleScreen.y)
                     }
                 }
             }
@@ -64,14 +80,6 @@ struct HubView: View {
     private var header: some View {
         VStack {
             HStack(alignment: .firstTextBaseline) {
-                // The title lives at the source and drifts off as you go down.
-                if let top = hub.marks.first(where: \.first) {
-                    Text("Ripple Garden")
-                        .font(Ink.title(30))
-                        .foregroundStyle(Ink.paper)
-                        .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
-                        .opacity(Double(max(0, min(1, (top.screen.y - 120) / 160))))
-                }
                 Spacer()
                 StoneIconButton(symbol: "leaf") { showSettings = true }
             }

@@ -241,6 +241,7 @@ final class GameController: ObservableObject, TouchInput {
         } else {
             field.strike(at: point, ring: CGFloat.random(in: 110...190), time: now)
             haptics.iceStrike()
+            sound.iceCrack(x: Float(point.x / viewSize.width))
             renderer?.addSplat(at: point, in: viewSize, radius: 6, amplitude: -0.04)
         }
         return true
@@ -252,6 +253,7 @@ final class GameController: ObservableObject, TouchInput {
         guard let field = iceField, !shards.isEmpty else { return }
         let total = shards.reduce(CGFloat(0)) { $0 + $1.area }
         haptics.iceBreak(size: Float(min(1, total / 60000)))
+        sound.iceBreak(x: Float(point.x / viewSize.width), size: Float(min(1, total / 60000)))
         renderer?.addSplat(at: point, in: viewSize, radius: 22, amplitude: -0.45)
         // The shards themselves tip under the water; what floats afterwards
         // is a few pieces broken off the biggest of them, no two alike: a
@@ -394,6 +396,10 @@ final class GameController: ObservableObject, TouchInput {
                 t.woke = true
                 t.wokeAt = elapsed
                 haptics.plop()
+                switch t.spec.kind {
+                case .bud: sound.bud(x: Float(t.position.x / viewSize.width))
+                case .bell: sound.bell(x: Float(t.position.x / viewSize.width))
+                }
                 renderer.addSplat(at: t.position, in: viewSize, radius: 14, amplitude: -0.08)
                 if diagnostics { NSLog("[target] woke at h=%.3f (threshold %.3f)", h, t.spec.threshold) }
             }
@@ -657,7 +663,19 @@ final class GameController: ObservableObject, TouchInput {
             d.position.x = r.centre.x + CGFloat(n.x * minDist)
             d.position.y = r.centre.y + CGFloat(n.y * minDist)
             let into = simd_dot(d.velocity, n)
-            if into < 0 { d.velocity -= n * into * 1.4 }
+            if into < 0 {
+                d.velocity -= n * into * 1.4
+                if into < -14, elapsed - d.lastKnockAt > 0.7 {
+                    d.lastKnockAt = elapsed
+                    let x = Float(d.position.x / viewSize.width)
+                    switch d.kind {
+                    case .can: sound.can(x: x); haptics.tap(weight: 0.5)
+                    case .bottle: sound.bottle(x: x); haptics.tap(weight: 0.3)
+                    case .natural where d.cls == .heavy: sound.wood(x: x); haptics.tap(weight: 0.6)
+                    default: break
+                    }
+                }
+            }
         }
     }
 
@@ -701,6 +719,7 @@ final class GameController: ObservableObject, TouchInput {
         let p = worldPoint(CGPoint(x: screenSize.width * f.x, y: screenSize.height * f.y))
         renderer?.addSplat(at: p, in: viewSize, radius: 60, amplitude: -0.12)
         haptics.plop()
+        sound.paper()
     }
 
     /// Pull back until the whole pond is on screen (the demo uses it on
@@ -867,7 +886,10 @@ final class GameController: ObservableObject, TouchInput {
                 field.paintScuff(at: point, radius: 13, amount: 0.35)
             }
             let crossed = field.crack(at: point)
-            if t.lastCrackDist > 3, crossed.dist <= 3 { haptics.slideCrack(strength: crossed.strength) }
+            if t.lastCrackDist > 3, crossed.dist <= 3 {
+                haptics.slideCrack(strength: crossed.strength)
+                sound.iceCrack(x: Float(point.x / viewSize.width))
+            }
             t.lastCrackDist = crossed.dist
             // Off the edge of the sheet: the slide is spent, and nothing broke.
             if field.ice(at: point) < 0.5 {

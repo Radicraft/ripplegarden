@@ -69,6 +69,8 @@ final class Debris: Identifiable {
     var meltTotal: Float = 1
     /// Last known water height under the piece, for the bob.
     var height: Float = 0
+    /// When it last knocked against something, so knocks do not chatter.
+    var lastKnockAt: Float = -10
     /// Last known surface slope under the piece. A solid body banks with it.
     var slope = SIMD2<Float>(0, 0)
     /// Rotation about the long axis, for a piece drawn as a solid. A can

@@ -131,6 +131,17 @@ static float2 surfaceUnderPixel(float2 screenPt, constant CameraParams &c)
     return (c.position.xyz + dir * t).xy;
 }
 
+/// The same ray traced to a plane `height` points above the surface: the
+/// top of the bank, which stands out of the water.
+static float2 planeUnderPixel(float2 screenPt, float height, constant CameraParams &c)
+{
+    float2 centre = c.focal.zw * 0.5;
+    float2 o = (screenPt - centre) / c.focal.x;
+    float3 dir = c.forward.xyz + c.right.xyz * o.x + c.down.xyz * o.y;
+    float t = (height - c.position.z) / min(dir.z, -0.05);
+    return (c.position.xyz + dir * t).xy;
+}
+
 struct SpriteInstance {
     float2 center;         // points, origin top-left
     float2 size;           // points
@@ -520,7 +531,8 @@ fragment float4 floor_compose_fragment(VertexOut in                             
             float2 tuv = float2(in.uv.x * aspect, in.uv.y) * (p.viewport.y / 1400.0);
             float3 earth = bank.sample(rep, tuv).rgb;
             float3 snow = bankSnow.sample(rep, tuv * 1.1 + 0.3).rgb;
-            float snowy = 1.0 - smoothstep(p.view.w - 0.03, p.view.w + 0.03, in.uv.y);
+            float snowy = p.view.w >= 0.0 ? 1.0 - smoothstep(p.view.w - 0.03, p.view.w + 0.03, in.uv.y)
+                                          : smoothstep(-p.view.w - 0.03, -p.view.w + 0.03, in.uv.y);
             float3 ground = mix(earth, snow, snowy);
             // Damp and dark right at the water, drying out up the bank.
             float damp = 1.0 - smoothstep(0.0, 0.12, d);
@@ -914,6 +926,14 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     float dHere = depthTex.sample(smp, wuv).r;
     // Bank: above the waterline there is no water to draw, just the ground.
     float dry = 1.0 - smoothstep(0.05, 0.11, dHere);
+    // The bank stands a hand above the water. Its top is seen where the
+    // ray meets the raised plane over ground; where only the water-level
+    // point is ground, the ray has hit the bank's face at the waterline.
+    float bankH = 0.07 * cam.focal.y;
+    float2 groundPt = planeUnderPixel(screenPt, bankH, cam);
+    float2 guv = groundPt / cam.world.xy;
+    float dGround = (any(guv < 0.0) || any(guv > 1.0)) ? 0.05 : depthTex.sample(smp, guv).r;
+    float bankTop = 1.0 - smoothstep(0.05, 0.11, dGround);
     // Only the deep bed goes soft; anything over the shelves, and the fish,
     // stay crisp.
     float blur = smoothstep(0.7, 1.0, dHere) * 1.1 / float(p.size.y);
@@ -983,9 +1003,24 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     float paper = fbm(in.uv * p.viewport / 6.0, 2);
     col *= 0.92 + 0.14 * paper;
 
-    if (dry > 0.001) {
-        float3 ground = floorTex.sample(smp, wuv).rgb;
-        col = mix(col, ground, dry);
+    if (dry > 0.001 || bankTop > 0.001) {
+        // The face: damp dark earth between the water and the bank's top.
+        float3 face = floorTex.sample(smp, wuv).rgb * float3(0.42, 0.40, 0.38);
+        col = mix(col, face, dry);
+        // The top, lit in relief from its own texture: a little bump from
+        // the luminance so grass and pebbles catch the light.
+        float2 tx = 1.0 / float2(floorTex.get_width(), floorTex.get_height()) * 1.5;
+        float3 g0 = floorTex.sample(smp, clamp(guv, 0.0, 1.0)).rgb;
+        float lL = dot(floorTex.sample(smp, clamp(guv - float2(tx.x, 0), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
+        float lR = dot(floorTex.sample(smp, clamp(guv + float2(tx.x, 0), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
+        float lD = dot(floorTex.sample(smp, clamp(guv - float2(0, tx.y), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
+        float lU = dot(floorTex.sample(smp, clamp(guv + float2(0, tx.y), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
+        float3 bn = normalize(float3(-(lR - lL) * 6.0, -(lU - lD) * 6.0, 1.0));
+        float lit = 0.72 + 0.45 * max(0.0, dot(bn, L));
+        // Bank's own shadow line where the top drops to the water.
+        float lip = smoothstep(0.03, 0.06, dGround) * (1.0 - smoothstep(0.06, 0.11, dGround));
+        float3 top = g0 * lit * (1.0 - 0.35 * lip);
+        col = mix(col, top, bankTop);
     }
 
     // The frozen sheet. Where the mask says ice, the water is under a slab:
