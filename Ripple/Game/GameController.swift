@@ -709,10 +709,8 @@ final class GameController: ObservableObject, TouchInput {
             for i in under.indices { under[i].gpu.alpha *= keep }
         }
         under += menuArt?.submerged ?? []
-        for line in words where !level.frozen {
-            line.onSurface = false
-            under += line.sprites(textures: renderer.textures)
-        }
+        // Words the player must read ride on the surface, over everything on
+        // the water; only the menus' ink lies beneath it.
         renderer.submergedSprites = under
 
         // On the water: rocks, debris, blossom, then the flora frame on top.
@@ -814,8 +812,7 @@ final class GameController: ObservableObject, TouchInput {
             let keep = 1 - 0.92 * m.dim
             for i in over.indices { over[i].gpu.alpha *= keep }
         }
-        // On ice the words lie on the sheet, over everything else on it.
-        for line in words where level.frozen {
+        for line in words {
             line.onSurface = true
             over += line.sprites(textures: renderer.textures)
         }
