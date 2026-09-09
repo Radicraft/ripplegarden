@@ -104,6 +104,15 @@ final class GameController: ObservableObject, TouchInput {
 
     // MARK: - Wiring
 
+    /// The player has gone back to the map: the pond's air fades, held
+    /// fingers are let go.
+    func leave() {
+        sound.stopAmbience()
+        for id in Array(holdSounding) { sound.holdEnd(id: id) }
+        holdSounding.removeAll()
+        renderer?.cancelAll()
+    }
+
     /// Called from the path before the level screen appears.
     func prepare(level: LevelSpec) {
         self.level = level

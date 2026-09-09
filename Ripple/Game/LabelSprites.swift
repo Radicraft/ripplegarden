@@ -16,10 +16,10 @@ enum LabelSprites {
 
     /// A washi chip carrying a level's name; a blossom dot when it is done.
     /// Returns the texture name. Drawn at 2x for the retina.
-    static func chip(_ text: String, done: Bool, textures: TextureCache) -> String {
+    static func chip(_ text: String, done: Bool, textures: TextureCache, wide: Bool = false) -> String {
         let name = "label_chip_\(text)_\(done ? 1 : 0)"
         if textures.has(name) { return name }
-        let size = CGSize(width: 180, height: 76)
+        let size = wide ? CGSize(width: 320, height: 84) : CGSize(width: 180, height: 76)
         let renderer = UIGraphicsImageRenderer(size: size, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; f.opaque = false; return f }())
         let image = renderer.image { ctx in
             if let washi = UIImage(named: "washi_card") ?? bundleImage("washi_card") {

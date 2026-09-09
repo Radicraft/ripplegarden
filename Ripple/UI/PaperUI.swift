@@ -252,6 +252,53 @@ struct PondOverlay<Content: View>: View {
 }
 
 /// Sound, feel, purchases and a word about the game, on one sheet of paper.
+/// The Seasons pass, on washi: what it is and two stones to buy it with.
+struct StoreCard: View {
+    @ObservedObject private var store = Store.shared
+    let onClose: () -> Void
+
+    var body: some View {
+        PaperCard(inset: 30) {
+            VStack(spacing: 14) {
+                Text("Seasons to come")
+                    .font(Ink.title(24))
+                    .foregroundStyle(Ink.ink)
+                Text("New seasons, new levels and new looks for the garden arrive with the Seasons pass. The first year is yours to keep.")
+                    .font(Ink.body(15))
+                    .foregroundStyle(Ink.ink.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                if store.isSubscribed {
+                    Text("You have the Seasons pass. Thank you.")
+                        .font(Ink.label(15))
+                        .foregroundStyle(Ink.ink)
+                } else if store.products.isEmpty {
+                    Text("Coming soon")
+                        .font(Ink.label(15))
+                        .foregroundStyle(Ink.ink.opacity(0.6))
+                } else {
+                    HStack(spacing: 14) {
+                        ForEach(store.products, id: \.id) { product in
+                            Button {
+                                Task { await store.purchase(product) }
+                            } label: {
+                                VStack(spacing: 2) {
+                                    Text(product.id == Store.annualID ? "Yearly" : "Monthly")
+                                    Text(product.displayPrice).font(Ink.body(13))
+                                }
+                            }
+                            .buttonStyle(.stone(dark: true, size: 15, hPad: 18, vPad: 9))
+                        }
+                    }
+                }
+                Button("Done", action: onClose)
+                    .buttonStyle(.stone(dark: true, size: 17, hPad: 30, vPad: 10))
+                    .padding(.top, 4)
+            }
+        }
+        .padding(.horizontal, 28)
+    }
+}
+
 struct SettingsCard: View {
     @ObservedObject private var settings = Settings.shared
     @ObservedObject private var store = Store.shared

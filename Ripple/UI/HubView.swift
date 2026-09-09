@@ -7,6 +7,7 @@ struct HubView: View {
     let onPlay: (LevelSpec) -> Void
     @ObservedObject private var store = Store.shared
     @State private var showSettings = false
+    @State private var showStore = false
 
     var body: some View {
         ZStack {
@@ -21,13 +22,18 @@ struct HubView: View {
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
         .overlay {
+            PondOverlay(isPresented: $showStore) {
+                StoreCard { showStore = false }
+            }
             PondOverlay(isPresented: $showSettings) {
                 SettingsCard { showSettings = false }
             }
         }
         .onAppear {
             hub.onPlay = onPlay
+            hub.onStore = { showStore = true }
             if ProcessInfo.processInfo.arguments.contains("-showSettings") { showSettings = true }
+            if ProcessInfo.processInfo.arguments.contains("-showStore") { showStore = true }
         }
     }
 

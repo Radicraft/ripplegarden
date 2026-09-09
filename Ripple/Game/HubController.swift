@@ -33,6 +33,9 @@ final class HubController: ObservableObject, TouchInput {
     private var mouthY: CGFloat = 0
     /// The level a splash is opening, once the water has closed over the tap.
     var onPlay: ((LevelSpec) -> Void)?
+    /// The note at the source was tapped.
+    var onStore: (() -> Void)?
+    private var storeNote: CGPoint = .zero
 
     static let worldScale = CGSize(width: 1.15, height: 4.0)
     static let gridLongSide = 1400
@@ -65,6 +68,8 @@ final class HubController: ObservableObject, TouchInput {
     private var lips: [CGFloat] = []
     private var foam: [(x: CGFloat, y: CGFloat, phase: Float, size: CGFloat)] = []
     private var shoreStones: [SolidInstance] = []
+    /// The source lies in mist, so the world does not end in a line.
+    private var sourceMist: [(x: CGFloat, y: CGFloat, phase: Float, size: CGFloat)] = []
 
     init() {
         // Spring dresses the stream; the seasons show in what sits at each
@@ -119,7 +124,13 @@ final class HubController: ObservableObject, TouchInput {
         }
         lips = (1..<seasons.count).map { bottom - stretch * CGFloat($0) }
         entries = seasons.enumerated().map { ($0.element.name, bottom - stretch * CGFloat($0.offset) - 34) }
-        mouthY = bottom + 46
+        mouthY = bottom + 92
+        storeNote = CGPoint(x: w * 0.5, y: top - 34)
+        sourceMist = (0..<7).map { k in
+            (CGFloat(k) / 6 * w, top - 70 + CGFloat.random(in: -30...50), Float.random(in: 0...(2 * .pi)), CGFloat.random(in: 260...360))
+        } + (0..<7).map { k in
+            (CGFloat(k) / 6 * w, bottom + 170 + CGFloat.random(in: -30...50), Float.random(in: 0...(2 * .pi)), CGFloat.random(in: 260...360))
+        }
         garden.depthAt = { [weak self] p in
             guard let self else { return 1 }
             return self.depth(at: CGPoint(x: p.x / self.viewSize.width, y: p.y / self.viewSize.height))
@@ -129,6 +140,7 @@ final class HubController: ObservableObject, TouchInput {
         // Start at the source, on the first pool not yet done.
         let start = pools.first { !progress.isComplete(levelID: $0.level.id) } ?? pools[0]
         centreTarget = SIMD2(Float(viewSize.width / 2), Float(start.centre.y))
+        if ProcessInfo.processInfo.arguments.contains("-hubTop") { centreTarget.y = Float(top) }
         renderer?.viewCentre = centreTarget
         dress(bottom: bottom, stretch: stretch)
         placed = true
@@ -494,7 +506,7 @@ final class HubController: ObservableObject, TouchInput {
                 let done = progress.isComplete(levelID: pool.level.id)
                 let unlocked = progress.isUnlocked(level: pool.level)
                 let name = LabelSprites.chip(word, done: done, textures: tex)
-                let at = CGPoint(x: pool.centre.x - pool.radius * 0.3, y: pool.centre.y - pool.radius * 0.95)
+                let at = CGPoint(x: pool.centre.x - pool.radius * 0.3, y: pool.centre.y + pool.radius * 0.95)
                 let tip = Float(sin(Double(pool.centre.y) * 0.013 + Double(idx))) * 0.11
                 paper(Sprite(name, at: at, size: CGSize(width: 86, height: 36), rotation: tip,
                              mode: .floater, alpha: unlocked ? 1 : 0.55, z: 0.1))
@@ -506,6 +518,9 @@ final class HubController: ObservableObject, TouchInput {
                 over.append(Sprite(name, at: CGPoint(x: viewSize.width / 2, y: e.y), size: CGSize(width: h * t.width / max(1, t.height), height: h),
                                    mode: .floater, alpha: 1, z: 0.25))
             }
+            // Beyond autumn, at the source, a note about the seasons to come.
+            let note = LabelSprites.chip("Seasons to come", done: false, textures: tex, wide: true)
+            paper(Sprite(note, at: storeNote, size: CGSize(width: 150, height: 40), rotation: 0.05, mode: .floater, alpha: 1, z: 0.1))
             let title = LabelSprites.caption("Ripple Garden", points: 32, textures: tex)
             let ts = tex.size(title)
             let th: CGFloat = 32 * 1.9
@@ -515,6 +530,12 @@ final class HubController: ObservableObject, TouchInput {
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
         for s in stretchBranches { paper(s, cast: 18) }
+        for (i, m) in sourceMist.enumerated() {
+            let drift = CGFloat(sin(Double(elapsed) * 0.09 + Double(m.phase))) * 24
+            over.append(Sprite(art.clouds[i % max(1, art.clouds.count)], at: CGPoint(x: m.x + drift, y: m.y),
+                               size: CGSize(width: m.size * 1.6, height: m.size), rotation: m.phase * 0.05,
+                               mode: .floater, alpha: 0.55, z: 0.35))
+        }
         // Foam at each lip: pale wisps that swell and shrink.
         for (i, f) in foam.enumerated() {
             let pulse = 0.75 + 0.25 * CGFloat(sin(Double(elapsed) * 1.7 + Double(f.phase)))
@@ -576,6 +597,12 @@ final class HubController: ObservableObject, TouchInput {
         garden.startle(at: point, in: viewSize)
         sound.tap(x: Float(point.x / viewSize.width), weight: 0.5)
         haptics.tap(weight: 0.5)
+        if CACurrentMediaTime() - start.began < 0.45, abs(point.x - storeNote.x) < 90, abs(point.y - storeNote.y) < 34 {
+            sound.paper()
+            haptics.tap(weight: 0.4)
+            onStore?()
+            return
+        }
         if CACurrentMediaTime() - start.began < 0.45,
            let pool = pools.first(where: { hypot($0.centre.x - point.x, $0.centre.y - point.y) < $0.radius }),
            progress.isUnlocked(level: pool.level) {

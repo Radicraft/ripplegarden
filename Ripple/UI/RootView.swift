@@ -39,6 +39,7 @@ struct RootView: View {
                 .transition(.opacity)
             case .level:
                 LevelView(controller: game) {
+                    game.leave()
                     withAnimation(.easeInOut(duration: 0.6)) { screen = .garden }
                 }
                 .transition(.opacity)
