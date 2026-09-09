@@ -528,6 +528,47 @@ final class IceField {
         return CGFloat(comp.count) * cellSize * cellSize
     }
 
+    /// Every island of ice smaller than `maxArea` cells, anywhere, goes
+    /// under. Once most of the sheet is gone the scraps are not worth a
+    /// player's taps, so they leave on their own. Returns the area sunk.
+    @discardableResult
+    func sinkSmallIslands(maxArea: Int, time: Float) -> Int {
+        var seen = [Bool](repeating: false, count: cells.count)
+        var sunk: [Int32] = []
+        var stack: [Int] = []
+        var comp: [Int32] = []
+        var total = 0
+        for start in 0..<cells.count where !seen[start] {
+            seen[start] = true
+            guard cells[start] >= 0.5 else { continue }
+            comp.removeAll(keepingCapacity: true)
+            stack.removeAll(keepingCapacity: true)
+            stack.append(start)
+            var big = false
+            while let i = stack.popLast() {
+                comp.append(Int32(i))
+                if comp.count > maxArea { big = true }
+                let x = i % width, y = i / width
+                if x > 0 { let j = i - 1; if !seen[j] { seen[j] = true; if cells[j] >= 0.5 { stack.append(j) } } }
+                if x < width - 1 { let j = i + 1; if !seen[j] { seen[j] = true; if cells[j] >= 0.5 { stack.append(j) } } }
+                if y > 0 { let j = i - width; if !seen[j] { seen[j] = true; if cells[j] >= 0.5 { stack.append(j) } } }
+                if y < height - 1 { let j = i + width; if !seen[j] { seen[j] = true; if cells[j] >= 0.5 { stack.append(j) } } }
+            }
+            if big { continue }
+            for i in comp { cells[Int(i)] = IceField.sinkStart }
+            sunk += comp
+            total += comp.count
+        }
+        if !sunk.isEmpty, let box = bounds(of: sunk) {
+            sinking.append((sunk, time, box))
+            touch(box.x0, box.y0, box.x1, box.y1)
+        }
+        return total
+    }
+
+    /// The nearest ice cell to a point within `range`, or nil.
+    func nearestIcePoint(to p: CGPoint, range: CGFloat) -> CGPoint? { nearestIce(to: p, range: range) }
+
     /// The level is done: whatever ice is left goes under with it.
     func sinkAll(time: Float) {
         var comp: [Int32] = []

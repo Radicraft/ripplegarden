@@ -54,6 +54,9 @@ final class WaterWords {
     private enum State { case rising, holding, sinking, gone }
 
     private(set) var lines: [Line]
+    /// On a frozen pond the words lie on the ice rather than under it, or
+    /// the sheet would hide them.
+    var onSurface = false
     /// The middle of the block, in world points.
     var centre: CGPoint
     /// How wide wrapped copy may run, in world points.
@@ -119,10 +122,15 @@ final class WaterWords {
             let s = sizes[i]
             let p = progress(row: i)
             if p > 0.001 {
-                out.append(Sprite(names[i], at: CGPoint(x: centre.x, y: y + s.height / 2), size: s,
-                                  mode: .submerged, alpha: min(1, p * 1.6),
-                                  depth: Water.deepDepth + (Water.restDepth - Water.deepDepth) * p,
-                                  z: Water.deepZ + (Water.restZ - Water.deepZ) * p))
+                if onSurface {
+                    out.append(Sprite(names[i], at: CGPoint(x: centre.x, y: y + s.height / 2), size: s,
+                                      mode: .floater, alpha: min(1, p * 1.6), z: 0.03 + 0.08 * (1 - p)))
+                } else {
+                    out.append(Sprite(names[i], at: CGPoint(x: centre.x, y: y + s.height / 2), size: s,
+                                      mode: .submerged, alpha: min(1, p * 1.6),
+                                      depth: Water.deepDepth + (Water.restDepth - Water.deepDepth) * p,
+                                      z: Water.deepZ + (Water.restZ - Water.deepZ) * p))
+                }
             }
             y += s.height + gap
         }

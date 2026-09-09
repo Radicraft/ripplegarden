@@ -85,6 +85,7 @@ final class GameController: ObservableObject, TouchInput {
     /// Things a crest wakes.
     private(set) var targets: [Target] = []
     private var targetProbeStart = 0
+    private var iceTidyTimer: Float = 0
 
     private let diagnostics = ProcessInfo.processInfo.arguments.contains("-diag")
     private var diagFrames = 0
@@ -327,6 +328,8 @@ final class GameController: ObservableObject, TouchInput {
             return d
         }
         iceField = level.frozen ? IceField(world: viewSize) : nil
+        // A frozen pond is seen whole: nothing of the sheet hides off screen.
+        if level.frozen { showWholePond() } else { zoomTarget = 0.9 }
         garden.iceCover = level.frozen ? 1 : 0
         if let f = iceField {
             renderer?.setIce(f.cells, scuff: f.scuff, width: f.width, height: f.height)
@@ -346,8 +349,16 @@ final class GameController: ObservableObject, TouchInput {
     /// bite. Returns true if the tap was on ice.
     @discardableResult
     private func tapIce(at point: CGPoint) -> Bool {
-        guard let field = iceField, field.ice(at: point) > 0.5 else { return false }
+        guard let field = iceField else { return false }
         let now = renderer?.clock ?? 0
+        if field.ice(at: point) < 0.5 {
+            // A tap just beside a scrap is meant for the scrap: a small piece
+            // near the finger goes under.
+            guard let near = field.nearestIcePoint(to: point, range: 70),
+                  let area = field.sinkIsland(at: near, maxArea: 40000, time: now) else { return false }
+            afterBreak(at: near, shards: [(near, area)])
+            return true
+        }
         if let index = field.strikeIndex(containing: point) {
             afterBreak(at: point, shards: field.breakOut(index, time: now))
         } else if let area = field.sinkIsland(at: point, maxArea: 30000, time: now) {
@@ -524,7 +535,21 @@ final class GameController: ObservableObject, TouchInput {
         // Done when the pond is tidy: nothing left floating on it, no ice.
         // (Levels with a roundel also want it washed and clear of heavy pieces.)
         if phase == .playing {
-            let tidy = debris.allSatisfy(\.cleared) && (iceField.map { $0.fraction < 0.06 } ?? true)
+            // Ice: once most of the sheet is gone the scraps go under on their
+        // own, and the last few percent are not worth hunting for.
+        if let f = iceField, phase == .playing {
+            iceTidyTimer -= dt
+            if iceTidyTimer <= 0 {
+                iceTidyTimer = 0.5
+                let fraction = f.fraction
+                if fraction < 0.08 {
+                    f.sinkAll(time: renderer.clock)
+                } else if fraction < 0.35 {
+                    f.sinkSmallIslands(maxArea: 40000, time: renderer.clock)
+                }
+            }
+        }
+        let tidy = debris.allSatisfy(\.cleared) && (iceField.map { $0.fraction < 0.06 } ?? true)
                 && targets.allSatisfy(\.woke)
             if level.mosaicRadius <= 0 ? tidy : (cleaned >= 0.94 && heavyOverTile().isEmpty) { finish() }
         }
@@ -684,7 +709,10 @@ final class GameController: ObservableObject, TouchInput {
             for i in under.indices { under[i].gpu.alpha *= keep }
         }
         under += menuArt?.submerged ?? []
-        for line in words { under += line.sprites(textures: renderer.textures) }
+        for line in words where !level.frozen {
+            line.onSurface = false
+            under += line.sprites(textures: renderer.textures)
+        }
         renderer.submergedSprites = under
 
         // On the water: rocks, debris, blossom, then the flora frame on top.
@@ -785,6 +813,11 @@ final class GameController: ObservableObject, TouchInput {
         if let m = menu, m.dim > 0.01 {
             let keep = 1 - 0.92 * m.dim
             for i in over.indices { over[i].gpu.alpha *= keep }
+        }
+        // On ice the words lie on the sheet, over everything else on it.
+        for line in words where level.frozen {
+            line.onSurface = true
+            over += line.sprites(textures: renderer.textures)
         }
         over += menuArt?.surface ?? []
         renderer.surfaceSprites = over
@@ -892,8 +925,8 @@ final class GameController: ObservableObject, TouchInput {
 
     /// A hint is one line of ink low in the pond: it rises, waits, and sinks.
     private func showHintLine(_ text: String) {
-        let line = WaterWords(lines: [WaterWords.Line(text: text, points: 16, wrapped: true)],
-                              centre: worldAt(CGPoint(x: 0.5, y: 0.78)), hold: 6)
+        let line = WaterWords(lines: [WaterWords.Line(text: text, points: 22, wrapped: true)],
+                              centre: worldAt(CGPoint(x: 0.5, y: 0.78)), hold: 7)
         hintWords = line
         words.append(line)
     }
@@ -1473,9 +1506,9 @@ final class GameController: ObservableObject, TouchInput {
     /// and the line that says what is left sits above them for good.
     private func openWords() {
         guard viewSize != .zero else { return }
-        let opening = WaterWords(lines: [WaterWords.Line(text: level.title, points: 26),
-                                         WaterWords.Line(text: level.goal, points: 16, wrapped: true)],
-                                 centre: worldAt(CGPoint(x: 0.5, y: 0.34)), hold: 5)
+        let opening = WaterWords(lines: [WaterWords.Line(text: level.title, points: 34),
+                                         WaterWords.Line(text: level.goal, points: 23, wrapped: true)],
+                                 centre: worldAt(CGPoint(x: 0.5, y: 0.34)), hold: 6)
         let status = WaterWords(lines: [], centre: worldAt(CGPoint(x: 0.5, y: 0.13)), hold: nil)
         status.width = 340
         openingWords = opening
@@ -1505,7 +1538,7 @@ final class GameController: ObservableObject, TouchInput {
                                     ice: ice)
         guard text != statusText else { return }
         statusText = text
-        status.replace(lines: [WaterWords.Line(text: text, points: 16)])
+        status.replace(lines: [WaterWords.Line(text: text, points: 19)])
     }
 
     private func present(_ m: WaterMenu) {
