@@ -65,6 +65,11 @@ final class GameController: ObservableObject, TouchInput {
     private var current = SIMD2<Float>(0, 0)
     private(set) var cleaned: Float = 0
     private var rocks: [(centre: CGPoint, radius: CGFloat)] = []
+    /// Lily pads in world points: ripples stop at them, taps on them do nothing.
+    private var pads: [(centre: CGPoint, radius: CGFloat, sprite: String)] = []
+    /// Things a crest wakes.
+    private var targets: [Target] = []
+    private var targetProbeStart = 0
 
     private let diagnostics = ProcessInfo.processInfo.arguments.contains("-diag")
     private var diagFrames = 0
@@ -174,7 +179,19 @@ final class GameController: ObservableObject, TouchInput {
         rocks = level.rocks.map { (CGPoint(x: $0.centre.x * viewSize.width, y: $0.centre.y * viewSize.height),
                                    $0.radius * viewSize.height) }
         garden.rocks = rocks
+        pads = level.pads.enumerated().map { i, p in
+            (CGPoint(x: p.centre.x * viewSize.width, y: p.centre.y * viewSize.height), p.radius * viewSize.height,
+             ["lilypad_1", "lilypad_2", "lilypad_3"][i % 3])
+        }
+        targets = level.targets.map { Target(spec: $0, position: CGPoint(x: $0.at.x * viewSize.width, y: $0.at.y * viewSize.height)) }
         debris = level.debris.enumerated().map { i, p in
+            if let rubbish = p.kind.sprite {
+                let d = Debris(id: i, cls: p.cls, sprite: rubbish,
+                               position: CGPoint(x: p.at.x * viewSize.width, y: p.at.y * viewSize.height),
+                               radius: p.kind.radius * p.scale, scale: p.scale, kind: p.kind)
+                d.angle = CGFloat(p.rotation)
+                return d
+            }
             let name: String
             let radius: CGFloat
             switch p.cls {
@@ -361,6 +378,7 @@ final class GameController: ObservableObject, TouchInput {
         // (Levels with a roundel also want it washed and clear of heavy pieces.)
         if phase == .playing {
             let tidy = debris.allSatisfy(\.cleared) && (iceField.map { $0.fraction < 0.06 } ?? true)
+                && targets.allSatisfy(\.woke)
             if level.mosaicRadius <= 0 ? tidy : (cleaned >= 0.94 && heavyOverTile().isEmpty) { finish() }
         }
 
@@ -369,6 +387,20 @@ final class GameController: ObservableObject, TouchInput {
 
         // Weed tips read the water too; their samples ride at the end of the
         // probe list, after the debris.
+        for (i, t) in targets.enumerated() where targetProbeStart + i < samples.count {
+            let h = samples[targetProbeStart + i].height
+            t.peak = max(t.peak, h)
+            if !t.woke, h > t.spec.threshold {
+                t.woke = true
+                t.wokeAt = elapsed
+                haptics.plop()
+                renderer.addSplat(at: t.position, in: viewSize, radius: 14, amplitude: -0.08)
+                if diagnostics { NSLog("[target] woke at h=%.3f (threshold %.3f)", h, t.spec.threshold) }
+            }
+            if diagnostics, diagFrames % 120 == 0 { NSLog("[target] peak so far %.3f", t.peak) }
+            t.opening = t.woke ? min(1, (elapsed - t.wokeAt) / 2.2) : 0
+        }
+
         let weedTips = garden.weedTips()
         let debrisProbeCount = lastDebrisProbeCount
         var weedSamples: [Int: FieldSample] = [:]
@@ -390,6 +422,10 @@ final class GameController: ObservableObject, TouchInput {
                     if let c = renderer.cell(for: p, in: viewSize) { cells.append(c) }
                 }
             }
+        }
+        targetProbeStart = cells.count
+        for t in targets {
+            if let c = renderer.cell(for: t.position, in: viewSize) { cells.append(c) }
         }
         lastDebrisProbeCount = cells.count
         for tip in weedTips {
@@ -481,6 +517,24 @@ final class GameController: ObservableObject, TouchInput {
             over.append(Sprite(art.rock, at: CGPoint(x: r.centre.x, y: r.centre.y + 3),
                                size: CGSize(width: side * 1.12, height: side * rockAspect * 1.12), mode: .shadow, alpha: 0.35, z: 0))
             paper(Sprite(art.rock, at: r.centre, size: CGSize(width: side, height: side * rockAspect), z: 0.15))
+        }
+        for p in pads {
+            let side = p.radius * 2.2
+            over.append(Sprite(p.sprite, at: CGPoint(x: p.centre.x + 3, y: p.centre.y + 4),
+                               size: CGSize(width: side * 1.06, height: side * 1.06), mode: .shadow, alpha: 0.3, z: 0))
+            paper(Sprite(p.sprite, at: p.centre, size: CGSize(width: side, height: side), rotation: Float(p.centre.x * 0.01), mode: .floater, alpha: 1))
+        }
+        for t in targets {
+            let side: CGFloat = 92
+            switch t.spec.kind {
+            case .bud:
+                if t.opening < 1 { paper(Sprite("bud_closed", at: t.position, size: CGSize(width: side, height: side), mode: .floater, alpha: 1 - t.opening)) }
+                if t.opening > 0 { paper(Sprite("bud_open", at: t.position, size: CGSize(width: side, height: side), mode: .floater, alpha: t.opening)) }
+            case .bell:
+                let since = Double(elapsed - t.wokeAt)
+                let swing = t.woke ? CGFloat(sin(since * 14) * exp(-since * 1.5)) * 0.25 : 0
+                paper(Sprite("bell_float", at: t.position, size: CGSize(width: side, height: side), rotation: Float(swing), mode: .floater, alpha: 1))
+            }
         }
         for d in debris where !d.cleared {
             let s = spriteSize(d)
@@ -617,6 +671,18 @@ final class GameController: ObservableObject, TouchInput {
         if let field = iceField, field.ice(at: point) > 0.5 {
             let now = CACurrentMediaTime()
             iceTouches[id] = IceTouch(began: now, last: screen, lastMoveAt: now)
+            return
+        }
+        // A finger on a lily pad presses a leaf, not the water; a finger on
+        // a log or a can lands on the thing itself, and the water under it
+        // is not where the ring starts. Otherwise a tap on a heavy piece
+        // would lift it from beneath, which no ripple ever could.
+        if pads.contains(where: { hypot($0.centre.x - point.x, $0.centre.y - point.y) < $0.radius * 1.05 }) {
+            haptics.tap(weight: 0.2)
+            return
+        }
+        if debris.contains(where: { !$0.cleared && $0.cls == .heavy && hypot($0.position.x - point.x, $0.position.y - point.y) < $0.radius * 0.9 }) {
+            haptics.plop()
             return
         }
         waveBitesIce(from: point)
@@ -777,6 +843,22 @@ final class GameController: ObservableObject, TouchInput {
     }
 }
 
+/// Something on the water waiting for a big enough crest.
+final class Target {
+    let spec: TargetSpec
+    let position: CGPoint
+    var woke = false
+    var wokeAt: Float = 0
+    /// 0 closed, 1 fully open, for the crossfade.
+    var opening: Float = 0
+    /// The highest water seen here, for tuning.
+    var peak: Float = 0
+    init(spec: TargetSpec, position: CGPoint) {
+        self.spec = spec
+        self.position = position
+    }
+}
+
 enum HintMemory {
     static func seen(_ h: Hint) -> Bool { UserDefaults.standard.bool(forKey: "hint.seen.\(h.rawValue)") }
     static func markSeen(_ h: Hint) { UserDefaults.standard.set(true, forKey: "hint.seen.\(h.rawValue)") }
@@ -802,7 +884,7 @@ enum DepthPainter {
             let dist = (dx * dx + dy * dy).squareRoot() / r
             if dist < 1 { d = min(d, 0.25 + 0.75 * dist * dist) }
         }
-        for o in level.rocks {
+        for o in level.rocks + level.pads {
             let r = Float(o.radius) * 0.9
             let dx = (px - Float(o.centre.x)) * aspect, dy = py - Float(o.centre.y)
             let dist = (dx * dx + dy * dy).squareRoot() / r
@@ -829,7 +911,7 @@ enum DepthPainter {
                     let dist = (dx * dx + dy * dy).squareRoot() / r
                     if dist < 1 { d = min(d, 0.25 + 0.75 * dist * dist) }
                 }
-                for o in level.rocks {
+                for o in level.rocks + level.pads {
                     let r = Float(o.radius) * 0.9
                     let dx = (px - Float(o.centre.x)) * aspect, dy = py - Float(o.centre.y)
                     let dist = (dx * dx + dy * dy).squareRoot() / r

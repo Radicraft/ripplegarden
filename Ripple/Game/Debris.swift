@@ -53,6 +53,7 @@ final class Debris: Identifiable {
     let id: Int
     let cls: DebrisClass
     let sprite: String
+    let kind: DebrisKind
     var position: CGPoint
     var velocity = SIMD2<Float>(0, 0)
     var angle: CGFloat
@@ -69,18 +70,19 @@ final class Debris: Identifiable {
     /// Last known water height under the piece, for the bob.
     var height: Float = 0
 
-    init(id: Int, cls: DebrisClass, sprite: String, position: CGPoint, radius: CGFloat, scale: CGFloat) {
+    init(id: Int, cls: DebrisClass, sprite: String, position: CGPoint, radius: CGFloat, scale: CGFloat, kind: DebrisKind = .natural) {
         self.id = id
         self.cls = cls
         self.sprite = sprite
+        self.kind = kind
         self.position = position
         self.radius = radius
         self.scale = scale
         self.angle = CGFloat.random(in: 0...(2 * .pi))
     }
 
-    var mass: Float { cls == .light ? GameTuning.lightMass : GameTuning.heavyMass }
-    var drag: Float { cls == .light ? GameTuning.lightDrag : GameTuning.heavyDrag }
+    var mass: Float { (cls == .light ? GameTuning.lightMass : GameTuning.heavyMass) * kind.mass }
+    var drag: Float { (cls == .light ? GameTuning.lightDrag : GameTuning.heavyDrag) * kind.drag }
 }
 
 enum DebrisPhysics {
@@ -95,22 +97,23 @@ enum DebrisPhysics {
             // Downhill is minus the gradient. Gate on the surface rising so the
             // front of a wave shoves harder than its back drags.
             let rising: Float = s.velocity > 0 ? 1.0 : GameTuning.trailingPull
-            var push = -s.slope * GameTuning.slopeGain * rising
+            var push = -s.slope * GameTuning.slopeGain * rising * d.kind.gain
             if d.cls == .heavy {
                 // A tap's ring is a few hundredths high and does nothing. A
                 // held swell lifts the water under the log by tenths, and only
                 // its rising face shoves, so the log moves away from the hand.
                 let lift = abs(s.height)
-                if lift < GameTuning.heavyThreshold || s.velocity <= 0 {
+                let threshold = GameTuning.heavyThreshold * d.kind.threshold
+                if lift < threshold || s.velocity <= 0 {
                     push = .zero
                 } else {
-                    push *= min(1, (lift - GameTuning.heavyThreshold) / GameTuning.heavyThreshold) * GameTuning.heavyGain
+                    push *= min(1, (lift - threshold) / threshold) * GameTuning.heavyGain
                 }
             }
             force += push
         }
 
-        let currentPush = d.cls == .light ? GameTuning.currentPushLight : GameTuning.currentPushHeavy
+        let currentPush = (d.cls == .light ? GameTuning.currentPushLight : GameTuning.currentPushHeavy) * d.kind.currentPush
         // The current is a velocity the water carries the piece at, so it acts
         // as a pull toward that velocity rather than a force.
         let target = current * currentPush

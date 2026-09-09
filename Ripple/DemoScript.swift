@@ -32,7 +32,27 @@ enum DemoScript {
         stalls = 0
     }
 
+    /// `-taps "0.5,0.72@4;0.3,0.4@8"`: scripted taps at world fractions and
+    /// seconds after launch, for checking a designed level without a finger.
+    static func scheduleScriptedTaps(controller: GameController) {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-taps"), i + 1 < args.count else { return }
+        for item in args[i + 1].split(separator: ";") {
+            let parts = item.split(separator: "@")
+            guard parts.count == 2, let t = Double(parts[1]) else { continue }
+            let xy = parts[0].split(separator: ",").compactMap { Double($0) }
+            guard xy.count == 2 else { continue }
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) {
+                guard let size = controller.worldSize, size.width > 0 else { return }
+                let p = CGPoint(x: size.width * xy[0], y: size.height * xy[1])
+                NSLog("[taps] tap at (%.0f,%.0f)", p.x, p.y)
+                tap(controller, at: p, size: size)
+            }
+        }
+    }
+
     static func startIfRequested(controller: GameController) {
+        scheduleScriptedTaps(controller: controller)
         guard isEnabled, timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             Task { @MainActor in beat(controller: controller) }

@@ -32,9 +32,9 @@ struct ArtSet {
     var skaters: [String] = []
     var flyers: [String] = []
     var clouds: [String] = []
-    var stones: [String] = []
-    var gravel: [String] = []
-    var sand: [String] = []
+    var stones: [String] = ["stone_a_1", "stone_a_2", "stone_a_3", "stone_a_4", "stone_a_5", "stone_a_6", "stone_a_7", "stone_a_8"]
+    var gravel: [String] = ["gravel_1", "gravel_2", "gravel_3", "gravel_4"]
+    var sand: [String] = ["sand_1", "sand_2", "sand_3"]
     var reeds: [String] = []
     var frog: (frog: String, pad: String)? = nil
     var newt: String? = nil
@@ -64,12 +64,64 @@ enum DebrisClass {
     case light, heavy
 }
 
+/// What a floating piece is. Petals, leaves and logs are `natural`; the
+/// rest is rubbish, and each kind sits on the water its own way: a can is
+/// heavy and low, a bottle skates on the smallest ripple, a bag goes
+/// wherever the current does. Rubbish never melts or blooms; at the bank
+/// it is simply gone.
+enum DebrisKind {
+    case natural, can, bottle, packet, bag
+
+    var isRubbish: Bool { self != .natural }
+    var sprite: String? {
+        switch self {
+        case .natural: return nil
+        case .can: return "rubbish_can"
+        case .bottle: return "rubbish_bottle"
+        case .packet: return "rubbish_packet"
+        case .bag: return "rubbish_bag"
+        }
+    }
+    var radius: CGFloat {
+        switch self {
+        case .natural: return 0
+        case .can: return 30
+        case .bottle: return 34
+        case .packet: return 28
+        case .bag: return 40
+        }
+    }
+    /// Multipliers on the natural piece of the same class: mass, drag, how
+    /// hard a slope shoves it, the heavy lift threshold, and how much the
+    /// current carries it.
+    var mass: Float { switch self { case .natural: return 1; case .can: return 0.6; case .bottle: return 0.6; case .packet: return 0.8; case .bag: return 0.7 } }
+    var drag: Float { switch self { case .natural: return 1; case .can: return 1.1; case .bottle: return 0.55; case .packet: return 0.85; case .bag: return 0.8 } }
+    var gain: Float { switch self { case .natural: return 1; case .can: return 1; case .bottle: return 1.4; case .packet: return 1.1; case .bag: return 0.9 } }
+    var threshold: Float { switch self { case .natural: return 1; case .can: return 0.8; default: return 1 } }
+    var currentPush: Float { switch self { case .natural: return 1; case .can: return 0.6; case .bottle: return 1.2; case .packet: return 1.1; case .bag: return 1.8 } }
+}
+
 struct DebrisPlacement {
     var cls: DebrisClass
     var at: CGPoint
     var variant: Int = 0
     var scale: CGFloat = 1
     var rotation: Float = 0
+    var kind: DebrisKind = .natural
+}
+
+/// Something on the water that only a big enough crest wakes: a closed
+/// lily bud that opens, a bell on a bamboo float that rings. Position is a
+/// fraction of the world; `threshold` is water height, where a tap's ring
+/// passes at a few hundredths and a held swell lifts by tenths.
+enum TargetKind {
+    case bud, bell
+}
+
+struct TargetSpec {
+    var kind: TargetKind
+    var at: CGPoint
+    var threshold: Float = 0.055
 }
 
 struct Shape {
@@ -78,7 +130,7 @@ struct Shape {
 }
 
 enum Hint: String {
-    case tap, hold, swell, current, bounce, ice
+    case tap, hold, swell, current, bounce, ice, target, twin
 
     var text: String {
         switch self {
@@ -87,7 +139,9 @@ enum Hint: String {
         case .hold: return "Hold a finger down. A bigger swell can shift heavy things."
         case .swell: return "Two fingers together sweep a whole cluster."
         case .current: return "Drag along the bank to set a slow current."
-        case .bounce: return "Ripples bounce off the rock. Use it."
+        case .bounce: return "Ripples bounce off the stones. A curve of them throws a ripple back."
+        case .target: return "Something sleeps among the pads. Only a wave through the gap will wake it."
+        case .twin: return "Two ripples arriving together lift what one cannot."
         }
     }
 }
@@ -102,6 +156,10 @@ struct LevelSpec: Identifiable {
     let debris: [DebrisPlacement]
     var rocks: [Shape] = []
     var shallows: [Shape] = []
+    /// Lily pads: they block ripples like stones and cannot be tapped, but
+    /// they lie flat on the water.
+    var pads: [Shape] = []
+    var targets: [TargetSpec] = []
     var hint: Hint? = nil
     /// Bloom stage (0...3, fractional) the garden reaches when this level is done.
     var bloomTarget: Float
@@ -144,6 +202,7 @@ enum Library {
             weeds: ["weed_w_1", "weed_w_2", "weed_w_3", "weed_w_4", "weed_w_5"],
             under: [], skaters: [], flyers: [],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
+            reeds: ["reed_w_1", "reed_w_2", "reed_w_3", "reed_w_4"],
             iceFragments: ["ice_1", "ice_2", "ice_3", "ice_4", "ice_5", "ice_8", "ice_9", "ice_10"],
             ambientFall: "snow_2"),
         photographic: nil, rootNote: 440,
@@ -211,7 +270,9 @@ enum Library {
                              mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_summer", bedImage: "bed_summer"),
             weeds: ["weed_s_1", "weed_s_2", "weed_s_3", "weed_s_4", "weed_s_5"],
             under: ["tadpole_2", "boatman_1", "tadpole_3"], skaters: ["skater_1", "skater_2"], flyers: ["dragonfly_body"],
-            clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
+            clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
+            reeds: ["reed_su_1", "reed_su_2", "reed_su_3", "reed_su_4", "iris_1", "iris_2"],
+            frog: ("frog_top", "lilypad_frog"), newt: "newt_1"),
         photographic: nil, rootNote: 587.33,
         tagline: "Lotus and long light. The koi are bold now.")
 
@@ -232,7 +293,8 @@ enum Library {
                              mosaicCentre: [0.5, 0.5], mosaicRadius: 0.17, mosaicImage: "mosaic_autumn", bedImage: "bed_autumn"),
             weeds: ["weed_a_1", "weed_a_2", "weed_a_3", "weed_a_4", "weed_a_5"],
             under: ["boatman_1"], skaters: ["skater_2"], flyers: [],
-            clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"]),
+            clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
+            reeds: ["reed_a_1", "reed_a_2", "reed_a_3", "reed_a_4", "bulrush_1", "bulrush_2"], newt: "newt_1"),
         photographic: nil, rootNote: 392,
         tagline: "Maple on the pond. The year settles.")
 
@@ -245,7 +307,84 @@ enum Library {
     /// rock to bounce off; three a heavy piece that needs a held swell; four
     /// a packed cluster that wants two fingers; five shallows that slow the
     /// waves and a current to lean on; six everything at once.
-    static let levels: [LevelSpec] = seasons.flatMap { season in (1...6).map { build(season: season, index: $0) } }
+    static let levels: [LevelSpec] = seasons.flatMap { season in
+        (1...6).map { designed["\(season.id)-\($0)"] ?? build(season: season, index: $0) }
+    }
+
+    // MARK: - Designed levels
+
+    /// Levels laid out by hand, each around one idea. Positions are
+    /// fractions of the world; radii are fractions of its height, and the
+    /// world is about 2.17 times taller than wide, so a circle of things
+    /// needs its x offsets stretched by that.
+    private static let tall: CGFloat = 2.17
+
+    private static func ring(_ n: Int, centre c: CGPoint, radius r: CGFloat, from a0: CGFloat, to a1: CGFloat) -> [CGPoint] {
+        (0..<n).map { k in
+            let a = a0 + (a1 - a0) * CGFloat(k) / CGFloat(max(1, n - 1))
+            return CGPoint(x: c.x + cos(a) * r * tall, y: c.y + sin(a) * r)
+        }
+    }
+
+    static let designed: [String: LevelSpec] = {
+        var out: [String: LevelSpec] = [:]
+
+        // Spring two, "the stone arc": a can lies at the centre of a curve
+        // of stones. A ripple sent out from near the can comes back off the
+        // curve and meets itself there, twice the height of the ring that
+        // left; that, or a held swell, is what shifts a can.
+        do {
+            let c = CGPoint(x: 0.5, y: 0.40)
+            let arc = ring(5, centre: c, radius: 0.13, from: -2.6, to: -0.54).map { Shape(centre: $0, radius: 0.032) }
+            let petals = [CGPoint(x: 0.26, y: 0.58), CGPoint(x: 0.70, y: 0.62), CGPoint(x: 0.42, y: 0.70),
+                          CGPoint(x: 0.62, y: 0.50), CGPoint(x: 0.34, y: 0.33)]
+            var debris = petals.enumerated().map { i, p in
+                DebrisPlacement(cls: .light, at: p, variant: i, scale: 1, rotation: Float(i) * 1.3)
+            }
+            debris.append(DebrisPlacement(cls: .heavy, at: c, variant: 0, scale: 1, rotation: 0.4, kind: .can))
+            out["spring-2"] = LevelSpec(id: "spring-2", seasonID: "spring", index: 2, title: "Spring, two",
+                                        mosaicCentre: c, mosaicRadius: 0, debris: debris,
+                                        rocks: arc, shallows: [], hint: .bounce, bloomTarget: 1.0)
+        }
+
+        // Spring three, "two ripples": a log that one tap's ring will not
+        // lift, and a bottle that any ripple skates away. Two rings that
+        // meet under the log lift it; so does a held swell.
+        do {
+            let c = CGPoint(x: 0.5, y: 0.46)
+            var debris = [DebrisPlacement(cls: .heavy, at: CGPoint(x: 0.52, y: 0.44), variant: 0, scale: 1, rotation: 0.3),
+                          DebrisPlacement(cls: .light, at: CGPoint(x: 0.30, y: 0.62), variant: 0, scale: 1, rotation: 1.1, kind: .bottle)]
+            for (i, p) in [CGPoint(x: 0.24, y: 0.36), CGPoint(x: 0.74, y: 0.34), CGPoint(x: 0.66, y: 0.66), CGPoint(x: 0.44, y: 0.30)].enumerated() {
+                debris.append(DebrisPlacement(cls: .light, at: p, variant: i + 1, scale: 1, rotation: Float(i) * 0.9))
+            }
+            out["spring-3"] = LevelSpec(id: "spring-3", seasonID: "spring", index: 3, title: "Spring, three",
+                                        mosaicCentre: c, mosaicRadius: 0, debris: debris,
+                                        rocks: [Shape(centre: CGPoint(x: 0.78, y: 0.52), radius: 0.045)], shallows: [],
+                                        hint: .twin, bloomTarget: 1.5)
+        }
+
+        // Summer two, "the lens": a lily bud sleeps inside a ring of pads
+        // with one gap facing down the pond. Below the gap a sandbank
+        // shallows the water; a ripple crossing it slows in the middle and
+        // bends inward, so a tap from the right spot lands a crest through
+        // the gap on the bud. Taps on the pads do nothing.
+        do {
+            let c = CGPoint(x: 0.5, y: 0.34)
+            var pads = ring(6, centre: c, radius: 0.072, from: -2.62 + 0.2, to: 2.62 - 0.2).map { Shape(centre: $0, radius: 0.027) }
+            pads.removeAll { abs($0.centre.x - c.x) < 0.02 && $0.centre.y > c.y }   // keep the gap open below
+            let bank = Shape(centre: CGPoint(x: 0.5, y: 0.56), radius: 0.10)
+            var debris: [DebrisPlacement] = []
+            for (i, p) in [CGPoint(x: 0.26, y: 0.70), CGPoint(x: 0.72, y: 0.74), CGPoint(x: 0.36, y: 0.80), CGPoint(x: 0.80, y: 0.46)].enumerated() {
+                debris.append(DebrisPlacement(cls: .light, at: p, variant: i, scale: 1, rotation: Float(i) * 0.7))
+            }
+            out["summer-2"] = LevelSpec(id: "summer-2", seasonID: "summer", index: 2, title: "Summer, two",
+                                        mosaicCentre: c, mosaicRadius: 0, debris: debris,
+                                        rocks: [], shallows: [bank], pads: pads,
+                                        targets: [TargetSpec(kind: .bud, at: c, threshold: 0.036)],
+                                        hint: .target, bloomTarget: 1.0)
+        }
+        return out
+    }()
 
     static let springOne: LevelSpec = levels.first { $0.id == "spring-1" }!
 
@@ -298,7 +437,7 @@ enum Library {
             let heavy = scatter(1, cls: .heavy, spread: 0.7)
             debris = heavy + scatter(6, cls: .light, spread: 0.9, avoid: heavy.map(\.at))
             rocks = [Shape(centre: shoulder, radius: 0.05)]
-            hint = .tap
+            hint = .hold
         case 4:
             debris = scatter(15, cls: .light, spread: 0.7)
             rocks = [Shape(centre: farSide, radius: 0.05)]
