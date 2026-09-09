@@ -1489,7 +1489,8 @@ final class GameController: ObservableObject, TouchInput {
         // The line is only written again when what is left has actually
         // changed. The sheet is read to the nearest twentieth, or a melting
         // shard would rewrite the words every frame.
-        let alive = debris.filter { !$0.cleared }
+        // Ice chunks melt on their own; they are not the player's to clear.
+        let alive = debris.filter { !$0.cleared && $0.meltsIn == nil }
         let ice = ((iceField?.fraction ?? 0) * 20).rounded() / 20
         let key = SIMD4<Int>(alive.count, alive.filter { $0.kind.isRubbish }.count,
                              targets.filter { !$0.woke }.count, Int(ice * 20))
