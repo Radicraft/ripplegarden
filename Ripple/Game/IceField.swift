@@ -29,7 +29,11 @@ final class IceField {
     /// Which slice of `seeds` belongs to each strike.
     private(set) var strikeSeeds: [Range<Int>] = []
     /// The masks have changed and want uploading.
-    private(set) var dirty = true
+    var dirty: Bool { dirtyRect != nil }
+    /// The box of cells changed since the last upload. Only these rows go to
+    /// the GPU, so a finger's scuff or a sinking shard costs its own patch
+    /// and not the whole sheet. Empty when there is nothing to send.
+    private var dx0 = 0, dy0 = 0, dx1 = -1, dy1 = -1
     /// The diagram itself has changed: the crack field wants re-baking. A
     /// finger scuffing frost dirties the masks but not this.
     private(set) var cracksDirty = true
@@ -38,7 +42,10 @@ final class IceField {
     /// clock when they broke. Their mask value slides from just under the
     /// ice threshold down to open water over a second, and the shader draws
     /// the slab flooding and sinking as it goes.
-    private var sinking: [(cells: [Int32], start: Float)] = []
+    /// Each shard keeps the box it covers, so `settle` never has to look for
+    /// where its cells are.
+    private var sinking: [(cells: [Int32], start: Float, box: Box)] = []
+    typealias Box = (x0: Int, y0: Int, x1: Int, y1: Int)
     static let sinkSeconds: Float = 1.1
     static let sinkStart: Float = 0.49
 
@@ -52,12 +59,48 @@ final class IceField {
         height = max(8, Int(world.height / cellSize))
         cells = Array(repeating: 1, count: width * height)
         scuff = Array(repeating: 0, count: width * height)
+        touch(0, 0, width - 1, height - 1)          // the first upload is the whole sheet
     }
 
     var fraction: Float { cells.reduce(0, +) / Float(cells.count) }
 
-    func markClean() { dirty = false }
+    /// The patch to upload: its corner and size in cells, or nil if clean.
+    var dirtyRect: (x: Int, y: Int, w: Int, h: Int)? {
+        guard dx1 >= dx0, dy1 >= dy0 else { return nil }
+        return (dx0, dy0, dx1 - dx0 + 1, dy1 - dy0 + 1)
+    }
+
+    func markClean() { dx0 = 0; dy0 = 0; dx1 = -1; dy1 = -1 }
     func markCracksClean() { cracksDirty = false }
+
+    /// Grows the dirty box to take in a block of cells.
+    private func touch(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int) {
+        let ax0 = max(0, x0), ay0 = max(0, y0)
+        let ax1 = min(width - 1, x1), ay1 = min(height - 1, y1)
+        guard ax0 <= ax1, ay0 <= ay1 else { return }
+        if dx1 < dx0 || dy1 < dy0 {
+            dx0 = ax0; dy0 = ay0; dx1 = ax1; dy1 = ay1
+            return
+        }
+        dx0 = min(dx0, ax0); dy0 = min(dy0, ay0)
+        dx1 = max(dx1, ax1); dy1 = max(dy1, ay1)
+    }
+
+    private func touch(_ b: Box) { touch(b.x0, b.y0, b.x1, b.y1) }
+
+    /// The box a list of cells covers, or nil if the list is empty.
+    private func bounds(of list: [Int32]) -> Box? {
+        guard !list.isEmpty else { return nil }
+        var x0 = width, y0 = height, x1 = -1, y1 = -1
+        for i in list {
+            let v = Int(i), x = v % width, y = v / width
+            if x < x0 { x0 = x }
+            if x > x1 { x1 = x }
+            if y < y0 { y0 = y }
+            if y > y1 { y1 = y }
+        }
+        return (x0, y0, x1, y1)
+    }
 
     private func noise() -> Float {
         rng = rng &* 1664525 &+ 1013904223
@@ -271,7 +314,10 @@ final class IceField {
             }
         }
         strikeSeeds.append(start..<seeds.count)
-        dirty = true
+        // A blow leaves the masks alone, but the bite that follows works
+        // inside its rim, so the rim is what wants uploading.
+        let cs = Float(cellSize), far = r * 1.4
+        touch(Int((cx - far) / cs), Int((cy - far) / cs), Int((cx + far) / cs), Int((cy + far) / cs))
         cracksDirty = true
         return index
     }
@@ -381,8 +427,10 @@ final class IceField {
         // Nothing small is left behind: any scrap of sheet the break has cut
         // off from the rest goes under with it.
         sunk += orphans(near: st.centre, within: st.ring * 2.4, maxArea: 12000)
-        if !sunk.isEmpty { sinking.append((sunk, time)) }
-        dirty = true
+        if let box = bounds(of: sunk) {
+            sinking.append((sunk, time, box))
+            touch(box)
+        }
         cracksDirty = true
         let cellArea = cellSize * cellSize
         return brokenSeeds.compactMap { i in
@@ -473,8 +521,10 @@ final class IceField {
             }
         }
         for i in comp { cells[Int(i)] = IceField.sinkStart }
-        sinking.append((comp, time))
-        dirty = true
+        if let box = bounds(of: comp) {
+            sinking.append((comp, time, box))
+            touch(box)
+        }
         return CGFloat(comp.count) * cellSize * cellSize
     }
 
@@ -485,16 +535,18 @@ final class IceField {
             cells[i] = IceField.sinkStart
             comp.append(Int32(i))
         }
-        guard !comp.isEmpty else { return }
-        sinking.append((comp, time))
-        dirty = true
+        guard let box = bounds(of: comp) else { return }
+        sinking.append((comp, time, box))
+        touch(box)
     }
 
     /// Once a frame: the broken shards go under. Their mask value falls
     /// from `sinkStart` to nothing over `sinkSeconds`, then they are gone.
     func settle(clock: Float) {
         guard !sinking.isEmpty else { return }
-        var keep: [(cells: [Int32], start: Float)] = []
+        // Only the boxes the shards cover want uploading, not the sheet.
+        for shard in sinking { touch(shard.box) }
+        var keep: [(cells: [Int32], start: Float, box: Box)] = []
         cells.withUnsafeMutableBufferPointer { cp in
             for shard in sinking {
                 let t = (clock - shard.start) / IceField.sinkSeconds
@@ -508,7 +560,6 @@ final class IceField {
             }
         }
         sinking = keep
-        dirty = true
     }
 
     // MARK: - The finger on the sheet
@@ -533,7 +584,7 @@ final class IceField {
                 scuff[i] = min(1, scuff[i] + amount * fall)
             }
         }
-        dirty = true
+        touch(x0, y0, x1, y1)
     }
 
     // MARK: - Housekeeping

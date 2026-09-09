@@ -249,6 +249,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private let iceRangeBuffer: MTLBuffer
     /// Scratch for the ice upload, kept between frames.
     private var iceBytes: [UInt8] = []
+    /// Scratch for a patch upload, big enough for the largest patch so far.
+    private var iceRectBytes: [UInt8] = []
+    /// The last patch sent to the ice texture, for the -diag log.
+    private(set) var lastIceUploadRect: (x: Int, y: Int, w: Int, h: Int)?
     private var iceSeedCount = 0
     private var iceStrikeCount = 0
     private var cracksDirty = false
@@ -1209,6 +1213,63 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         iceBytes.withUnsafeBytes { raw in
             iceTexture?.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: raw.baseAddress!, bytesPerRow: width * 2)
         }
+        lastIceUploadRect = (0, 0, width, height)
+    }
+
+    /// The same upload, but only over the patch that changed. The sheet is
+    /// close to a million cells; a finger wipes a thumbprint of it and a
+    /// sinking shard covers its own box, so only those rows are packed and
+    /// only that region of the texture is replaced.
+    func setIce(_ cells: [Float], scuff: [Float]?, width: Int, height: Int,
+                rect: (x: Int, y: Int, w: Int, h: Int)) {
+        guard width > 0, height > 0, cells.count >= width * height else { iceTexture = nil; return }
+        // A texture that is missing or the wrong size has to be made and
+        // filled whole; a patch only means anything against a matching one.
+        guard let tex = iceTexture, tex.width == width, tex.height == height else {
+            setIce(cells, scuff: scuff, width: width, height: height)
+            return
+        }
+        let x0 = max(0, min(width - 1, rect.x)), y0 = max(0, min(height - 1, rect.y))
+        let x1 = max(x0, min(width - 1, rect.x + rect.w - 1))
+        let y1 = max(y0, min(height - 1, rect.y + rect.h - 1))
+        let w = x1 - x0 + 1, h = y1 - y0 + 1
+        let need = w * h * 2
+        if iceRectBytes.count < need { iceRectBytes = [UInt8](repeating: 0, count: need) }
+        // A scuff map that does not match the sheet is ignored rather than
+        // read off its end.
+        let scuffed = (scuff?.count ?? 0) >= width * height ? scuff : nil
+        iceRectBytes.withUnsafeMutableBufferPointer { out in
+            cells.withUnsafeBufferPointer { cp in
+                for y in 0..<h {
+                    let src = (y0 + y) * width + x0
+                    let dst = y * w * 2
+                    for x in 0..<w {
+                        out[dst + x * 2] = UInt8(max(0, min(255, cp[src + x] * 255)))
+                    }
+                }
+            }
+            if let scuffed {
+                scuffed.withUnsafeBufferPointer { sp in
+                    for y in 0..<h {
+                        let src = (y0 + y) * width + x0
+                        let dst = y * w * 2 + 1
+                        for x in 0..<w {
+                            out[dst + x * 2] = UInt8(max(0, min(255, sp[src + x] * 255)))
+                        }
+                    }
+                }
+            } else {
+                for y in 0..<h {
+                    let dst = y * w * 2 + 1
+                    for x in 0..<w { out[dst + x * 2] = 0 }
+                }
+            }
+        }
+        iceRectBytes.withUnsafeBytes { raw in
+            tex.replace(region: MTLRegionMake2D(x0, y0, w, h), mipmapLevel: 0,
+                        withBytes: raw.baseAddress!, bytesPerRow: w * 2)
+        }
+        lastIceUploadRect = (x0, y0, w, h)
     }
 
     /// Recomputes the silt normaliser after the look changes.

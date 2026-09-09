@@ -89,6 +89,9 @@ final class GameController: ObservableObject, TouchInput {
     private let diagnostics = ProcessInfo.processInfo.arguments.contains("-diag")
     private var diagFrames = 0
     private var diagHeavyLift: Float = 0
+    private var diagIceUploads = 0
+    private var diagIceCells = 0
+    private var diagIceLast = (w: 0, h: 0)
     private var elapsed: Float = 0
     private var touchedYet = false
     private var hintsShown: Set<Hint> = []
@@ -475,8 +478,14 @@ final class GameController: ObservableObject, TouchInput {
         }
 
         iceField?.settle(clock: renderer.clock)
-        if let f = iceField, f.dirty {
-            renderer.setIce(f.cells, scuff: f.scuff, width: f.width, height: f.height)
+        if let f = iceField, let rect = f.dirtyRect {
+            // Only the patch that changed goes up, not the whole sheet.
+            renderer.setIce(f.cells, scuff: f.scuff, width: f.width, height: f.height, rect: rect)
+            if diagnostics, let r = renderer.lastIceUploadRect {
+                diagIceUploads += 1
+                diagIceCells += r.w * r.h
+                diagIceLast = (r.w, r.h)
+            }
             // A scuffed streak of frost does not move a crack: the field is
             // only re-baked when the diagram itself has changed.
             if f.cracksDirty {
@@ -628,6 +637,13 @@ final class GameController: ObservableObject, TouchInput {
                       iceField?.fraction ?? 0, targets.filter(\.woke).count, targets.count, probeOrder.count, diagHeavyLift,
                       heavy?.position.x ?? 0, heavy?.position.y ?? 0, String(describing: phase))
                 diagHeavyLift = 0
+                if let f = iceField {
+                    NSLog("[ice] uploads=%d last=%dx%d (%d bytes) total=%d bytes over 60 frames, sheet=%dx%d (%d bytes)",
+                          diagIceUploads, diagIceLast.w, diagIceLast.h, diagIceLast.w * diagIceLast.h * 2,
+                          diagIceCells * 2, f.width, f.height, f.width * f.height * 2)
+                }
+                diagIceUploads = 0
+                diagIceCells = 0
             }
         }
     }
