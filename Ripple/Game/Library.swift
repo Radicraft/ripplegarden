@@ -36,6 +36,8 @@ struct ArtSet {
     var gravel: [String] = ["gravel_1", "gravel_2", "gravel_3", "gravel_4"]
     var sand: [String] = ["sand_1", "sand_2", "sand_3"]
     var reeds: [String] = []
+    /// Small fish that swim in shoals, one sprite per shoal.
+    var shoal: [String] = []
     var frog: (frog: String, pad: String)? = nil
     var newt: String? = nil
     var heron: String? = nil
@@ -99,6 +101,17 @@ enum DebrisKind {
     var gain: Float { switch self { case .natural: return 1; case .can: return 1; case .bottle: return 1.4; case .packet: return 1.1; case .bag: return 0.9 } }
     var threshold: Float { switch self { case .natural: return 1; case .can: return 0.8; default: return 1 } }
     var currentPush: Float { switch self { case .natural: return 1; case .can: return 0.6; case .bottle: return 1.2; case .packet: return 1.1; case .bag: return 1.8 } }
+
+    /// Rubbish drawn as a body rather than a cut-out, and how fat and how
+    /// long that body is as fractions of the piece's radius. Everything else
+    /// is paper and returns nil.
+    var solid: (shape: UInt32, radius: CGFloat, length: CGFloat)? {
+        switch self {
+        case .can: return (0, 0.42, 1.6)
+        case .bottle: return (1, 0.36, 1.9)
+        default: return nil
+        }
+    }
 }
 
 struct DebrisPlacement {
@@ -231,6 +244,7 @@ enum Library {
         gravel: ["gravel_1", "gravel_2", "gravel_3", "gravel_4"],
         sand: ["sand_1", "sand_2", "sand_3"],
         reeds: ["reed_s_1", "reed_s_2", "reed_s_3", "reed_s_4"],
+        shoal: ["minnow_1", "stickleback_1"],
         frog: ("frog_top", "lilypad_frog"),
         newt: "newt_1",
         heron: "heron_shadow")
@@ -272,6 +286,7 @@ enum Library {
             under: ["tadpole_2", "boatman_1", "tadpole_3"], skaters: ["skater_1", "skater_2"], flyers: ["dragonfly_body"],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
             reeds: ["reed_su_1", "reed_su_2", "reed_su_3", "reed_su_4", "iris_1", "iris_2"],
+            shoal: ["rudd_1", "minnow_2"],
             frog: ("frog_top", "lilypad_frog"), newt: "newt_1"),
         photographic: nil, rootNote: 587.33,
         tagline: "Lotus and long light. The koi are bold now.")
@@ -294,7 +309,8 @@ enum Library {
             weeds: ["weed_a_1", "weed_a_2", "weed_a_3", "weed_a_4", "weed_a_5"],
             under: ["boatman_1"], skaters: ["skater_2"], flyers: [],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
-            reeds: ["reed_a_1", "reed_a_2", "reed_a_3", "reed_a_4", "bulrush_1", "bulrush_2"], newt: "newt_1"),
+            reeds: ["reed_a_1", "reed_a_2", "reed_a_3", "reed_a_4", "bulrush_1", "bulrush_2"],
+            shoal: ["stickleback_2"], newt: "newt_1"),
         photographic: nil, rootNote: 392,
         tagline: "Maple on the pond. The year settles.")
 

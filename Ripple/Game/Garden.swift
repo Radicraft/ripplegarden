@@ -37,6 +37,7 @@ final class Garden {
     /// Water slope under each weed tip, set by the controller from the probes.
     var weedSamples: [Int: FieldSample] = [:]
     private var critters: [Critter] = []
+    private var shoals: [Shoal] = []
     private var clouds: [Cloud] = []
     private var dragonfly: Dragonfly?
     private var nextFlyerAt: TimeInterval = 0
@@ -66,6 +67,7 @@ final class Garden {
     func startle(at point: CGPoint, in size: CGSize) {
         leanToward = SIMD2(Float(point.x - size.width / 2), Float(point.y - size.height / 2)) * 0.05
         for c in critters { c.startle(from: point) }
+        for s in shoals { s.startle(from: point) }
         for k in koi { k.startle(from: point, now: time) }
         frog?.startle(from: point, now: time)
         newt?.startle(from: point)
@@ -129,6 +131,9 @@ final class Garden {
         buildShore()
         frog = art.frog.map { Frog(texture: $0.frog, pad: $0.pad, size: size) }
         newt = art.newt.map { Critter(texture: $0, forward: -.pi / 2, size: 34, seed: 3, under: true, slow: true) }
+        shoals = art.shoal.enumerated().map { i, name in
+            Shoal(texture: name, count: 10 + i * 4, size: size, seed: i)
+        }
     }
 
     /// The bed is not a painting: it is stones and gravel lying at their own
@@ -249,6 +254,7 @@ final class Garden {
         }
 
         for c in critters { c.update(dt: dt, now: now, in: size) }
+        for s in shoals { s.update(dt: dt, now: now, in: size, rocks: rocks, koi: koi.map(\.position)) }
         for c in clouds { c.update(dt: dt, in: size) }
         if let f = dragonfly {
             f.update(dt: dt, now: now, in: size)
@@ -361,6 +367,18 @@ final class Garden {
         for c in critters where c.under {
             out.append(Sprite(c.texture, at: c.position, size: c.spriteSize(textureSize), rotation: c.rotation,
                               mode: .submerged, alpha: 1, depth: 0.5, z: -0.55))
+        }
+        for shoal in shoals {
+            let t = textureSize(shoal.texture)
+            for f in shoal.fish {
+                let h = f.length, w = h * t.width / max(1, t.height)
+                out.append(Sprite(shoal.texture, at: CGPoint(x: f.position.x + 6, y: f.position.y + 12),
+                                  size: CGSize(width: w, height: h), rotation: f.heading - .pi / 2, mode: .shadow,
+                                  alpha: 0.35, wave: f.phase, waveAmp: 0.14, z: -1.0))
+                out.append(Sprite(shoal.texture, at: f.position, size: CGSize(width: w, height: h),
+                                  rotation: f.heading - .pi / 2, mode: .submerged, alpha: 1, depth: shoal.depth,
+                                  wave: f.phase, waveAmp: 0.14, z: -0.2 - 0.7 * shoal.depth))
+            }
         }
         for k in koi where k.depth < 0.98 {
             let d = k.depth
@@ -1181,6 +1199,131 @@ final class Heron {
 
 
 /// A speck drifting in the water column.
+/// A shoal of small fish: boids. Each fish keeps near its neighbours, swims
+/// the way they swim, keeps its distance, and follows a wander point the
+/// whole shoal shares; a tap or a passing koi scatters them, and they close
+/// up again. Nothing is scripted, so no two moments look alike.
+final class Shoal {
+    final class Fish {
+        var position: CGPoint
+        var velocity: SIMD2<Float>
+        var heading: Float
+        var phase: Float
+        let length: CGFloat
+        init(position: CGPoint, velocity: SIMD2<Float>, length: CGFloat, phase: Float) {
+            self.position = position
+            self.velocity = velocity
+            self.heading = atan2(velocity.y, velocity.x)
+            self.phase = phase
+            self.length = length
+        }
+    }
+
+    let texture: String
+    private(set) var fish: [Fish] = []
+    /// How deep the shoal swims, 0 surface to 1 bed.
+    let depth: Float
+    private var wander: CGPoint
+    private var wanderUntil: TimeInterval = 0
+    private var fright: Float = 0
+    private let cruise: Float
+    private let seed: Int
+
+    init(texture: String, count: Int, size: CGSize, seed: Int) {
+        self.texture = texture
+        self.seed = seed
+        depth = [0.35, 0.5, 0.42][seed % 3]
+        cruise = [46, 38, 54][seed % 3]
+        let centre = CGPoint(x: size.width * CGFloat.random(in: 0.25...0.75), y: size.height * CGFloat.random(in: 0.25...0.75))
+        wander = centre
+        let a = Float.random(in: 0...(2 * .pi))
+        fish = (0..<count).map { _ in
+            Fish(position: CGPoint(x: centre.x + CGFloat.random(in: -40...40), y: centre.y + CGFloat.random(in: -40...40)),
+                 velocity: SIMD2(cos(a), sin(a)) * cruise + SIMD2(Float.random(in: -8...8), Float.random(in: -8...8)),
+                 length: CGFloat.random(in: 24...36) * [1.0, 0.85, 1.2][seed % 3],
+                 phase: Float.random(in: 0...(2 * .pi)))
+        }
+    }
+
+    func startle(from point: CGPoint) {
+        for f in fish {
+            let dx = Float(f.position.x - point.x), dy = Float(f.position.y - point.y)
+            let d = max(1, (dx * dx + dy * dy).squareRoot())
+            guard d < 220 else { continue }
+            let away = SIMD2(dx, dy) / d
+            f.velocity += away * (1 - d / 220) * 180
+        }
+        fright = 1
+    }
+
+    func update(dt: Float, now: TimeInterval, in size: CGSize, rocks: [(centre: CGPoint, radius: CGFloat)], koi: [CGPoint]) {
+        if now > wanderUntil {
+            wander = CGPoint(x: size.width * CGFloat.random(in: 0.18...0.82), y: size.height * CGFloat.random(in: 0.18...0.82))
+            wanderUntil = now + Double.random(in: 6...14)
+        }
+        fright *= exp(-dt * 0.9)
+        let n = fish.count
+        guard n > 0 else { return }
+        let neighbour: Float = 80
+        for i in 0..<n {
+            let f = fish[i]
+            // A fish wants a body length of clear water round it.
+            let tooClose = Float(f.length) * 0.95
+            var centre = SIMD2<Float>(0, 0), align = SIMD2<Float>(0, 0), apart = SIMD2<Float>(0, 0)
+            var count: Float = 0
+            let p = SIMD2(Float(f.position.x), Float(f.position.y))
+            for j in 0..<n where j != i {
+                let g = fish[j]
+                let q = SIMD2(Float(g.position.x), Float(g.position.y))
+                let d = simd_length(q - p)
+                guard d < neighbour else { continue }
+                centre += q
+                align += g.velocity
+                count += 1
+                if d < tooClose { apart -= (q - p) / max(0.5, d) * (tooClose - d) }
+            }
+            var steer = SIMD2<Float>(0, 0)
+            if count > 0 {
+                steer += (centre / count - p) * 0.8
+                steer += (align / count - f.velocity) * 1.4
+            }
+            steer += apart * 22
+            // The wander point pulls gently; it is where the shoal is going.
+            let w = SIMD2(Float(wander.x), Float(wander.y))
+            steer += (w - p) * 0.25
+            // Banks, stones and the koi are kept clear of.
+            let margin: Float = 50
+            if p.x < margin { steer.x += (margin - p.x) * 3 }
+            if p.y < margin { steer.y += (margin - p.y) * 3 }
+            if p.x > Float(size.width) - margin { steer.x -= (p.x - (Float(size.width) - margin)) * 3 }
+            if p.y > Float(size.height) - margin { steer.y -= (p.y - (Float(size.height) - margin)) * 3 }
+            for r in rocks {
+                let c = SIMD2(Float(r.centre.x), Float(r.centre.y))
+                let d = simd_length(p - c), keep = Float(r.radius) + 30
+                if d < keep { steer += (p - c) / max(1, d) * (keep - d) * 6 }
+            }
+            for k in koi {
+                let c = SIMD2(Float(k.x), Float(k.y))
+                let d = simd_length(p - c)
+                if d < 110 { steer += (p - c) / max(1, d) * (110 - d) * 2.5 }
+            }
+            f.velocity += steer * dt
+            // Hold the cruising speed, faster while frightened.
+            let want = cruise * (1 + fright * 1.6)
+            let sp = simd_length(f.velocity)
+            if sp > 0.01 { f.velocity *= 1 + (want / sp - 1) * min(1, dt * 2.2) }
+            let target = atan2(f.velocity.y, f.velocity.x)
+            var diff = target - f.heading
+            while diff > .pi { diff -= 2 * .pi }
+            while diff < -.pi { diff += 2 * .pi }
+            f.heading += diff * min(1, dt * 6)
+            f.position.x += CGFloat(f.velocity.x * dt)
+            f.position.y += CGFloat(f.velocity.y * dt)
+            f.phase += dt * (6 + sp * 0.12)
+        }
+    }
+}
+
 final class Mote {
     private(set) var position: CGPoint
     let z: Float
