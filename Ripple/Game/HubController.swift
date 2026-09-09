@@ -126,10 +126,15 @@ final class HubController: ObservableObject, TouchInput {
         entries = seasons.enumerated().map { ($0.element.name, bottom - stretch * CGFloat($0.offset) - 34) }
         mouthY = bottom + 92
         storeNote = CGPoint(x: w * 0.5, y: top - 34)
-        sourceMist = (0..<7).map { k in
-            (CGFloat(k) / 6 * w, top - 70 + CGFloat.random(in: -30...50), Float.random(in: 0...(2 * .pi)), CGFloat.random(in: 260...360))
-        } + (0..<7).map { k in
-            (CGFloat(k) / 6 * w, bottom + 170 + CGFloat.random(in: -30...50), Float.random(in: 0...(2 * .pi)), CGFloat.random(in: 260...360))
+        sourceMist = []
+        for end in [top - 70, bottom + 170] {
+            for k in 0..<7 {
+                let x: CGFloat = CGFloat(k) / 6 * w
+                let y: CGFloat = end + CGFloat.random(in: -30...50)
+                let phase: Float = Float.random(in: 0...(2 * .pi))
+                let size: CGFloat = CGFloat.random(in: 260...360)
+                sourceMist.append((x, y, phase, size))
+            }
         }
         garden.depthAt = { [weak self] p in
             guard let self else { return 1 }
