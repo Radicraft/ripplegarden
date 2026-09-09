@@ -1,0 +1,263 @@
+[
+  {
+    "name": "amb_winter",
+    "file": "amb_winter.m4a",
+    "kind": "ambience",
+    "gain": 0.5,
+    "loop": true,
+    "pitchVariation": 0.0,
+    "credit": "\"Mountain forest winter amb trees creak light wind BANFF 190107\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "amb_spring",
+    "file": "amb_spring.m4a",
+    "kind": "ambience",
+    "gain": 0.51,
+    "loop": true,
+    "pitchVariation": 0.0,
+    "credit": "\"Forest ambience morning, spring, localization Poland 4\" by AudioPapkin (Pixabay) + \"Gentle Stream\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "amb_summer",
+    "file": "amb_summer.m4a",
+    "kind": "ambience",
+    "gain": 0.5,
+    "loop": true,
+    "pitchVariation": 0.0,
+    "credit": "\"FIELD - Byron Bay Nighttime Ambience, Frogs, Crickets Recording\" by Fronbondi_Skegs (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "amb_autumn",
+    "file": "amb_autumn.m4a",
+    "kind": "ambience",
+    "gain": 0.7,
+    "loop": true,
+    "pitchVariation": 0.0,
+    "credit": "\"Dry Field Grass Rustling\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "amb_stream",
+    "file": "amb_stream.m4a",
+    "kind": "ambience",
+    "gain": 0.68,
+    "loop": true,
+    "pitchVariation": 0.0,
+    "credit": "\"Gentle Stream\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "amb_rain_light",
+    "file": "amb_rain_light.m4a",
+    "kind": "ambience",
+    "gain": 0.5,
+    "loop": true,
+    "pitchVariation": 0.0,
+    "credit": "\"Calming Rain Loop\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_drop_1",
+    "file": "fx_drop_1.m4a",
+    "kind": "effect",
+    "gain": 0.63,
+    "loop": false,
+    "pitchVariation": 0.12,
+    "credit": "\"water drop\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_drop_2",
+    "file": "fx_drop_2.m4a",
+    "kind": "effect",
+    "gain": 0.62,
+    "loop": false,
+    "pitchVariation": 0.12,
+    "credit": "\"water drop\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_drop_3",
+    "file": "fx_drop_3.m4a",
+    "kind": "effect",
+    "gain": 0.74,
+    "loop": false,
+    "pitchVariation": 0.12,
+    "credit": "\"water drop\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_splash_small_1",
+    "file": "fx_splash_small_1.m4a",
+    "kind": "effect",
+    "gain": 0.74,
+    "loop": false,
+    "pitchVariation": 0.1,
+    "credit": "\"Water Splash\" by Universfield (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_splash_small_2",
+    "file": "fx_splash_small_2.m4a",
+    "kind": "effect",
+    "gain": 0.78,
+    "loop": false,
+    "pitchVariation": 0.1,
+    "credit": "\"Water Splash 02\" by Universfield (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_splash_small_3",
+    "file": "fx_splash_small_3.m4a",
+    "kind": "effect",
+    "gain": 0.9,
+    "loop": false,
+    "pitchVariation": 0.1,
+    "credit": "\"Small water splash\" by Soumages (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_splash_big",
+    "file": "fx_splash_big.m4a",
+    "kind": "effect",
+    "gain": 1.0,
+    "loop": false,
+    "pitchVariation": 0.06,
+    "credit": "\"Big Rock Splash 5\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_ice_crack_1",
+    "file": "fx_ice_crack_1.m4a",
+    "kind": "effect",
+    "gain": 1.0,
+    "loop": false,
+    "pitchVariation": 0.15,
+    "credit": "\"Sound of Ice Cracking\" by Mollyroselee (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_ice_crack_2",
+    "file": "fx_ice_crack_2.m4a",
+    "kind": "effect",
+    "gain": 1.0,
+    "loop": false,
+    "pitchVariation": 0.15,
+    "credit": "\"Sound of Ice Cracking\" by Mollyroselee (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_ice_crack_3",
+    "file": "fx_ice_crack_3.m4a",
+    "kind": "effect",
+    "gain": 1.0,
+    "loop": false,
+    "pitchVariation": 0.15,
+    "credit": "\"Sound of Ice Cracking\" by Mollyroselee (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_ice_break_1",
+    "file": "fx_ice_break_1.m4a",
+    "kind": "effect",
+    "gain": 0.84,
+    "loop": false,
+    "pitchVariation": 0.08,
+    "credit": "\"Shattering Ice\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_ice_break_2",
+    "file": "fx_ice_break_2.m4a",
+    "kind": "effect",
+    "gain": 1.0,
+    "loop": false,
+    "pitchVariation": 0.08,
+    "credit": "\"Chunks of Ice Shattering | Ice Blocks Breaking\" by Lesiakower (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_can_1",
+    "file": "fx_can_1.m4a",
+    "kind": "effect",
+    "gain": 1.0,
+    "loop": false,
+    "pitchVariation": 0.12,
+    "credit": "\"Aluminum Can Click Pop\" by ArNi_World (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_can_2",
+    "file": "fx_can_2.m4a",
+    "kind": "effect",
+    "gain": 0.97,
+    "loop": false,
+    "pitchVariation": 0.12,
+    "credit": "\"Soda Can Falling\" by Alex_Jauk (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_bottle",
+    "file": "fx_bottle.m4a",
+    "kind": "effect",
+    "gain": 0.82,
+    "loop": false,
+    "pitchVariation": 0.12,
+    "credit": "\"Hitting a full plastic bottle\" by Kuzu420 (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_bell",
+    "file": "fx_bell.m4a",
+    "kind": "effect",
+    "gain": 0.74,
+    "loop": false,
+    "pitchVariation": 0.0,
+    "credit": "\"Ding small bell sfx\" by OxidVideos (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_wood_knock",
+    "file": "fx_wood_knock.m4a",
+    "kind": "effect",
+    "gain": 1.0,
+    "loop": false,
+    "pitchVariation": 0.12,
+    "credit": "\"Wood hit\" by sumaga123 (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_pebbles",
+    "file": "fx_pebbles.m4a",
+    "kind": "effect",
+    "gain": 0.8,
+    "loop": false,
+    "pitchVariation": 0.15,
+    "credit": "\"Peeble_On_Peeble\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_reeds",
+    "file": "fx_reeds.m4a",
+    "kind": "effect",
+    "gain": 0.81,
+    "loop": false,
+    "pitchVariation": 0.15,
+    "credit": "\"Dry Grass Rustling\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_frog_jump",
+    "file": "fx_frog_jump.m4a",
+    "kind": "effect",
+    "gain": 0.75,
+    "loop": false,
+    "pitchVariation": 0.12,
+    "credit": "\"Water Splash Effect\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_bird_flutter",
+    "file": "fx_bird_flutter.m4a",
+    "kind": "effect",
+    "gain": 0.99,
+    "loop": false,
+    "pitchVariation": 0.1,
+    "credit": "\"Bird Wings\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_paper",
+    "file": "fx_paper.m4a",
+    "kind": "effect",
+    "gain": 0.7,
+    "loop": false,
+    "pitchVariation": 0.1,
+    "credit": "\"Foley Paper Handling & Page Turning SFX\" by LensPulse (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_chime_complete",
+    "file": "fx_chime_complete.m4a",
+    "kind": "effect",
+    "gain": 0.85,
+    "loop": false,
+    "pitchVariation": 0.0,
+    "credit": "\"E flat Tibetan singing bowl struck\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  }
+]
