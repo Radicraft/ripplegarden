@@ -58,6 +58,9 @@ final class HubController: ObservableObject, TouchInput {
     private var stretchBranches: [Sprite] = []
     private var snow: [(x: CGFloat, y: CGFloat, phase: Float, size: CGFloat)] = []
     private var winterBand: ClosedRange<CGFloat> = 0...0
+    /// The lips between seasons: a shelf of stones the stream pours over.
+    private var lips: [CGFloat] = []
+    private var foam: [(x: CGFloat, y: CGFloat, phase: Float, size: CGFloat)] = []
 
     init() {
         // Spring dresses the stream; the seasons show in what sits at each
@@ -106,6 +109,7 @@ final class HubController: ObservableObject, TouchInput {
                 pools.append(Pool(level: level, season: season, centre: CGPoint(x: x, y: y), radius: min(w * 0.22, 118)))
             }
         }
+        lips = (1..<seasons.count).map { top + stretch * CGFloat($0) }
         garden.depthAt = { [weak self] p in
             guard let self else { return 1 }
             return self.depth(at: CGPoint(x: p.x / self.viewSize.width, y: p.y / self.viewSize.height))
@@ -173,6 +177,12 @@ final class HubController: ObservableObject, TouchInput {
                 }
             }
         }
+        foam = lips.flatMap { lip in
+            (0..<14).map { _ in
+                (CGFloat.random(in: (w * 0.22)...(w * 0.78), using: &rng), lip + CGFloat.random(in: -6...18, using: &rng),
+                 Float.random(in: 0...(2 * .pi), using: &rng), CGFloat.random(in: 26...46, using: &rng))
+            }
+        }
         snow = (0..<60).map { _ in
             (CGFloat.random(in: 0...w, using: &rng), CGFloat.random(in: winterBand, using: &rng),
              Float.random(in: 0...(2 * .pi), using: &rng), CGFloat.random(in: 6...13, using: &rng))
@@ -214,7 +224,18 @@ final class HubController: ObservableObject, TouchInput {
         d = max(d, max(channel, poolD))
         // Head and mouth of the stream: shallows.
         let ends = smooth(h * 0.02, h * 0.05, y) * (1 - smooth(h * 0.95, h * 0.985, y))
-        return max(0.05, d * (0.3 + 0.7 * ends))
+        d *= 0.3 + 0.7 * ends
+        // Between seasons the stream pours over a lip of stones: shallow
+        // right across, with a notch in the middle where it runs through.
+        for lip in lips {
+            let dy = abs(y - Float(lip))
+            if dy < 26 {
+                let across = 1 - smooth(8, 26, dy)
+                let notch = 1 - smooth(22, 48, abs(x - centreX))
+                d = min(d, max(0.14, d * (1 - across * (1 - notch) * 0.8)))
+            }
+        }
+        return max(0.05, d)
     }
 
     private func smooth(_ a: Float, _ b: Float, _ x: Float) -> Float {
@@ -366,6 +387,13 @@ final class HubController: ObservableObject, TouchInput {
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
         for s in stretchBranches { paper(s, cast: 18) }
+        // Foam at each lip: pale wisps that swell and shrink.
+        for (i, f) in foam.enumerated() {
+            let pulse = 0.75 + 0.25 * CGFloat(sin(Double(elapsed) * 1.7 + Double(f.phase)))
+            over.append(Sprite(art.clouds[i % max(1, art.clouds.count)], at: CGPoint(x: f.x, y: f.y),
+                               size: CGSize(width: f.size * 2.2 * pulse, height: f.size * pulse), rotation: f.phase * 0.1,
+                               mode: .floater, alpha: 0.42, z: 0.02))
+        }
         for f in snow {
             over.append(Sprite("snow_2", at: CGPoint(x: f.x, y: f.y), size: CGSize(width: f.size, height: f.size),
                                rotation: f.phase, mode: .floater, alpha: 0.85, z: 0.5))
