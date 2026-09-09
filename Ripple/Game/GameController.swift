@@ -1597,7 +1597,10 @@ final class Target {
 }
 
 enum HintMemory {
-    static func seen(_ h: Hint) -> Bool { UserDefaults.standard.bool(forKey: "hint.seen.\(h.rawValue)") }
+    static func seen(_ h: Hint) -> Bool {
+        if ProcessInfo.processInfo.arguments.contains("-resetHints") { return false }
+        return UserDefaults.standard.bool(forKey: "hint.seen.\(h.rawValue)")
+    }
     static func markSeen(_ h: Hint) { UserDefaults.standard.set(true, forKey: "hint.seen.\(h.rawValue)") }
 }
 
