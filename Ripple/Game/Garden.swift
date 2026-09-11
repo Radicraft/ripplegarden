@@ -222,8 +222,11 @@ final class Garden {
 
     // MARK: - The leap
 
-    /// A koi throws itself clear of the water. Nothing else in the pond is
-    /// this loud, so it is rare on purpose.
+    /// A koi throws itself clear of the water. The owner does not want it
+    /// ("it looks weird"), so no koi leaps on its own or on a splash; the
+    /// code is kept for the scripted `leap:` only.
+    static let leapsAllowed = false
+
     func leapNow() {
         guard leaps.isEmpty, size.width > 0 else { return }
         // A fish being led, resting or asleep is not in the mood.
@@ -272,7 +275,7 @@ final class Garden {
 
     private func updateLeaps(dt: Float, now: TimeInterval) {
         if nextLeapAt == 0 { nextLeapAt = now + Double.random(in: 40...90) }
-        if now > nextLeapAt {
+        if Garden.leapsAllowed, now > nextLeapAt {
             nextLeapAt = now + Double.random(in: 40...90)
             leapNow()
         }
@@ -487,22 +490,41 @@ final class Garden {
     /// Reed tufts stand in the shallows at the banks, breaking the surface.
     private func buildShore() {
         reeds = []
-        guard !art.reeds.isEmpty else { return }
+        let plants = art.reeds + art.flowers
+        guard !plants.isEmpty, size.width > 0 else { return }
         var rng = SystemRandomNumberGenerator()
         let w = size.width, h = size.height
-        let spots: [CGPoint] = [
-            CGPoint(x: 22, y: h * 0.58), CGPoint(x: 34, y: h * 0.84), CGPoint(x: w - 30, y: h * 0.70),
-            CGPoint(x: w - 20, y: h * 0.40), CGPoint(x: w * 0.28, y: h - 26), CGPoint(x: w * 0.70, y: h - 34),
-            CGPoint(x: w * 0.12, y: 40), CGPoint(x: w * 0.86, y: 52),
-        ]
-        for (i, spot) in spots.enumerated() {
+        let c = CGPoint(x: w / 2, y: h / 2)
+        // Walk round the pond and plant the dry band just past the
+        // waterline: reeds and the season's flowers in clumps, more where
+        // the ground is wide, none where the bank is a sliver.
+        let steps = 52
+        for i in 0..<steps {
+            let a = CGFloat(i) / CGFloat(steps) * 2 * .pi + CGFloat.random(in: -0.04...0.04, using: &rng)
+            let dir = CGVector(dx: cos(a), dy: sin(a))
+            // From the centre out to where the ground comes up dry.
+            var r: CGFloat = min(w, h) * 0.3
+            var shore: CGPoint?
+            while r < max(w, h) {
+                let q = CGPoint(x: c.x + dir.dx * r, y: c.y + dir.dy * r)
+                if q.x < 6 || q.y < 6 || q.x > w - 6 || q.y > h - 6 { break }
+                if depthAt(q) < 0.10 { shore = q; break }
+                r += 5
+            }
+            guard let edge = shore else { continue }
+            guard CGFloat.random(in: 0...1, using: &rng) < 0.7 else { continue }
             let count = Int.random(in: 1...2, using: &rng)
-            for k in 0..<count {
-                reeds.append(Reed(texture: art.reeds[(i + k) % art.reeds.count],
-                                  position: CGPoint(x: spot.x + CGFloat.random(in: -30...30, using: &rng),
-                                                    y: spot.y + CGFloat.random(in: -14...14, using: &rng)),
-                                  size: CGFloat.random(in: 60...100, using: &rng),
-                                  rotation: Float.random(in: -0.4...0.4, using: &rng) - .pi / 2,
+            for _ in 0..<count {
+                let out = CGFloat.random(in: 10...44, using: &rng)
+                let along = CGFloat.random(in: -24...24, using: &rng)
+                let p = CGPoint(x: edge.x + dir.dx * out - dir.dy * along, y: edge.y + dir.dy * out + dir.dx * along)
+                guard p.x > 8, p.y > 8, p.x < w - 8, p.y < h - 8 else { continue }
+                let flower = !art.flowers.isEmpty && CGFloat.random(in: 0...1, using: &rng) < 0.42
+                let name = flower ? art.flowers.randomElement(using: &rng)! : art.reeds.randomElement(using: &rng) ?? plants[0]
+                reeds.append(Reed(texture: name, position: p,
+                                  size: name.hasPrefix("moss") ? CGFloat.random(in: 16...26, using: &rng)
+                                      : flower ? CGFloat.random(in: 34...58, using: &rng) : CGFloat.random(in: 56...96, using: &rng),
+                                  rotation: Float.random(in: -0.3...0.3, using: &rng) - .pi / 2,
                                   phase: Float.random(in: 0...(2 * .pi), using: &rng)))
             }
         }
@@ -1118,7 +1140,7 @@ final class Garden {
                               size: CGSize(width: width, height: height * 0.55), rotation: 0,
                               mode: .shadow, alpha: 0.3, z: 0))
             out.append(Sprite(r.texture, at: r.position, size: sz, rotation: r.rotation + r.sway, alpha: 1,
-                              wave: Float(time) * 0.9 + r.phase, z: 0, stands: true))
+                              wave: Float(time) * 0.9 + r.phase, z: 0.07, stands: true))
         }
         return out
     }

@@ -36,6 +36,8 @@ struct ArtSet {
     var gravel: [String] = ["gravel_1", "gravel_2", "gravel_3", "gravel_4"]
     var sand: [String] = ["sand_1", "sand_2", "sand_3"]
     var reeds: [String] = []
+    /// Flowering clumps for the bank, planted among the reeds.
+    var flowers: [String] = []
     /// Small fish that swim in shoals, one sprite per shoal.
     var shoal: [String] = []
     var frog: (frog: String, pad: String)? = nil
@@ -293,6 +295,7 @@ enum Library {
             under: [], skaters: [], flyers: [],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
             reeds: ["reed_w_1", "reed_w_2", "reed_w_3", "reed_w_4"],
+            flowers: ["flower_w_1", "flower_w_2", "moss_1"],
             shoal: ["minnow_1"],
             iceFragments: ["ice_1", "ice_2", "ice_3", "ice_4", "ice_5", "ice_8", "ice_9", "ice_10"],
             ambientFall: "snow_2"),
@@ -322,6 +325,7 @@ enum Library {
         gravel: ["gravel_1", "gravel_2", "gravel_3", "gravel_4"],
         sand: ["sand_1", "sand_2", "sand_3"],
         reeds: ["reed_s_1", "reed_s_2", "reed_s_3", "reed_s_4"],
+        flowers: ["flower_s_1", "flower_s_2", "flower_s_3", "fern_1", "moss_1"],
         shoal: ["minnow_1", "stickleback_1"],
         frog: ("frog_top", "lilypad_frog"),
         newt: "newt_1",
@@ -364,6 +368,7 @@ enum Library {
             under: ["tadpole_2", "boatman_1", "tadpole_3"], skaters: ["skater_1", "skater_2"], flyers: ["dragonfly_body"],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
             reeds: ["reed_su_1", "reed_su_2", "reed_su_3", "reed_su_4", "iris_1", "iris_2"],
+            flowers: ["flower_su_1", "flower_su_2", "flower_su_3", "fern_1"],
             shoal: ["rudd_1", "minnow_2"],
             frog: ("frog_top", "lilypad_frog"), newt: "newt_1"),
         photographic: nil, rootNote: 587.33,
@@ -388,6 +393,7 @@ enum Library {
             under: ["boatman_1"], skaters: ["skater_2"], flyers: [],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
             reeds: ["reed_a_1", "reed_a_2", "reed_a_3", "reed_a_4", "bulrush_1", "bulrush_2"],
+            flowers: ["flower_a_1", "flower_a_2", "flower_a_3", "moss_1"],
             shoal: ["stickleback_2"], newt: "newt_1"),
         photographic: nil, rootNote: 392,
         tagline: "Maple on the pond. The year settles.")
@@ -491,8 +497,8 @@ enum Library {
         do {
             let bell = CGPoint(x: 0.5, y: 0.36)
             out["winter-4"] = LevelSpec(id: "winter-4", seasonID: "winter", index: 4, title: "Winter, four",
-                                        goals: [goal(.wakeTarget(.bell, at: bell, threshold: 0.036), "Ring the bell with a wave.", wakes: .chime)],
-                                        targets: [TargetSpec(kind: .bell, at: bell, threshold: 0.036)],
+                                        goals: [goal(.wakeTarget(.bell, at: bell, threshold: 0.05), "Ring the bell with a wave.", wakes: .chime)],
+                                        targets: [TargetSpec(kind: .bell, at: bell, threshold: 0.05)],
                                         hint: .hold, bloomTarget: 2.0, frozen: true)
         }
 
@@ -541,7 +547,7 @@ enum Library {
             let bud = CGPoint(x: 0.5, y: 0.36)
             out["spring-3"] = LevelSpec(id: "spring-3", seasonID: "spring", index: 3, title: "Spring, three",
                                         goals: [goal(.koiOpensBud(bud: bud), "Call the koi up beneath the bud.", wakes: .bud, .koi)],
-                                        targets: [TargetSpec(kind: .bud, at: bud, threshold: 0.09)],
+                                        targets: [TargetSpec(kind: .bud, at: bud, threshold: 0.125)],
                                         hint: .call, bloomTarget: 1.5)
         }
 
@@ -600,9 +606,9 @@ enum Library {
             pads.removeAll { abs($0.centre.x - c.x) < 0.02 && $0.centre.y > c.y }   // keep the gap open below
             let bank = Shape(centre: CGPoint(x: 0.5, y: 0.56), radius: 0.10)
             out["summer-2"] = LevelSpec(id: "summer-2", seasonID: "summer", index: 2, title: "Summer, two",
-                                        goals: [goal(.wakeTarget(.bud, at: c, threshold: 0.036), "Wake the lily bud with a wave.", wakes: .bud)],
+                                        goals: [goal(.wakeTarget(.bud, at: c, threshold: 0.05), "Wake the lily bud with a wave.", wakes: .bud)],
                                         shallows: [bank], pads: pads,
-                                        targets: [TargetSpec(kind: .bud, at: c, threshold: 0.036)],
+                                        targets: [TargetSpec(kind: .bud, at: c, threshold: 0.05)],
                                         hint: .lens, bloomTarget: 1.0)
         }
 
@@ -655,10 +661,10 @@ enum Library {
             let c = channel(y: 0.62)
             out["summer-6"] = LevelSpec(id: "summer-6", seasonID: "summer", index: 6, title: "Summer, six",
                                         goals: [goal(.partDuckweed(cover: 0.12), "Part the duckweed.", wakes: .clear),
-                                                goal(.wakeTarget(.bud, at: bud, threshold: 0.036), "Wake the lily bud with a wave.", wakes: .bud),
+                                                goal(.wakeTarget(.bud, at: bud, threshold: 0.05), "Wake the lily bud with a wave.", wakes: .bud),
                                                 goal(.leadShoal(gate: c.gate), shoalLine, wakes: .shoal)],
                                         rocks: c.rocks, pads: pads,
-                                        targets: [TargetSpec(kind: .bud, at: bud, threshold: 0.036)],
+                                        targets: [TargetSpec(kind: .bud, at: bud, threshold: 0.05)],
                                         hint: .duckweed, bloomTarget: 3.0, rain: true, duckweed: true)
         }
     }

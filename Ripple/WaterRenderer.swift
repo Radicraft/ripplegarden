@@ -382,7 +382,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// How far off vertical the player may tip the camera. At the far end the
     /// pond is seen from the side: the banks rise and the koi foreshorten.
     static let minPitch: Float = 0.40
-    static let maxPitch: Float = 0.95
+    static let maxPitch: Float = 1.25
     /// The tilt last chosen, so it is kept from level to level and in the hub.
     static var chosenPitch: Float = cameraPitch
 
@@ -657,13 +657,15 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         pendingSplats.append(Splat(pos: c, radius: radius, amplitude: amplitude))
     }
 
-    func touchDown(id: Int, at point: CGPoint, in size: CGSize, weight w: Float) {
+    func touchDown(id: Int, at point: CGPoint, in size: CGSize, weight w: Float, ring: Bool = true) {
         let amp = Tuning.tapAmplitude * lerp(Tuning.weightAmplitudeRange, w)
         let rad = Tuning.tapRadius * lerp(Tuning.weightRadiusRange, w)
-        addSplat(at: point, in: size, radius: rad, amplitude: amp)
-        if let c = cell(for: point, in: size) {
-            scheduledSplats.append((CACurrentMediaTime() + Tuning.reboundDelay,
-                                    Splat(pos: c, radius: rad * 0.62, amplitude: amp * Tuning.reboundScale)))
+        if ring {
+            addSplat(at: point, in: size, radius: rad, amplitude: amp)
+            if let c = cell(for: point, in: size) {
+                scheduledSplats.append((CACurrentMediaTime() + Tuning.reboundDelay,
+                                        Splat(pos: c, radius: rad * 0.62, amplitude: amp * Tuning.reboundScale)))
+            }
         }
         holdOrder += 1
         holds[id] = Hold(position: point, viewSize: size, weight: w, order: holdOrder)

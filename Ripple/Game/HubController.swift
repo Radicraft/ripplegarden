@@ -163,6 +163,89 @@ final class HubController: ObservableObject, TouchInput {
     /// then something lives in it: a bird, a frog, a creak of ice, leaves.
     private var airUpdateAt: Float = 0
     private var nextLifeSoundAt: Float = 0
+    /// A shower passing over one stretch: which, when it began, how long.
+    private var shower: (stretch: Int, start: Float, duration: Float)?
+    private var nextShowerAt: Float = 40
+    private var showerAmount: Float = 0
+    /// Drips off the branches for a while after a shower, on its stretch.
+    private var dripsUntil: Float = 0
+    private var nextDripAt: Float = 0
+    private var showerStretch = 0
+    /// How near the camera rests to a woken pool, 0 far to 1 over it.
+    private var nearness: Float = 0
+
+    /// Weather on the stream: now and then a light shower comes over one
+    /// stretch and passes, its rain on the water and in the air only as far
+    /// as the camera is near it, and the branches drip after it has gone.
+    private func updateWeather(dt: Float, u: CGFloat) -> Float {
+        guard let renderer else { return 0 }
+        if shower == nil, elapsed > nextShowerAt {
+            shower = (Int.random(in: 0..<Library.seasons.count), elapsed, Float.random(in: 25...50))
+        }
+        var want: Float = 0
+        if let sh = shower {
+            let age = elapsed - sh.start
+            want = min(1, age / 6) * min(1, max(0, (sh.duration - age) / 8))
+            showerStretch = sh.stretch
+            if age > sh.duration {
+                shower = nil
+                nextShowerAt = elapsed + Float.random(in: 70...150)
+                dripsUntil = elapsed + 22
+                nextDripAt = elapsed + 1
+            }
+        }
+        showerAmount += (want - showerAmount) * min(1, dt * 2)
+        // How much of the shower reaches the camera: all of it over the
+        // stretch, none a whole stretch away.
+        let away = abs(u - (CGFloat(showerStretch) + 0.5))
+        let proximity = Float(1 - max(0, min(1, away - 0.5)))
+        if showerAmount > 0.02 {
+            // Drops on the water of that stretch, where the camera can see them.
+            let h = viewSize.height
+            let top = h * 0.06, bottom = h * 0.915
+            let stretch = (bottom - top) / CGFloat(Library.seasons.count)
+            let y1 = bottom - stretch * CGFloat(showerStretch), y0 = y1 - stretch
+            let viewY = CGFloat(renderer.viewCentre.y)
+            let half = CGFloat(screenSize.height) / CGFloat(max(0.3, renderer.zoom)) / 2 + 40
+            let lo = max(y0, viewY - half), hi = min(y1, viewY + half)
+            if hi > lo {
+                let n = Int((showerAmount * 4).rounded())
+                for _ in 0..<n {
+                    let p = CGPoint(x: CGFloat.random(in: 0...viewSize.width), y: CGFloat.random(in: lo...hi))
+                    renderer.addSplat(at: p, in: viewSize, radius: Float.random(in: 2.2...3.4), amplitude: Float.random(in: -0.026 ... -0.012))
+                }
+            }
+        }
+        if elapsed < dripsUntil, elapsed > nextDripAt {
+            nextDripAt = elapsed + Float.random(in: 1.5...4.5)
+            if proximity > 0.05 { sound.drip(x: Float.random(in: 0.2...0.8), gain: proximity * 0.7) }
+        }
+        return showerAmount * proximity
+    }
+
+    /// How near the camera sits to the nearest woken pool: over it, the
+    /// brook falls back and that pool's own life comes close.
+    private func updateNearness() {
+        guard let renderer else { return }
+        let c = CGPoint(x: CGFloat(renderer.viewCentre.x), y: CGFloat(renderer.viewCentre.y))
+        let reach = CGFloat(screenSize.height) / CGFloat(max(0.3, renderer.zoom)) * 0.32
+        var best: Float = 0
+        for (i, pool) in pools.enumerated() where i < life.count && (life[i].koi != nil || life[i].shoal != nil) {
+            let d = hypot(pool.centre.x - c.x, pool.centre.y - c.y)
+            let t = Float(1 - max(0, min(1, (d - pool.radius * 0.5) / reach)))
+            best = max(best, t * t * (3 - 2 * t))
+        }
+        nearness = best
+    }
+
+    /// Closeness of one pool to the camera, for the sounds its life makes.
+    private func closeness(of pool: Pool) -> Float {
+        guard let renderer else { return 0 }
+        let c = CGPoint(x: CGFloat(renderer.viewCentre.x), y: CGFloat(renderer.viewCentre.y))
+        let reach = CGFloat(screenSize.height) / CGFloat(max(0.3, renderer.zoom)) * 0.32
+        let d = hypot(pool.centre.x - c.x, pool.centre.y - c.y)
+        return Float(1 - max(0, min(1, (d - pool.radius * 0.5) / reach)))
+    }
 
     private func updateAir(dt: Float) {
         guard let renderer, placed else { return }
@@ -174,9 +257,15 @@ final class HubController: ObservableObject, TouchInput {
         let stretch = (bottom - top) / CGFloat(seasons.count)
         // Position up the stream in stretches: 0 at the mouth (winter), 4 at the source.
         let u = max(0, min(CGFloat(seasons.count) - 0.001, (bottom - y) / stretch))
+        let rain = updateWeather(dt: dt, u: u)
+        updateNearness()
         if airUpdateAt <= 0 {
             airUpdateAt = 0.25
-            var shares: [String: Float] = ["amb_stream": 0.45]
+            // Over a living pool the brook falls back and the season's air
+            // thins a little, so what lives there can be heard.
+            var shares: [String: Float] = ["amb_stream": 0.45 * (1 - 0.55 * nearness) * (1 - 0.3 * rain)]
+            if rain > 0.02 { shares["amb_rain_light"] = rain * 0.9 }
+            let seasonShare: Float = 0.9 * (1 - 0.25 * nearness) * (1 - 0.5 * rain)
             let i = Int(u)
             let f = u - CGFloat(i)
             // Blend across the lip: the last fifth of one stretch and the
@@ -188,11 +277,11 @@ final class HubController: ObservableObject, TouchInput {
                 wHere = 1 - wNext
             } else if f < blend, i > 0 {
                 let wPrev = (blend - f) / (2 * blend)
-                shares["amb_\(seasons[i - 1].id)"] = Float(wPrev) * 0.9
+                shares["amb_\(seasons[i - 1].id)"] = Float(wPrev) * seasonShare
                 wHere = 1 - wPrev
             }
-            shares["amb_\(seasons[i].id)"] = Float(wHere) * 0.9
-            if wNext > 0 { shares["amb_\(seasons[i + 1].id)"] = Float(wNext) * 0.9 }
+            shares["amb_\(seasons[i].id)"] = Float(wHere) * seasonShare
+            if wNext > 0 { shares["amb_\(seasons[i + 1].id)"] = Float(wNext) * seasonShare }
             sound.blendAmbience(shares)
         }
         // Sparse life, from the season under the camera.
@@ -572,8 +661,11 @@ final class HubController: ObservableObject, TouchInput {
             life[i].koi?.update(dt: dt, now: now)
             life[i].shoal?.update(dt: dt)
             if let k = life[i].koi, k.mouthed {
-                // A koi at the surface takes a mouthful: a bead of a ring.
+                // A koi at the surface takes a mouthful: a bead of a ring,
+                // and heard when the camera is over its pool.
                 renderer.addSplat(at: k.position, in: viewSize, radius: 5, amplitude: -0.03)
+                let near = closeness(of: pools[i])
+                if near > 0.15 { sound.gulp(x: Float(k.position.x / viewSize.width), gain: near) }
             }
         }
 

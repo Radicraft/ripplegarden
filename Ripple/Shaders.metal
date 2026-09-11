@@ -719,6 +719,12 @@ fragment float4 floor_compose_fragment(VertexOut in                             
             float up = (p.bank.y - in.uv.y) / max(p.bank.z, 0.001);
             int si = clamp(int(floor(up)), 0, 3);
             float v = 1.0 - fract(clamp(up, 0.0, 3.999));
+            // The paintings feather to grey at top and bottom so the
+            // stream's stretches can join. A pond on its own (one stretch
+            // the height of the world) keeps to the painting's middle, or
+            // the grey shows as a band along its ends.
+            float inset = p.bank.z > 0.9 ? 0.13 : 0.0;
+            v = inset + (1.0 - 2.0 * inset) * v;
             float2 tuv = float2(in.uv.x, v);
             float3 ground = si == 0 ? bank0.sample(rep, tuv).rgb
                           : si == 1 ? bank1.sample(rep, tuv).rgb
@@ -1177,24 +1183,87 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     float2 worldPt = surfaceUnderPixel(screenPt, cam);
     float2 wuv = worldPt / cam.world.xy;
     if (any(wuv < 0.0) || any(wuv > 1.0)) {
-        // Beyond the water the shelf keeps rising as the bank: the same
-        // pebbles and sand, dry, mirrored back so the texture continues.
-        // The ground carries on past the edge of the pond. Right at the edge it
-        // is the bank as painted; further out it settles into plain earth with
-        // its own grain, so nothing repeats or mirrors.
-        float2 m = abs(wuv);
-        m = 1.0 - abs(1.0 - m);
-        float2 bankUV = clamp(m, 0.0, 1.0);
-        float3 dry = floorTex.sample(smp, bankUV).rgb;
-        float lum = dot(dry, float3(0.3, 0.59, 0.11));
-        dry = mix(float3(lum), dry, 0.6) * float3(1.05, 1.0, 0.9) * 0.9;
-        float2 beyond = max(max(-wuv, wuv - 1.0), 0.0);
-        float away = smoothstep(0.0, 0.10, max(beyond.x, beyond.y));
-        float3 earth = float3(0.36, 0.33, 0.28) * (0.85 + 0.3 * fbm(wuv * 40.0, 3));
-        dry = mix(dry, earth, away);
+        // Past the pond the ground goes on: the same bank, its top raised
+        // the hand the bank stands, lit in relief the same way, settling
+        // darker with distance over a wandering edge, hazing toward a
+        // horizon, and above the horizon a printed sky. No line is straight.
+        float2 centre = cam.focal.zw * 0.5;
+        float2 o = (screenPt - centre) / cam.focal.x;
+        float3 dir = cam.forward.xyz + cam.right.xyz * o.x + cam.down.xyz * o.y;
+        float noon = 1.0 - min(abs(p.dayPhase - 0.5) * 2.0, 1.0);
+        float3 L = normalize(float3(-0.40 + 0.34 * (p.dayPhase - 0.5) * 2.0, 0.56, 0.40 + 0.36 * noon));
         float paper = fbm(in.uv * p.viewport / 6.0, 2);
-        dry *= 0.92 + 0.14 * paper;
-        return float4(dry, 1.0);
+        float3 horizonCol = mix(float3(0.80, 0.72, 0.62), float3(0.84, 0.82, 0.74), noon);
+        float3 zenithCol = mix(float3(0.60, 0.58, 0.62), float3(0.55, 0.67, 0.76), noon);
+        // The sky, where the line of sight never meets the ground: a
+        // bokashi gradation from a warm horizon up to a cooler blue.
+        float3 nd = normalize(dir);
+        float up = saturate(nd.z * 2.5);
+        float3 sky = mix(horizonCol, zenithCol, pow(up, 0.6));
+        float sun = pow(saturate(dot(nd, L)), 120.0);
+        sky += float3(1.0, 0.92, 0.80) * sun * 0.35;
+        sky *= 0.94 + 0.10 * paper;
+        if (nd.z > -0.015) {
+            // A far treeline stands along the horizon, hazed almost to the
+            // sky's own colour: hills of trees printed in one soft ink.
+            float az = atan2(nd.y, nd.x);
+            float hills = 0.010 + 0.030 * fbm(float2(az * 2.2, 0.4), 3) + 0.010 * fbm(float2(az * 14.0, 2.1), 2);
+            float tree = 1.0 - smoothstep(hills - 0.004, hills + 0.004, nd.z + 0.015);
+            float3 inkFar = mix(horizonCol, float3(0.36, 0.40, 0.42), 0.55);
+            float3 look = mix(sky, inkFar, tree);
+            look *= 0.94 + 0.10 * paper;
+            return float4(look, 1.0);
+        }
+        float bankH = 0.07 * cam.focal.y;
+        float2 g = planeUnderPixel(screenPt, bankH, cam) / cam.world.xy;
+        // Right past the edge the ground is the bank carried on (the shore
+        // band read back inward, so the join is seamless); a little further
+        // it eases, along a wandering line, into open earth in the same
+        // tones: the band's colours averaged along the edge, with their own
+        // grain and patches, so nothing streaks and no line is straight.
+        float2 edge = clamp(g, 0.0, 1.0);
+        float2 inward = float2(g.x < 0.0 ? 1.0 : (g.x > 1.0 ? -1.0 : 0.0),
+                               g.y < 0.0 ? 1.0 : (g.y > 1.0 ? -1.0 : 0.0));
+        float2 beyond = max(max(-g, g - 1.0), 0.0);
+        float2 bandW = float2(0.05 * cam.world.y / cam.world.x, 0.05);
+        float2 m = clamp(edge + inward * min(beyond, bandW), 0.0, 1.0);
+        float2 tx = 1.5 / float2(floorTex.get_width(), floorTex.get_height());
+        float3 g0 = floorTex.sample(smp, m).rgb;
+        float lL = dot(floorTex.sample(smp, clamp(m - float2(tx.x, 0), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
+        float lR = dot(floorTex.sample(smp, clamp(m + float2(tx.x, 0), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
+        float lD = dot(floorTex.sample(smp, clamp(m - float2(0, tx.y), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
+        float lU = dot(floorTex.sample(smp, clamp(m + float2(0, tx.y), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
+        float3 bn = normalize(float3(-(lR - lL) * 6.0, -(lU - lD) * 6.0, 1.0));
+        float lit = 0.72 + 0.45 * max(0.0, dot(bn, L));
+        // The bank inside the pond is drawn damp-dark all over its dry
+        // band; the ground out here matches it so the edge has no step.
+        float3 ground = g0 * lit * 0.75;
+        // Open earth: the band's colour averaged along the edge, the
+        // sample points wandering in two directions so the average never
+        // reads as columns.
+        float2 along = float2(inward.y, inward.x);
+        float2 gs = g * float2(cam.world.x / cam.world.y, 1.0);
+        float3 base = float3(0.0);
+        for (int k = -4; k <= 4; k++) {
+            float wob = fbm(gs * 3.0 + float(k) * 1.7, 2) - 0.5;
+            float2 q = clamp(edge + along * (float(k) * 0.06 + wob * 0.3) + inward * bandW * (0.3 + 0.5 * fbm(gs * 2.0 + float(k), 2)), 0.0, 1.0);
+            base += floorTex.sample(smp, q).rgb;
+        }
+        base /= 9.0;
+        float3 earth = base * 0.75 * (0.86 + 0.28 * fbm(gs * 32.0, 3)) * (0.88 + 0.24 * fbm(gs * 5.0 + 2.3, 2)) * (0.72 + 0.45 * max(0.0, L.z));
+        float dist = length(beyond * cam.world.xy) / cam.world.y;
+        float wobble = (fbm(gs * 11.0, 3) - 0.5) * 0.05;
+        float open = smoothstep(0.004, 0.04, dist + wobble * 0.6);
+        ground = mix(ground, earth, open);
+        // And further off it quietens: darker, less colour.
+        float far = smoothstep(0.08, 0.5, dist);
+        float glum = dot(ground, float3(0.3, 0.59, 0.11));
+        ground = mix(ground, mix(ground, float3(glum), 0.4) * 0.78, far);
+        // Haze toward the horizon, the colour of the sky there.
+        float haze = smoothstep(-0.32, -0.015, nd.z);
+        ground = mix(ground, horizonCol, haze * 0.9);
+        ground *= 0.92 + 0.14 * paper;
+        return float4(ground, 1.0);
     }
 
     float2 texel = 1.0 / float2(p.size);

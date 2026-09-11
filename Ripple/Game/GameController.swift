@@ -851,7 +851,9 @@ final class GameController: ObservableObject, TouchInput {
         // Weed tips read the water too; their samples ride at the end of the
         // probe list, after the debris.
         for (i, t) in targets.enumerated() where targetProbeStart + i < samples.count {
-            let h = samples[targetProbeStart + i].height
+            // A wave is a wave, crest or trough: what matters is how far the
+            // water under the target moved.
+            let h = abs(samples[targetProbeStart + i].height)
             t.peak = max(t.peak, h)
             if !t.woke, h > t.spec.threshold {
                 wake(t, by: "h=\(h)")
@@ -1220,8 +1222,17 @@ final class GameController: ObservableObject, TouchInput {
     /// ripple reaches it there, so it counts as landed rather than stuck.
     private func isBeached(_ d: Debris) -> Bool {
         guard viewSize.width > 0 else { return false }
-        let u = CGPoint(x: d.position.x / viewSize.width, y: d.position.y / viewSize.height)
-        return DepthPainter.ground(at: u, aspect: Float(viewSize.width / viewSize.height)) < 0.08
+        let aspect = Float(viewSize.width / viewSize.height)
+        func onGround(_ p: CGPoint) -> Bool {
+            let u = CGPoint(x: p.x / viewSize.width, y: p.y / viewSize.height)
+            return DepthPainter.ground(at: u, aspect: aspect) < 0.08
+        }
+        if onGround(d.position) { return true }
+        // A long piece has run aground when either end has.
+        guard d.cls == .heavy else { return false }
+        let along = CGVector(dx: cos(d.angle) * d.radius * 0.8, dy: sin(d.angle) * d.radius * 0.8)
+        return onGround(CGPoint(x: d.position.x + along.dx, y: d.position.y + along.dy))
+            || onGround(CGPoint(x: d.position.x - along.dx, y: d.position.y - along.dy))
     }
 
     private func keepOffRocks(_ d: Debris) {
@@ -2048,10 +2059,14 @@ final class GameController: ObservableObject, TouchInput {
             sound.plop()
             haptics.plop()
         }
-        renderer?.touchDown(id: id, at: point, in: size, weight: weight)
+        // The second finger of a pair makes no ring: two fingers are a
+        // swell, a pinch, a tilt or a gust, none of which begins with a tap.
+        renderer?.touchDown(id: id, at: point, in: size, weight: weight, ring: pinch == nil)
         pondTouches[id] = PondTouch(last: point, lastAt: CACurrentMediaTime())
-        sound.tap(x: Float(point.x / size.width), weight: weight)
-        haptics.tap(weight: weight)
+        if pinch == nil {
+            sound.tap(x: Float(point.x / size.width), weight: weight)
+            haptics.tap(weight: weight)
+        }
     }
 
     func touchMoved(id: Int, to screen: CGPoint, in screenBounds: CGSize) {

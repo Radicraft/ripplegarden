@@ -233,8 +233,22 @@ final class SoundDirector {
     }
 
     /// A drop of water: heavier fingers make a deeper plop.
+    /// Six recordings between them, never the one just heard, a wide spread
+    /// of pitch, and now and then a second, smaller drop just after: no two
+    /// taps sound alike.
+    private var lastTapName = ""
     func tap(x: Float, weight: Float) {
-        play(pick("fx_drop", 3), x: x, gain: 0.7 + 0.3 * weight, pitch: 1.15 - 0.35 * weight)
+        var name = Bool.random() && weight < 0.7 ? pick("fx_splash_small", 3) : pick("fx_drop", 3)
+        if name == lastTapName { name = name.hasPrefix("fx_drop") ? pick("fx_splash_small", 3) : pick("fx_drop", 3) }
+        lastTapName = name
+        let pitch = (1.2 - 0.4 * weight) * Float.random(in: 0.82...1.22)
+        play(name, x: x, gain: (0.6 + 0.35 * weight) * Float.random(in: 0.8...1.0), pitch: pitch)
+        if Float.random(in: 0...1) < 0.3 {
+            let echo = name.hasPrefix("fx_drop") ? pick("fx_drop", 3) : pick("fx_splash_small", 3)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double.random(in: 0.09...0.2)) { [weak self] in
+                self?.play(echo, x: x + Float.random(in: -0.1...0.1), gain: 0.3, pitch: pitch * Float.random(in: 1.1...1.4))
+            }
+        }
     }
 
     /// A swell building under a still finger: rushing water rising with the charge.
@@ -336,8 +350,8 @@ final class SoundDirector {
     }
 
     /// A drop off a branch onto the water.
-    func drip(x: Float) {
-        play(pick("fx_drop", 3), x: x, gain: 0.22, pitch: 1.35)
+    func drip(x: Float, gain: Float = 1) {
+        play(pick("fx_drop", 3), x: x, gain: 0.22 * gain, pitch: 1.35)
     }
 
     /// A fish mouthing at the surface: barely there.
@@ -442,9 +456,9 @@ final class SoundDirector {
     }
 
     /// A koi taking something off the surface.
-    func gulp(x: Float) {
-        if present("fx_gulp") { play("fx_gulp", x: x, gain: 0.5) }
-        else { play(pick("fx_drop", 3), x: x, gain: 0.38, pitch: 0.68) }
+    func gulp(x: Float, gain: Float = 1) {
+        if present("fx_gulp") { play("fx_gulp", x: x, gain: 0.5 * gain) }
+        else { play(pick("fx_drop", 3), x: x, gain: 0.38 * gain, pitch: 0.68) }
     }
 
     /// A near miss: the target shivers with a soft short tick.
