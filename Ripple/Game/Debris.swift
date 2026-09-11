@@ -104,6 +104,14 @@ enum GameTuning {
     static let zoomMax: Float = 1.25
     /// Radians of tilt per point of average vertical travel by two fingers.
     static let tiltPerPoint: Float = 0.0025
+    /// Points the pair's middle must travel before the tilt is decided. It
+    /// is small, and once decided the touch stays a tilt to the end.
+    static let tiltTravel: CGFloat = 12
+    /// How much of the travel must be up or down the screen: a 60/40
+    /// split, so a drag well off vertical still tilts.
+    static let tiltUpright: CGFloat = 0.6
+    /// Points the two fingers may spread or close by and still be a tilt.
+    static let tiltSpread: CGFloat = 25
 
     /// Two taps this close in time and place drop a stone in.
     static let doubleTapSeconds: TimeInterval = 0.3
@@ -167,6 +175,10 @@ final class Debris: Identifiable {
     /// Rotation about the long axis, for a piece drawn as a solid. A can
     /// that drifts sideways rolls; pushed end on, it slides.
     var roll: Float = 0
+    /// Seconds a seed has lain still inside the shallows, and whether it
+    /// has taken root there (after which it fades and a sprout stands).
+    var restTime: Float = 0
+    var rooted = false
 
     init(id: Int, cls: DebrisClass, sprite: String, position: CGPoint, radius: CGFloat, scale: CGFloat, kind: DebrisKind = .natural) {
         self.id = id

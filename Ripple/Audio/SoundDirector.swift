@@ -376,4 +376,69 @@ final class SoundDirector {
     func dive() { play("fx_splash_big", gain: 0.9, pitch: 0.9) }
     /// A card lands on the water.
     func paper() { play("fx_paper", gain: 0.6) }
+
+    // MARK: - Instruments and the growing things
+
+    /// Whether the manifest names a sound. Agent E's recordings land by name
+    /// and each hook below plays its own file once it is there, falling back
+    /// to an older file at another speed until then.
+    private func present(_ name: String) -> Bool {
+        loadManifest()
+        return entries[name] != nil
+    }
+
+    /// The shishi-odoshi lands on its stone: one hollow knock.
+    func bamboo(x: Float) {
+        if present("fx_bamboo_knock") { play("fx_bamboo_knock", x: x, gain: 0.9) }
+        else { play("fx_wood_knock", x: x, gain: 0.85, pitch: 0.82) }
+    }
+
+    /// The five notes of the water chime, a pentatonic over the recording's
+    /// own pitch. Notes past the fifth climb into the next octave.
+    static let chimeRatios: [Float] = [1, 9.0 / 8, 5.0 / 4, 3.0 / 2, 5.0 / 3]
+
+    /// A crest passes over a chime stone: a drip ringing in the jar.
+    func chime(note: Int, x: Float) {
+        let n = max(0, note)
+        let ratio = SoundDirector.chimeRatios[n % 5] * pow(2, Float(n / 5))
+        if present("fx_water_chime_1") { play(pick("fx_water_chime", 3), x: x, gain: 0.8, pitch: ratio) }
+        else { play("fx_bell", x: x, gain: 0.55, pitch: ratio) }
+    }
+
+    /// Water going over the lip into the dry pool.
+    func spill(x: Float) {
+        if present("fx_spill") { play("fx_spill", x: x, gain: 0.6) }
+        else { play(pick("fx_splash_small", 3), x: x, gain: 0.45, pitch: 0.78) }
+    }
+
+    /// Dry leaves shifting on the water.
+    func leaves(x: Float) {
+        if present("fx_leaves_1") { play(pick("fx_leaves", 2), x: x, gain: 0.5) }
+        else { play("fx_reeds", x: x, gain: 0.32, pitch: 1.25) }
+    }
+
+    /// Weed bending under a passing wave: wet vegetation, low.
+    func weedRustle(x: Float) {
+        if present("fx_weed_rustle") { play("fx_weed_rustle", x: x, gain: 0.45) }
+        else { play("fx_reeds", x: x, gain: 0.28, pitch: 0.7) }
+    }
+
+    /// A koi taking something off the surface.
+    func gulp(x: Float) {
+        if present("fx_gulp") { play("fx_gulp", x: x, gain: 0.5) }
+        else { play(pick("fx_drop", 3), x: x, gain: 0.38, pitch: 0.68) }
+    }
+
+    /// A near miss: the target shivers with a soft short tick.
+    func tremble(x: Float) {
+        if present("fx_tremble") { play("fx_tremble", x: x, gain: 0.3) }
+        else { play(pick("fx_drop", 3), x: x, gain: 0.12, pitch: 1.7) }
+    }
+
+    /// Dusk falls on the still pond: the season's air gives way to crickets.
+    /// Nothing changes until the night recording is in the manifest.
+    func startNightAmbience() {
+        guard present("amb_night") else { return }
+        startAmbience(named: "amb_night")
+    }
 }

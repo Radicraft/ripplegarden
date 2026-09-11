@@ -1,9 +1,10 @@
 import SwiftUI
 import simd
 
-/// One level in play. Owns the debris, decides what each touch means, feeds
-/// the renderer its sprites, walls and silt covers every frame, and runs the
-/// bloom when the tile is clean.
+/// One level in play. Owns the debris and the goals, decides what each
+/// touch means, feeds the renderer its sprites, walls and probes every
+/// frame, reads the pond for the goals, and runs the bloom when the pond
+/// has woken.
 @MainActor
 final class GameController: ObservableObject, TouchInput {
 
@@ -90,6 +91,53 @@ final class GameController: ObservableObject, TouchInput {
     private var current = SIMD2<Float>(0, 0)
     private(set) var cleaned: Float = 0
     private var rocks: [(centre: CGPoint, radius: CGFloat)] = []
+
+    // MARK: Goals and what they read
+
+    /// The level's goals in world points, and what has been met so far.
+    private(set) var goals: [GoalSpec] = []
+    private let evaluator = GoalEvaluator()
+    /// The instruments this level plays: the bamboo, the chime stones, the
+    /// dry pool. Each reads the water at its own points.
+    private var instruments: [Instrument] = []
+    private var instrumentProbeStart = 0
+    /// Sixteen fixed cells over open water whose mean |velocity| says how
+    /// glassy the pond is.
+    private var calmCells: [CGPoint] = []
+    private var calmProbeStart = 0
+    private var calmSamples: [FieldSample] = []
+    private(set) var agitation: Float = 0
+    /// Level seconds when a finger last touched the water.
+    private var lastTouchAt: Float = -100
+    /// How busy the water was as the last finger came down, for the koi's
+    /// curiosity: a tap on a calm pond is worth turning for.
+    private var agitationAtTouch: Float = 0
+    /// Fingers whose hold is calling a koi up.
+    private var calling: Set<Int> = []
+    /// The stillness the garden is shown, eased so the moon never snaps.
+    private var stillShown: Float = 0
+    /// Seeds that have taken root, and the seedlings standing where they did.
+    private(set) var rootedSeeds = 0
+    private var sprouts: [Sprout] = []
+    /// Leaves still coming down on an autumn level.
+    private var leafFall: LeafFall?
+    /// What the instruments have done: knocks, the notes played so far, and
+    /// how full the dry pool is.
+    private(set) var knocks = 0
+    private(set) var notesPlayed: [Int] = []
+    private var phraseComplete = false
+    private var phraseHeard = false
+    private var phrase: Task<Void, Never>?
+    private(set) var poolFill: Float = 0
+    private var poolFull = false
+    private var bambooState: ShishiOdoshiState?
+    private var chimeState: SuikinkutsuState?
+    private var poolState: DryPoolState?
+    /// The fill the depth map was last painted at, and when.
+    private var poolPainted: Float = 0
+    private var poolRepaintAt: Float = 0
+    /// The koi lie on the bed under a frozen pond until it opens.
+    private var koiAsleep = false
     /// Lily pads in world points: ripples stop at them, taps on them do nothing.
     private(set) var pads: [(centre: CGPoint, radius: CGFloat, sprite: String)] = []
     /// Things a crest wakes.
@@ -140,6 +188,8 @@ final class GameController: ObservableObject, TouchInput {
         var stirring = false
         /// A finger spent on a gust: it lays no more wake behind it.
         var spent = false
+        /// The points the wake was laid along, start to end, for the shoal.
+        var wakePath: [CGPoint] = []
     }
     private var pondTouches: [Int: PondTouch] = [:]
     private var holdSounding: Set<Int> = []
@@ -204,6 +254,9 @@ final class GameController: ObservableObject, TouchInput {
 
     var siltRemaining: Float { renderer?.siltRemaining ?? 1 }
     var worldSize: CGSize? { viewSize == .zero ? nil : viewSize }
+    /// What the goals have made of the pond so far, for the demo.
+    var goalStates: [GoalEvaluator.State] { evaluator.states }
+    var shoalCentroids: [CGPoint] { garden.shoalCentroids() }
 
     // MARK: - Wiring
 
@@ -227,6 +280,9 @@ final class GameController: ObservableObject, TouchInput {
     /// fingers are let go.
     func leave() {
         celebration?.cancel()
+        phrase?.cancel()
+        garden.releaseCall()
+        calling.removeAll()
         presented = nil
         words = nil
         sound.stopAmbience()
@@ -309,17 +365,52 @@ final class GameController: ObservableObject, TouchInput {
         lastTap = nil
         debris = []
         probeOrder = []
+        goals = []
+        evaluator.reset(count: 0)
+        instruments = []
+        calmCells = []
+        calmSamples = []
+        agitation = 0
+        lastTouchAt = -100
+        calling.removeAll()
+        garden.releaseCall()
+        stillShown = 0
+        rootedSeeds = 0
+        sprouts = []
+        leafFall = nil
+        knocks = 0
+        notesPlayed = []
+        phraseComplete = false
+        phraseHeard = false
+        phrase?.cancel()
+        poolFill = 0
+        poolFull = false
+        poolPainted = 0
+        poolRepaintAt = 0
+        bambooState = nil
+        chimeState = nil
+        poolState = nil
+        koiAsleep = false
+        for t in targets { t.tremble = 0 }
 
         var look = art.floor
         look.mosaicCentre = SIMD2(Float(newLevel.mosaicCentre.x), Float(newLevel.mosaicCentre.y))
         look.mosaicRadius = Float(newLevel.mosaicRadius)
         renderer?.floorLook = look
+        // The materials this pond is made of: silt haze over the whole bed,
+        // a film of duckweed over the water, or neither.
+        renderer?.setSilt(wholePond: newLevel.wantsSilt)
+        renderer?.setFilm(on: newLevel.wantsFilm)
+        // The year's last level is played in the evening.
+        if newLevel.dusk, let r = renderer, r.dayPhase < 0.74 { r.dayPhase = 0.74 }
         // The pond has a real bank all round it, in this season's ground.
         // One stretch covers the whole world, so all four slots wear it.
         let painting = "bank_\(season.id)"
         renderer?.bankPaintings = [painting, painting, painting, painting]
         renderer?.bank = SIMD3(1, 1, 1)
-        renderer?.depthPainter = { [level = newLevel] w, h in DepthPainter.paint(level: level, width: w, height: h) }
+        renderer?.depthPainter = { [level = newLevel, weak self] w, h in
+            DepthPainter.paint(level: level, width: w, height: h, poolFill: self?.poolFill ?? 0)
+        }
         renderer?.rebuildDepth()
         renderer?.cancelAll()
         renderer?.reset()
@@ -334,8 +425,9 @@ final class GameController: ObservableObject, TouchInput {
     private func place() {
         let spec = level
         let size = viewSize
-        garden.depthAt = { p in
-            DepthPainter.depth(at: CGPoint(x: p.x / size.width, y: p.y / size.height), level: spec, aspect: Float(size.width / size.height))
+        garden.depthAt = { [weak self] p in
+            DepthPainter.depth(at: CGPoint(x: p.x / size.width, y: p.y / size.height), level: spec,
+                               aspect: Float(size.width / size.height), poolFill: self?.poolFill ?? 0)
         }
         garden.configure(art: art, size: viewSize, bloomStage: progress.bloomStage(for: season.id))
         // Mist lies thick over a cold pond and hardly at all over a warm one.
@@ -361,6 +453,16 @@ final class GameController: ObservableObject, TouchInput {
                 let d = Debris(id: i, cls: p.cls, sprite: rubbish,
                                position: CGPoint(x: p.at.x * viewSize.width, y: p.at.y * viewSize.height),
                                radius: p.kind.radius * p.scale, scale: p.scale, kind: p.kind)
+                d.angle = CGFloat(p.rotation)
+                return d
+            }
+            if p.kind.isSeed {
+                // A lotus seed, or the season's light piece until one is drawn.
+                let pod = "seed_\(1 + p.variant % 3)"
+                let name = Self.spriteExists(pod) ? pod : (art.light.isEmpty ? "leaf_1" : art.light[p.variant % art.light.count])
+                let d = Debris(id: i, cls: .light, sprite: name,
+                               position: CGPoint(x: p.at.x * viewSize.width, y: p.at.y * viewSize.height),
+                               radius: p.kind.radius * p.scale, scale: p.scale, kind: .seed)
                 d.angle = CGFloat(p.rotation)
                 return d
             }
@@ -400,6 +502,86 @@ final class GameController: ObservableObject, TouchInput {
         } else {
             renderer?.setIce(nil, width: 0, height: 0)
             renderer?.setIceCracks(seeds: [], strikes: [])
+        }
+        placeGoals()
+    }
+
+    /// The goals in world points, the instruments they need, the calm
+    /// probes, and the life that has to be arranged before play: a koi sent
+    /// to hide, the koi put to sleep under the ice.
+    private func placeGoals() {
+        goals = level.goals.map { $0.placed(in: viewSize) }
+        evaluator.reset(count: goals.count)
+        instruments = []
+        var shy: Shape?
+        for g in goals {
+            switch g.kind {
+            case .shishiOdoshi(let at, _):
+                // On the bank nearest the point, facing the water.
+                let dir = SIMD2<Float>(Float(viewSize.width / 2 - at.x), Float(viewSize.height / 2 - at.y))
+                let into = simd_length(dir) > 1 ? simd_normalize(dir) : SIMD2<Float>(0, 1)
+                instruments.append(ShishiOdoshi(at: at, bankDirection: into))
+            case .suikinkutsu(let stones, let order):
+                instruments.append(Suikinkutsu(stones: stones, order: order))
+            case .fillPool(let lip, let pool, let h):
+                instruments.append(DryPool(lip: lip, pool: pool, lipHeight: h))
+            case .temptShyKoi(let home):
+                shy = home
+            default:
+                break
+            }
+        }
+        garden.setShyHome(shy)
+        // Sixteen cells over the open middle of the pond, well in from the
+        // banks and the things that stand in it.
+        calmCells = []
+        for row in 0..<4 {
+            for col in 0..<4 {
+                calmCells.append(CGPoint(x: viewSize.width * (0.2 + 0.6 * (CGFloat(col) + 0.5) / 4),
+                                         y: viewSize.height * (0.2 + 0.6 * (CGFloat(row) + 0.5) / 4)))
+            }
+        }
+        // Under a frozen pond the koi lie on the bed until the sheet opens
+        // over each of them.
+        if let f = iceField {
+            garden.iceOverAt = { [weak f] p in f?.ice(at: p) ?? 0 }
+        } else {
+            garden.iceOverAt = nil
+        }
+        koiAsleep = level.frozen && level.wantsKoi
+        garden.sleepKoiUnderIce(koiAsleep)
+        leafFall = level.leaves > 0 ? LeafFall(total: level.leaves, textures: art.light.isEmpty ? ["leaf_1"] : art.light) : nil
+        // The pond hums the chime phrase once the level has opened, unless
+        // the stones hum it themselves first.
+        if goals.contains(where: { if case .suikinkutsu = $0.kind { return true }; return false }) {
+            let opened = level.id
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, self.level.id == opened, !self.phraseHeard, self.phase == .playing else { return }
+                self.playPhrase()
+            }
+        }
+    }
+
+    /// Whether a picture by this name is in the bundle, so a piece drawn
+    /// later can fall back to one that is.
+    static func spriteExists(_ name: String) -> Bool {
+        Bundle.main.url(forResource: name, withExtension: "png") != nil
+    }
+
+    /// The chime phrase, one note at a time, the way the pond hums it.
+    private func playPhrase() {
+        guard let g = goals.first(where: { if case .suikinkutsu = $0.kind { return true }; return false }),
+              case .suikinkutsu(let stones, let order) = g.kind, viewSize.width > 0 else { return }
+        phraseHeard = true
+        phrase?.cancel()
+        let w = Float(viewSize.width)
+        phrase = Task { @MainActor [weak self] in
+            for i in order where i < stones.count {
+                guard let self, !Task.isCancelled else { return }
+                self.sound.chime(note: i, x: Float(stones[i].x) / w)
+                try? await Task.sleep(for: .seconds(0.55))
+            }
         }
     }
 
@@ -584,11 +766,13 @@ final class GameController: ObservableObject, TouchInput {
                     d.fade = min(1, max(0, m / max(1, d.meltTotal)) * 1.6)
                     if m <= 0 { d.cleared = true }
                 }
+                if d.kind.isSeed { tendSeed(d, dt: dt) }
             }
             DebrisPhysics.separate(debris, dt: dt)
-            for d in debris where !d.cleared && (DebrisPhysics.hasReachedShore(d, in: viewSize) || isBeached(d)) {
+            for d in debris where !d.cleared && !d.kind.isSeed && (DebrisPhysics.hasReachedShore(d, in: viewSize) || isBeached(d)) {
                 clear(d)
             }
+            updateLeaves(dt: dt)
         }
 
         // The garden lives regardless of the puzzle. Drips come off the
@@ -614,27 +798,36 @@ final class GameController: ObservableObject, TouchInput {
             lastCleaned = cleaned
             lastProgressAt = elapsed
         }
-        // Done when the pond is tidy: nothing left floating on it, no ice.
-        // (Levels with a roundel also want it washed and clear of heavy pieces.)
         if phase == .playing {
             // Ice: once most of the sheet is gone the scraps go under on their
-        // own, and the last few percent are not worth hunting for.
-        if let f = iceField, phase == .playing {
-            iceTidyTimer -= dt
-            if iceTidyTimer <= 0 {
-                iceTidyTimer = 0.5
-                let fraction = f.fraction
-                if fraction < 0.08 {
-                    f.sinkAll(time: renderer.clock)
-                } else if fraction < 0.35 {
-                    f.sinkSmallIslands(maxArea: 40000, time: renderer.clock)
+            // own, and the last few percent are not worth hunting for.
+            if let f = iceField {
+                iceTidyTimer -= dt
+                if iceTidyTimer <= 0 {
+                    iceTidyTimer = 0.5
+                    let fraction = f.fraction
+                    if fraction < 0.08 {
+                        f.sinkAll(time: renderer.clock)
+                    } else if fraction < 0.35 {
+                        f.sinkSmallIslands(maxArea: 40000, time: renderer.clock)
+                    }
+                }
+                // The sheet is mostly open: whatever koi were still lying
+                // under the last of it wake too.
+                if koiAsleep, f.fraction < 0.6 {
+                    koiAsleep = false
+                    garden.sleepKoiUnderIce(false)
                 }
             }
         }
-        // Chunks of broken ice melt on their own and are not waited for.
-        let tidy = debris.filter { $0.meltsIn == nil }.allSatisfy(\.cleared) && (iceField.map { $0.fraction < 0.06 } ?? true)
-                && targets.allSatisfy(\.woke)
-            if level.mosaicRadius <= 0 ? tidy : (cleaned >= 0.94 && heavyOverTile().isEmpty) { finish() }
+
+        // The instruments and the calm probes read the water, then the
+        // goals read everything.
+        updateInstruments(dt: dt, samples: samples)
+        updateCalm(samples: samples, dt: dt)
+        if phase == .playing {
+            readGoals(dt: dt)
+            if evaluator.allDone { finish() }
         }
 
         // Feed the renderer.
@@ -646,16 +839,20 @@ final class GameController: ObservableObject, TouchInput {
             let h = samples[targetProbeStart + i].height
             t.peak = max(t.peak, h)
             if !t.woke, h > t.spec.threshold {
-                t.woke = true
-                t.wokeAt = elapsed
-                haptics.plop()
-                switch t.spec.kind {
-                case .bud: sound.bud(x: Float(t.position.x / viewSize.width))
-                case .bell: sound.bell(x: Float(t.position.x / viewSize.width))
-                }
-                renderer.addSplat(at: t.position, in: viewSize, radius: 14, amplitude: -0.08)
-                if diagnostics { NSLog("[target] woke at h=%.3f (threshold %.3f)", h, t.spec.threshold) }
+                wake(t, by: "h=\(h)")
+            } else if !t.woke, h > GoalTuning.trembleFraction * t.spec.threshold, elapsed - t.lastTrembleAt > 0.8 {
+                // A near miss: the thing shivers and ticks, and the hand
+                // learns how close that was.
+                t.lastTrembleAt = elapsed
+                t.tremble = 1
+                sound.tremble(x: Float(t.position.x / viewSize.width))
+                haptics.tremble()
             }
+            // A koi come up under a bud nudges it open.
+            if !t.woke, t.spec.kind == .bud, garden.koiSurfacedNear(t.position, radius: 60) != nil {
+                wake(t, by: "koi")
+            }
+            t.tremble *= exp(-dt * 3)
             if diagnostics, diagFrames % 120 == 0 { NSLog("[target] peak so far %.3f", t.peak) }
             t.opening = t.woke ? min(1, (elapsed - t.wokeAt) / 2.2) : 0
         }
@@ -690,6 +887,15 @@ final class GameController: ObservableObject, TouchInput {
         for tip in weedTips {
             if let c = renderer.cell(for: tip, in: viewSize) { cells.append(c) }
         }
+        // The instruments read the water at their own points, then the
+        // calm probes. A point off the grid is read as flat water, so the
+        // order of the list is never thrown out by one.
+        instrumentProbeStart = cells.count
+        for inst in instruments {
+            for p in inst.probePoints { cells.append(renderer.cell(for: p, in: viewSize) ?? SIMD2(0, 0)) }
+        }
+        calmProbeStart = cells.count
+        for p in calmCells { cells.append(renderer.cell(for: p, in: viewSize) ?? SIMD2(0, 0)) }
         renderer.setProbes(cells)
 
         for (id, touch) in pondTouches {
@@ -705,6 +911,12 @@ final class GameController: ObservableObject, TouchInput {
                 haptics.holdBegin()
             }
             if holdSounding.contains(id) { sound.holdLevel(id: id, charge: charge) }
+            // A charged finger calls the koi: the nearest one rises and
+            // comes to it, and the shy one reads the same finger.
+            if charge > 0.15 {
+                calling.insert(id)
+                garden.callKoi(at: t.last, charge: charge, dt: dt)
+            }
             // The press pushes air out of the bed: bubbles climb under it.
             if charge > GameTuning.bubbleCharge {
                 bubbleAccumulator += GameTuning.bubbleRate * charge * dt
@@ -836,15 +1048,33 @@ final class GameController: ObservableObject, TouchInput {
         }
         for t in targets {
             let side: CGFloat = 92
+            // A near miss shivers the thing: a quick small wiggle that dies.
+            let shiver = Float(sin(Double(elapsed) * 38)) * 0.10 * t.tremble
             switch t.spec.kind {
             case .bud:
-                if t.opening < 1 { solids.append(disc("bud_closed", at: t.position, side: side, yaw: 0, alpha: 1 - t.opening)) }
+                if t.opening < 1 { solids.append(disc("bud_closed", at: t.position, side: side, yaw: shiver, alpha: 1 - t.opening)) }
                 if t.opening > 0 { solids.append(disc("bud_open", at: t.position, side: side, yaw: 0, alpha: t.opening)) }
             case .bell:
                 let since = Double(elapsed - t.wokeAt)
-                let swing = t.woke ? Float(sin(since * 14) * exp(-since * 1.5)) * 0.25 : 0
+                let swing = t.woke ? Float(sin(since * 14) * exp(-since * 1.5)) * 0.25 : shiver
                 solids.append(disc("bell_float", at: t.position, side: side, yaw: swing, alpha: 1))
             }
+        }
+        // The instruments: the bamboo and its stone, the chime stones, the
+        // dry pool's lip. Bodies into the solids pass, the rest as sprites.
+        for inst in instruments {
+            solids += inst.solids(depthScale: WaterRenderer.depthScale)
+            over += inst.sprites(textureSize: { [weak renderer] in renderer?.textures.size($0) ?? CGSize(width: 1, height: 1) })
+        }
+        // Seedlings where the seeds rooted, growing over their first seconds.
+        for sp in sprouts {
+            let grown = min(1, max(0, (elapsed - sp.bornAt) / 6))
+            let scale = CGFloat(0.2 + 0.8 * grown)
+            let s = renderer.textures.size(sp.sprite)
+            let long = max(s.width, s.height)
+            let side = 48 * scale
+            paper(Sprite(sp.sprite, at: sp.position, size: CGSize(width: side * s.width / long, height: side * s.height / long),
+                         rotation: 0, mode: .floater, alpha: min(1, grown * 3 + 0.2)), cast: 6)
         }
         solids += koiBodies.surface
         for d in debris where !d.cleared {
@@ -896,6 +1126,8 @@ final class GameController: ObservableObject, TouchInput {
         // The stream's rocks carry their own shadow, and foam has no cut edge.
         over += garden.inletSprites()
         for s in garden.petalSprites() { paper(s) }
+        // Leaves still on their way down, this level's own.
+        if let fall = leafFall { for s in fall.sprites() { paper(s) } }
         // Drops in the air are water, not paper: no cut edge under them.
         over += garden.dropletSprites()
         over += garden.dripSprites()
@@ -903,6 +1135,8 @@ final class GameController: ObservableObject, TouchInput {
         over += garden.leapSprites()
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
         over += garden.skySprites()
+        // The moon in the water on a still pond: light, not paper.
+        over += garden.moonSprites()
         // Mist lies over everything on the water and under the sky.
         over += garden.mistSprites()
         renderer.surfaceSprites = over
@@ -1001,10 +1235,186 @@ final class GameController: ObservableObject, TouchInput {
         }
     }
 
-    private func heavyOverTile() -> [Debris] {
-        let c = CGPoint(x: level.mosaicCentre.x * viewSize.width, y: level.mosaicCentre.y * viewSize.height)
-        let r = level.mosaicRadius * viewSize.height
-        return debris.filter { !$0.cleared && $0.cls == .heavy && hypot($0.position.x - c.x, $0.position.y - c.y) < r + $0.radius * 0.5 }
+    // MARK: - Goals
+
+    /// A target wakes: the bud opens, the bell rings.
+    private func wake(_ t: Target, by cause: String) {
+        t.woke = true
+        t.wokeAt = elapsed
+        t.tremble = 0
+        haptics.plop()
+        switch t.spec.kind {
+        case .bud: sound.bud(x: Float(t.position.x / viewSize.width))
+        case .bell: sound.bell(x: Float(t.position.x / viewSize.width))
+        }
+        renderer?.addSplat(at: t.position, in: viewSize, radius: 14, amplitude: -0.08)
+        if diagnostics { NSLog("[target] woke (%@, threshold %.3f)", cause, t.spec.threshold) }
+    }
+
+    /// A finger that was calling a koi has gone, or become something else.
+    private func endCall(_ id: Int) {
+        guard calling.remove(id) != nil, calling.isEmpty else { return }
+        garden.releaseCall()
+    }
+
+    /// A seed never lands on a bank: on dry ground it is eased back into
+    /// the water. Lying still inside the shallows long enough, it roots: the
+    /// pod fades and a seedling stands where it was.
+    private func tendSeed(_ d: Debris, dt: Float) {
+        if d.rooted {
+            d.fade = max(0, d.fade - dt * 1.2)
+            if d.fade <= 0 { d.cleared = true }
+            return
+        }
+        if isBeached(d) || DebrisPhysics.hasReachedShore(d, in: viewSize) {
+            let dx = Float(viewSize.width / 2 - d.position.x), dy = Float(viewSize.height / 2 - d.position.y)
+            let len = max(1, (dx * dx + dy * dy).squareRoot())
+            d.velocity += SIMD2(dx, dy) / len * 40 * dt
+            d.restTime = 0
+            return
+        }
+        var inShallows = false
+        for g in goals {
+            guard case .rootSeeds(let bed, _) = g.kind else { continue }
+            if hypot(d.position.x - bed.centre.x, d.position.y - bed.centre.y) < bed.radius { inShallows = true }
+        }
+        guard inShallows, simd_length(d.velocity) < 4 else { d.restTime = 0; return }
+        d.restTime += dt
+        guard d.restTime >= GoalTuning.rootAfter else { return }
+        d.rooted = true
+        rootedSeeds += 1
+        let name = "sprout_\(1 + rootedSeeds % 3)"
+        sprouts.append(Sprout(position: d.position, sprite: Self.spriteExists(name) ? name : d.sprite, bornAt: elapsed))
+        renderer?.addSplat(at: d.position, in: viewSize, radius: 8, amplitude: -0.05)
+        garden.addBubble(at: d.position)
+        haptics.clear()
+        sound.clearNote(index: rootedSeeds, of: max(rootedSeeds, goals.reduce(0) { n, g in
+            if case .rootSeeds(_, let c) = g.kind { return n + c }
+            return n
+        }))
+    }
+
+    /// Leaves coming down: each one that reaches the water becomes a real
+    /// piece there, and the fall stops once enough have landed.
+    private func updateLeaves(dt: Float) {
+        guard let fall = leafFall, viewSize != .zero else { return }
+        for landing in fall.update(dt: dt, world: viewSize) {
+            let d = Debris(id: 5000 + fall.landed, cls: .light, sprite: landing.texture,
+                           position: landing.at, radius: 15 * landing.scale, scale: landing.scale)
+            d.angle = CGFloat(landing.rotation)
+            debris.append(d)
+            renderer?.addSplat(at: landing.at, in: viewSize, radius: 7, amplitude: -0.10)
+            sound.leaves(x: Float(landing.at.x / viewSize.width))
+        }
+    }
+
+    /// The instruments read their samples and say what they did; the pond
+    /// answers with sound, a shiver in the hand and a splash.
+    private func updateInstruments(dt: Float, samples: [FieldSample]) {
+        guard let renderer, !instruments.isEmpty else { return }
+        var cursor = instrumentProbeStart
+        let flat = FieldSample(height: 0, slope: .zero, velocity: 0)
+        var events: [InstrumentEvent] = []
+        for inst in instruments {
+            let n = inst.probePoints.count
+            var mine: [FieldSample] = []
+            for k in 0..<n { mine.append(cursor + k < samples.count ? samples[cursor + k] : flat) }
+            cursor += n
+            if phase == .playing { inst.update(dt: dt, samples: mine, events: &events) }
+            for sp in inst.splashes { renderer.addSplat(at: sp.at, in: viewSize, radius: sp.radius, amplitude: sp.amplitude) }
+            inst.splashes.removeAll()
+            // Each instrument keeps its own score; the goals read it from here.
+            if let b = inst as? ShishiOdoshi {
+                bambooState = b.state
+                knocks = b.state.knocks
+            }
+            if let c = inst as? Suikinkutsu {
+                chimeState = c.state
+                notesPlayed = c.state.played
+                phraseComplete = c.state.complete
+            }
+            if let d = inst as? DryPool {
+                poolState = d.state
+                poolFill = d.state.fill
+                poolFull = d.state.full
+            }
+        }
+        let w = Float(viewSize.width)
+        for e in events {
+            switch e {
+            case .knock(let at):
+                sound.bamboo(x: Float(at.x) / w)
+                haptics.knock()
+                renderer.addSplat(at: at, in: viewSize, radius: 14, amplitude: -0.12)
+                garden.burstDroplets(at: at, power: 0.5)
+            case .note(let index, let at, _):
+                sound.chime(note: index, x: Float(at.x) / w)
+                haptics.chime(note: index)
+                renderer.addSplat(at: at, in: viewSize, radius: 6, amplitude: -0.04)
+            case .phraseComplete:
+                haptics.complete()
+            case .phraseReplay:
+                playPhrase()
+            case .spill(let at, let amount):
+                sound.spill(x: Float(at.x) / w)
+                haptics.spill()
+                // Water going over the lip: foam and wet at the edge.
+                renderer.addSplat(at: at, in: viewSize, radius: 10, amplitude: -0.06 * max(0.3, amount))
+                garden.burstDroplets(at: at, power: 0.2 + 0.4 * amount)
+            case .poolFull:
+                sound.spill(x: Float(poolState.map { _ in 0.5 } ?? 0.5))
+                haptics.swell()
+            }
+        }
+        // The pool is water now, or more of it is: the depth map is painted
+        // again, a few times a second while it changes, never every frame.
+        if poolFill != poolPainted, elapsed - poolRepaintAt > 0.25 {
+            poolRepaintAt = elapsed
+            poolPainted = poolFill
+            renderer.repaintDepth()
+        }
+    }
+
+    /// How glassy the pond is: the mean |velocity| over the fixed probes.
+    private func updateCalm(samples: [FieldSample], dt: Float) {
+        guard !calmCells.isEmpty else { return }
+        var sum: Float = 0
+        var n = 0
+        calmSamples = []
+        for k in 0..<calmCells.count where calmProbeStart + k < samples.count {
+            let sample = samples[calmProbeStart + k]
+            calmSamples.append(sample)
+            sum += abs(sample.velocity)
+            n += 1
+        }
+        agitation = n > 0 ? sum / Float(n) : 0
+    }
+
+    /// The goals read the pond, and the pond shows what they have made of
+    /// it: the moon coming up as the water lies still.
+    private func readGoals(dt: Float) {
+        guard !goals.isEmpty else { return }
+        let ctx = GoalContext(dt: dt, elapsed: elapsed,
+                              sinceTouch: elapsed - lastTouchAt,
+                              agitation: agitation,
+                              iceFraction: iceField?.fraction ?? 0,
+                              siltCleaned: cleaned,
+                              filmCover: renderer?.filmCover ?? 0,
+                              probes: calmSamples,
+                              surfacedKoi: garden.surfacedKoi(),
+                              shoalCentroids: garden.shoalCentroids(),
+                              shyKoiOut: garden.shyKoiOut,
+                              rootedSeeds: rootedSeeds,
+                              remainingDebris: remainingDebris + (leafFall.map { $0.finished ? 0 : 1 } ?? 0),
+                              bamboo: bambooState,
+                              chime: chimeState,
+                              pool: poolState,
+                              targetWoke: targets.allSatisfy(\.woke))
+        evaluator.update(goals: goals, ctx: ctx)
+        // Stillness rises with the wait and falls away softly at a touch.
+        let still = evaluator.stillness(of: goals)
+        if still > stillShown { stillShown = still } else { stillShown += (still - stillShown) * min(1, dt / 1.5) }
+        garden.stillness(stillShown)
     }
 
     // MARK: - Hints
@@ -1022,9 +1432,9 @@ final class GameController: ObservableObject, TouchInput {
         // Once, a little way in: how to look at the pond from the side.
         if elapsed > 30, touchedYet, !HintMemory.seen(.tilt), hint == nil { show(.tilt) }
         if level.hint == .ice, touchedYet, let f = iceField, f.fraction > 0.97, elapsed > 12 { show(.ice) }
-        // The tile is mostly clean but a heavy piece still shades it, and the
-        // player has stalled: they need the hold.
-        if cleaned > 0.45, !heavyOverTile().isEmpty, elapsed - lastProgressAt > 7 { show(.hold) }
+        // A frozen pond whose sheet is open but whose goal is still not met:
+        // the level's own hint, now that the ice is out of the way.
+        if let h = level.hint, h != .ice, let f = iceField, f.fraction < 0.5, elapsed - lastTouchAt > 6 { show(h) }
     }
 
     private func dismissHint() {
@@ -1080,17 +1490,18 @@ final class GameController: ObservableObject, TouchInput {
         p.lastAt = now
         let dist = hypot(a.x - b.x, a.y - b.y)
 
-        // A tilt, read before the pinch so a hand that spreads a little on
-        // the way does not zoom instead: both fingers going much the same
-        // way, both mostly up or down the screen, and neither of them fast
-        // enough to be half a gust.
+        // A tilt, read before the pinch and read leniently: both fingers
+        // going the same way, the pair's middle travelling more up or down
+        // than across, and the two of them not spreading. Speed says
+        // nothing, so a brisk drag tilts as surely as a slow one, and the
+        // whole thing is decided inside the first few points of travel.
         if !p.active, !p.tilting,
            let ta = p.travel[p.ids[0]], let tb = p.travel[p.ids[1]] {
+            let mid = CGPoint(x: (ta.x + tb.x) / 2, y: (ta.y + tb.y) / 2)
             let sameWay = ta.y * tb.y > 0
-            let upright = abs(ta.y) > abs(ta.x) * 1.2 && abs(tb.y) > abs(tb.x) * 1.2
-            let gentle = max(p.speed[p.ids[0]] ?? 0, p.speed[p.ids[1]] ?? 0) < CGFloat(GameTuning.gustSpeed)
-            let far = min(hypot(ta.x, ta.y), hypot(tb.x, tb.y))
-            if sameWay, upright, gentle, far > 10 {
+            let upright = abs(mid.y) > (abs(mid.x) + abs(mid.y)) * GameTuning.tiltUpright
+            let held = abs(dist - p.startDistance) < GameTuning.tiltSpread
+            if sameWay, upright, held, hypot(mid.x, mid.y) > GameTuning.tiltTravel {
                 p.tilting = true
                 r.cancelAll()
                 for pid in p.ids { forgetWaterTouch(pid) }
@@ -1126,6 +1537,7 @@ final class GameController: ObservableObject, TouchInput {
     /// its hold, its wake and its voice all go.
     private func forgetWaterTouch(_ id: Int) {
         pondTouches.removeValue(forKey: id)
+        endCall(id)
         if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
         if wakeSounding.remove(id) != nil { sound.wakeEnd(id: id); haptics.slideEnd() }
     }
@@ -1194,6 +1606,8 @@ final class GameController: ObservableObject, TouchInput {
 
         if t.isWake, !t.spent {
             let strength = min(1.6, max(0.35, t.speed / GameTuning.wakeFullSpeed))
+            if t.wakePath.isEmpty { t.wakePath.append(t.last) }
+            if step > 4 { t.wakePath.append(point) }
             sound.wakeLevel(id: id, speed: t.speed)
             // Water is glassy under a moving finger; a whirl drags harder.
             haptics.slide(speed: t.speed, grain: t.stirring ? 0.2 : 0.1, travel: Float(step))
@@ -1253,6 +1667,7 @@ final class GameController: ObservableObject, TouchInput {
     /// it was charging goes, and the water rushing past it is heard and felt.
     private func beginStroke(id: Int) {
         renderer?.cancelHold(id: id)
+        endCall(id)
         if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
         sound.wakeBegin(id: id)
         wakeSounding.insert(id)
@@ -1378,6 +1793,7 @@ final class GameController: ObservableObject, TouchInput {
         // on the way, and the view must not jump after them.
         pinch = nil
         garden.blow(direction: direction, strength: 90)
+        leafFall?.blow(direction: direction, strength: 90)
         sound.gust(x: 0.5)
         haptics.swell()
     }
@@ -1412,7 +1828,9 @@ final class GameController: ObservableObject, TouchInput {
     /// the petals blown with it, the reeds and the weeds leaning as it goes.
     private func updateWind(dt: Float) {
         guard let renderer, viewSize != .zero, phase != .complete else { return }
-        if wind == nil, elapsed > nextWindAt {
+        // A pond that is asked to lie still is spared its own weather.
+        let wantsStill = goals.contains { if case .stillness = $0.kind { return true }; return false }
+        if wind == nil, elapsed > nextWindAt, !(wantsStill && phase == .playing) {
             nextWindAt = elapsed + Float.random(in: 20...45)
             startWind()
         }
@@ -1435,6 +1853,7 @@ final class GameController: ObservableObject, TouchInput {
             renderer.addSplat(at: at, in: viewSize, radius: 3, amplitude: -0.012 * (0.5 + 0.5 * body))
         }
         garden.blow(direction: g.direction, strength: 70 * dt)
+        leafFall?.blow(direction: g.direction, strength: 70 * dt)
         garden.lean(direction: g.direction, strength: 2.6 * dt)
         wind = g.age >= seconds ? nil : g
     }
@@ -1565,6 +1984,8 @@ final class GameController: ObservableObject, TouchInput {
             return
         }
         waveBitesIce(from: point)
+        agitationAtTouch = agitation
+        lastTouchAt = elapsed
         garden.startle(at: point, in: size)
         if let k = garden.koiHit(at: point) {
             garden.dive(k)
@@ -1618,6 +2039,7 @@ final class GameController: ObservableObject, TouchInput {
             return
         }
         if pondTouches[id] != nil {
+            lastTouchAt = elapsed
             strokeWater(id: id, at: point, in: size)
             return
         }
@@ -1699,6 +2121,7 @@ final class GameController: ObservableObject, TouchInput {
             return
         }
         if let t = pondTouches.removeValue(forKey: id) {
+            lastTouchAt = elapsed
             if wakeSounding.remove(id) != nil {
                 sound.wakeEnd(id: id)
                 haptics.slideEnd()
@@ -1706,7 +2129,10 @@ final class GameController: ObservableObject, TouchInput {
             // The whirl keeps turning on its own once the hand has gone.
             if whirl?.stirring == id { whirl?.stirring = nil }
             if holdSounding.remove(id) != nil { sound.holdEnd(id: id) }
+            endCall(id)
             renderer?.touchUp(id: id)
+            // The wake is laid: the shoal takes it up.
+            if t.isWake, t.wakePath.count >= 2 { garden.followWake(path: t.wakePath + [point]) }
             // A plain tap, and one just landed beside it: a stone drops in.
             let plain = !t.isWake && !t.isSlosh && !t.spent && t.held < Float(GameTuning.doubleTapSeconds)
             let now = CACurrentMediaTime()
@@ -1716,6 +2142,8 @@ final class GameController: ObservableObject, TouchInput {
                 dropStone(at: CGPoint(x: (last.point.x + point.x) / 2, y: (last.point.y + point.y) / 2))
             } else {
                 lastTap = plain ? (point, now) : nil
+                // One ring on a quiet pond: the koi far off turn to look.
+                if plain { garden.curious(tap: point, calm: agitationAtTouch < 3 * GoalTuning.calmThreshold) }
             }
             return
         }
@@ -1734,8 +2162,13 @@ final class GameController: ObservableObject, TouchInput {
     private func finish() {
         phase = .celebrating
         iceField?.sinkAll(time: renderer?.clock ?? 0)
+        garden.releaseCall()
+        calling.removeAll()
         let target = level.bloomTarget
         progress.markComplete(levelID: level.id, seasonID: season.id, bloomStage: target)
+        // What this pond woke stays woken on the map.
+        let woke = goals.reduce(into: Set<WokeToken>()) { $0.formUnion($1.wakes) }
+        progress.markWoke(levelID: level.id, tokens: woke)
         celebration = Task { @MainActor [weak self] in
             guard let self else { return }
             try? await Task.sleep(for: .seconds(0.8))
@@ -1799,21 +2232,60 @@ final class GameController: ObservableObject, TouchInput {
         if next != words { words = next }
     }
 
-    /// What is left. The line is only written again when it has changed.
+    /// What is left, from the goals not yet met. The line is only written
+    /// again when it has changed.
     private func updateStatus() {
-        // Ice chunks melt on their own; they are not the player's to clear.
-        let alive = debris.filter { !$0.cleared && $0.meltsIn == nil }
-        let ice = ((iceField?.fraction ?? 0) * 20).rounded() / 20
-        let key = SIMD4<Int>(alive.count, alive.filter { $0.kind.isRubbish }.count,
-                             targets.filter { !$0.woke }.count, Int(ice * 20))
+        var parts: [String] = []
+        let states = evaluator.states
+        for (i, g) in goals.enumerated() where i < states.count && !states[i].done {
+            let st = states[i]
+            switch g.kind {
+            case .clearDebris:
+                let left = remainingDebris + (leafFall.map { $0.total - $0.landed } ?? 0)
+                parts.append(level.leaves > 0 ? (left == 1 ? "1 leaf left" : "\(left) leaves left")
+                                              : (left == 1 ? "1 piece left" : "\(left) pieces left"))
+            case .breakIce:
+                parts.append("ice \(Int(((iceField?.fraction ?? 0) * 100).rounded()))%")
+            case .clearSilt:
+                parts.append("silt \(Int(((1 - cleaned) * 100).rounded()))%")
+            case .partDuckweed:
+                parts.append("duckweed \(Int(((renderer?.filmCover ?? 0) * 100).rounded()))%")
+            case .rootSeeds(_, let n):
+                let left = max(0, n - rootedSeeds)
+                parts.append(left == 1 ? "1 seed to root" : "\(left) seeds to root")
+            case .callKoi:
+                parts.append("koi still below")
+            case .koiOpensBud:
+                parts.append("bud still closed")
+            case .leadShoal:
+                parts.append("shoal not through")
+            case .temptShyKoi:
+                parts.append("the shy koi hides")
+            case .wakeTarget(let kind, _, _):
+                parts.append(kind == .bud ? "bud asleep" : "bell asleep")
+            case .shishiOdoshi(_, let n):
+                parts.append("\(min(knocks, n)) knock\(knocks == 1 ? "" : "s") of \(n)")
+            case .suikinkutsu(_, let order):
+                let left = max(0, order.count - notesPlayed.count)
+                parts.append(left == 1 ? "1 note to play" : "\(left) notes to play")
+            case .fillPool:
+                parts.append("pool \(Int((poolFill * 100).rounded()))% full")
+            case .stillness(let seconds):
+                let left = Int((seconds - st.held).rounded(.up))
+                parts.append(st.held > 0 ? "still for \(max(1, left)) s more" : "the pond is not still")
+            }
+        }
+        // The line is written when its words change, not every frame.
+        let key = SIMD4<Int>(parts.count, parts.joined(separator: ",").hashValue & 0x7FFFFFFF, 0, 0)
         guard key != statusKey else { return }
         statusKey = key
-        let text = LevelSpec.status(remaining: alive.map(\.kind),
-                                    targetsAsleep: targets.filter { !$0.woke }.count,
-                                    ice: ice)
-        // Once nothing is left the completion says so; the line goes.
-        if alive.isEmpty, targets.allSatisfy(\.woke), ice < 0.06 { statusText = "" }
-        else { statusText = text }
+        statusText = parts.isEmpty ? (goals.isEmpty ? "" : "The pond wakes.") : parts.joined(separator: ", ")
+    }
+
+    /// Pieces still on the water that are the player's to clear: not seeds,
+    /// not chunks of ice on their way to melting.
+    private var remainingDebris: Int {
+        debris.filter { !$0.cleared && !$0.kind.isSeed && $0.meltsIn == nil }.count
     }
 
     /// A menu opens: one real impulse in the real water at the point that
@@ -1875,6 +2347,9 @@ final class Target {
     var opening: Float = 0
     /// The highest water seen here, for tuning.
     var peak: Float = 0
+    /// A near miss set this to 1; it dies away over a second or so.
+    var tremble: Float = 0
+    var lastTrembleAt: Float = -10
     init(spec: TargetSpec, position: CGPoint) {
         self.spec = spec
         self.position = position
@@ -1955,9 +2430,21 @@ enum DepthPainter {
         return shore(1 - 0.62 * smoothstep(0.55, 1.0, rim), rim: rim, px: px, py: py)
     }
 
-    /// Depth at a unit point: the bowl, then the level's shallows and rocks.
-    static func depth(at p: CGPoint, level: LevelSpec, aspect: Float) -> Float {
+    /// The dry pool a level may have beyond its lip, as a fraction of the
+    /// world, if it has one.
+    private static func pool(of level: LevelSpec) -> (centre: CGPoint, radius: CGFloat, lip: CGPoint)? {
+        for g in level.goals {
+            if case .fillPool(let lip, let pool, _) = g.kind { return (pool.centre, pool.radius, lip) }
+        }
+        return nil
+    }
+
+    /// Depth at a unit point: the bowl, then the level's shallows and rocks,
+    /// and the dry pool beyond the lip as far as it has filled.
+    static func depth(at p: CGPoint, level: LevelSpec, aspect: Float, poolFill: Float = 0) -> Float {
         let px = Float(p.x), py = Float(p.y)
+        // The pond is a bowl: deep in the middle, shelving to the banks,
+        // so waves slow near the edge and the bed shows there.
         let bx = (px - 0.5) * aspect, by = py - 0.5
         let rim = rimAt(bx: bx, by: by, aspect: aspect)
         var d: Float = 1 - 0.62 * smoothstep(0.55, 1.0, rim)
@@ -1974,37 +2461,208 @@ enum DepthPainter {
             let dist = (dx * dx + dy * dy).squareRoot() / r
             if dist < 1 { d = 0 } else if dist < 1.3 { d = min(d, (dist - 1) / 0.3) }
         }
+        // The pool on the bank fills from the lip inward: water where it
+        // has reached, a channel over the lip joining it to the pond.
+        if poolFill > 0, let pool = pool(of: level) {
+            let r = Float(pool.radius)
+            let dx = (px - Float(pool.centre.x)) * aspect, dy = py - Float(pool.centre.y)
+            let dist = (dx * dx + dy * dy).squareRoot() / r
+            if dist < 1 {
+                let wet = poolFill * 0.3 * (1 - dist * dist * 0.5)
+                d = max(d, wet)
+            }
+            // The lip: a short channel between the pond and the pool.
+            let lx = (px - Float(pool.lip.x)) * aspect, ly = py - Float(pool.lip.y)
+            let along = ly / max(0.01, Float(pool.centre.y - pool.lip.y))
+            if abs(lx) < r * 0.5, along > -0.2, along < 1.2 {
+                d = max(d, poolFill * 0.3 * (1 - abs(lx) / (r * 0.5)))
+            }
+        }
         return d
     }
 
-    static func paint(level: LevelSpec, width: Int, height: Int) -> [Float] {
+    static func paint(level: LevelSpec, width: Int, height: Int, poolFill: Float = 0) -> [Float] {
         var map = [Float](repeating: 1, count: width * height)
         let fw = Float(width), fh = Float(height)
         let aspect = fw / fh
         for y in 0..<height {
             for x in 0..<width {
-                let px = Float(x) / fw, py = Float(y) / fh
-                // The pond is a bowl: deep in the middle, shelving to the banks,
-                // so waves slow near the edge and the bed shows there.
-                let bx = (px - 0.5) * aspect, by = py - 0.5
-                let rim = rimAt(bx: bx, by: by, aspect: aspect)
-                var d: Float = 1 - 0.62 * smoothstep(0.55, 1.0, rim)
-                d = shore(d, rim: rim, px: px, py: py)
-                for s in level.shallows {
-                    let r = Float(s.radius)
-                    let dx = (px - Float(s.centre.x)) * aspect, dy = py - Float(s.centre.y)
-                    let dist = (dx * dx + dy * dy).squareRoot() / r
-                    if dist < 1 { d = min(d, 0.25 + 0.75 * dist * dist) }
-                }
-                for o in level.rocks + level.pads {
-                    let r = Float(o.radius) * 0.9
-                    let dx = (px - Float(o.centre.x)) * aspect, dy = py - Float(o.centre.y)
-                    let dist = (dx * dx + dy * dy).squareRoot() / r
-                    if dist < 1 { d = 0 } else if dist < 1.3 { d = min(d, (dist - 1) / 0.3) }
-                }
-                map[y * width + x] = d
+                map[y * width + x] = depth(at: CGPoint(x: CGFloat(Float(x) / fw), y: CGFloat(Float(y) / fh)),
+                                           level: level, aspect: aspect, poolFill: poolFill)
             }
         }
         return map
+    }
+}
+
+// MARK: - Goals
+
+/// Marks each goal met from what the pond reads each frame, and keeps what
+/// a goal has to remember between frames: how long a condition has held,
+/// where each shoal was, so a crossing can be seen.
+final class GoalEvaluator {
+    struct State {
+        var done = false
+        /// Seconds a condition has held: a koi up within reach, the pond glassy.
+        var held: Float = 0
+        /// Where each shoal's centroid was last frame.
+        var centroids: [CGPoint] = []
+    }
+    private(set) var states: [State] = []
+
+    func reset(count: Int) { states = Array(repeating: State(), count: count) }
+
+    var allDone: Bool { !states.isEmpty && states.allSatisfy(\.done) }
+
+    /// How far toward its stillness the pond has come, 0...1, over the
+    /// stillness goals (1 when there are none and everything else is met).
+    func stillness(of goals: [GoalSpec]) -> Float {
+        var out: Float = 0
+        for (i, g) in goals.enumerated() where i < states.count {
+            if case .stillness(let seconds) = g.kind {
+                out = max(out, states[i].done ? 1 : min(1, states[i].held / max(0.1, seconds)))
+            }
+        }
+        return out
+    }
+
+    /// Signed side of the line through `a` and `b` that `p` lies on.
+    private static func side(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+    }
+
+    /// Whether the step from `p0` to `p1` crosses the gate between its ends.
+    private static func crosses(_ p0: CGPoint, _ p1: CGPoint, gate a: CGPoint, _ b: CGPoint) -> Bool {
+        let s0 = side(p0, a, b), s1 = side(p1, a, b)
+        guard s0 * s1 < 0 else { return false }
+        // Where the step meets the gate's line, as a fraction along the gate.
+        let t = s0 / (s0 - s1)
+        let x = p0.x + (p1.x - p0.x) * t, y = p0.y + (p1.y - p0.y) * t
+        let gx = b.x - a.x, gy = b.y - a.y
+        let len2 = max(1, gx * gx + gy * gy)
+        let u = ((x - a.x) * gx + (y - a.y) * gy) / len2
+        return u >= 0 && u <= 1
+    }
+
+    func update(goals: [GoalSpec], ctx: GoalContext) {
+        guard states.count == goals.count else { reset(count: goals.count); return }
+        for (i, g) in goals.enumerated() where !states[i].done {
+            var st = states[i]
+            switch g.kind {
+            case .clearDebris:
+                st.done = ctx.remainingDebris == 0
+            case .breakIce:
+                st.done = ctx.iceFraction < 0.06
+            case .clearSilt(let clean):
+                st.done = ctx.siltCleaned >= clean
+            case .partDuckweed(let cover):
+                st.done = ctx.filmCover <= cover
+            case .rootSeeds(_, let n):
+                st.done = ctx.rootedSeeds >= n
+            case .callKoi(let at, let r):
+                let near = ctx.surfacedKoi.contains { hypot($0.x - at.x, $0.y - at.y) < r }
+                st.held = near ? st.held + ctx.dt : 0
+                st.done = st.held >= GoalTuning.callHold
+            case .koiOpensBud:
+                st.done = ctx.targetWoke
+            case .leadShoal(let gate):
+                let now = ctx.shoalCentroids
+                if st.centroids.count == now.count {
+                    for (k, c) in now.enumerated() where Self.crosses(st.centroids[k], c, gate: gate.0, gate.1) {
+                        st.done = true
+                    }
+                }
+                st.centroids = now
+            case .temptShyKoi:
+                st.done = ctx.shyKoiOut
+            case .wakeTarget:
+                st.done = ctx.targetWoke
+            case .shishiOdoshi(_, let n):
+                st.done = (ctx.bamboo?.knocks ?? 0) >= n
+            case .suikinkutsu:
+                st.done = ctx.chime?.complete ?? false
+            case .fillPool:
+                st.done = ctx.pool?.full ?? false
+            case .stillness(let seconds):
+                let calm = ctx.sinceTouch > GoalTuning.calmAfterTouch && ctx.agitation < GoalTuning.calmThreshold
+                st.held = calm ? st.held + ctx.dt : 0
+                st.done = st.held >= seconds
+            }
+            states[i] = st
+        }
+    }
+}
+
+/// A seedling standing where a seed rooted, growing over its first seconds.
+struct Sprout {
+    var position: CGPoint
+    var sprite: String
+    var bornAt: Float
+}
+
+/// Leaves coming down onto the water for a while. Each is a falling petal
+/// until it reaches the water; there it is handed to the controller to
+/// become a real piece, and the fall stops once enough have landed.
+final class LeafFall {
+    let total: Int
+    private let textures: [String]
+    private(set) var spawned = 0
+    private(set) var landed = 0
+    private var leaves: [(petal: FallingPetal, landAt: CGFloat, scale: CGFloat)] = []
+    private var accumulator: Float = 0.8
+
+    struct Landing {
+        var at: CGPoint
+        var texture: String
+        var rotation: Float
+        var scale: CGFloat
+    }
+
+    init(total: Int, textures: [String]) {
+        self.total = total
+        self.textures = textures
+    }
+
+    /// Every leaf that was going to fall has landed.
+    var finished: Bool { landed >= total && leaves.isEmpty }
+
+    /// One step: new leaves while there are more to come, and the ones that
+    /// reached the water this frame.
+    func update(dt: Float, world: CGSize) -> [Landing] {
+        if spawned < total {
+            accumulator += dt * 1.1
+            while accumulator >= 1, spawned < total {
+                accumulator -= 1
+                let p = FallingPetal(x: CGFloat.random(in: 0.18...0.82) * world.width, y: -24,
+                                     texture: textures[spawned % textures.count])
+                // A leaf comes down faster than blossom does.
+                p.blow(dx: 0, dy: CGFloat.random(in: 50...90))
+                leaves.append((p, CGFloat.random(in: 0.25...0.80) * world.height, CGFloat.random(in: 0.9...1.25)))
+                spawned += 1
+            }
+        }
+        var out: [Landing] = []
+        for (i, l) in leaves.enumerated().reversed() {
+            l.petal.update(dt: dt)
+            guard l.petal.y >= l.landAt else { continue }
+            out.append(Landing(at: CGPoint(x: l.petal.x, y: l.petal.y), texture: l.petal.texture,
+                               rotation: l.petal.rotation, scale: l.scale))
+            leaves.remove(at: i)
+            landed += 1
+        }
+        return out
+    }
+
+    /// A gust or the wind takes the leaves still in the air.
+    func blow(direction: SIMD2<Float>, strength: Float) {
+        for l in leaves { l.petal.blow(dx: CGFloat(direction.x * strength), dy: CGFloat(direction.y * strength) * 0.4) }
+    }
+
+    func sprites() -> [Sprite] {
+        leaves.map { l in
+            let side = 26 * l.scale
+            return Sprite(l.petal.texture, at: CGPoint(x: l.petal.x, y: l.petal.y), size: CGSize(width: side, height: side),
+                          rotation: l.petal.rotation, mode: .plain, alpha: 1, z: 0.5)
+        }
     }
 }

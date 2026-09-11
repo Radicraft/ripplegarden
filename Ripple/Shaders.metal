@@ -42,7 +42,9 @@ struct RenderParams {
     float4 view;           // x zoom, yz view centre in world pixels
     float4 world;          // xy world size in pixels
     float  dayPhase;       // 0...1 through the day, noon at a half
-    float  _pad0, _pad1, _pad2;
+    float  film;           // 1 = the duckweed film is on
+    float  filmTile;       // 1 = a painted duckweed tile is bound, 0 = draw the leaves here
+    float  filmTilePts;    // world points one repeat of the tile covers
 };
 
 // One Voronoi seed of the fractured sheet: mirrors `IceSeedGPU` in
@@ -78,8 +80,8 @@ struct FloorParams {
     float4 mosaic;         // xy centre (uv), z radius (fraction of height), w silt tint strength
     float4 siltColour;     // rgb of the silt film
     float4 camera;         // xy lateral camera offset in points, z height, w shift gain
-    float4 bed;            // x bed strength, y bed depth (positive, below the surface)
-    float4 view;           // xy view centre in world pixels (the perspective centre)
+    float4 bed;            // x bed strength, y bed depth (positive, below the surface), z clock, w 1 = silt haze over the whole pond
+    float4 view;           // xy view centre in world pixels (the perspective centre), w 1 = duckweed film on
     float4 bank;           // x on, y mouth (fraction of height), z stretch (fraction of height)
 };
 
@@ -87,9 +89,15 @@ struct SiltParams {
     float4 viewport;       // xy drawable size
     float4 size;           // xy silt texture size
     float4 gains;          // x |h| gain, y |lap| gain, z threshold, w rate*dt
-    float4 mosaic;         // xy centre uv, z radius (fraction of height)
+    float4 mosaic;         // xy centre uv, z radius (fraction of height), w 1 = the film covers every water cell
     uint   coverCount;
     uint   _pad0, _pad1, _pad2;
+};
+
+struct FilmParams {
+    float4 size;           // xy film texels, zw field texels
+    float4 gains;          // x drift per unit slope this step (field cells), y diffusion, z shore depth, w trailing weight
+    float4 misc;           // x longest drift per step (film texels), y keep of the excess over 1, z 1 = reset, w unused
 };
 
 /// A camera above and behind the pond, looking across it and down. World
@@ -341,24 +349,140 @@ kernel void silt_erode(texture2d<float, access::read>   siltIn  [[texture(0)]],
     siltOut.write(float4(max(s, 0.0), 0.0, 0.0, 0.0), gid);
 }
 
-/// One thread per silt row: the silt total inside the mosaic circle.
-kernel void silt_rowsum(texture2d<float, access::read> silt [[texture(0)]],
-                        device float *rows                    [[buffer(0)]],
-                        constant SiltParams &p                [[buffer(1)]],
-                        uint y                                [[thread_position_in_grid]])
+/// One thread per silt row: the silt total inside the mosaic circle, or,
+/// when the film covers the whole pond, the total over the water cells and
+/// (in a second run of rows) how many water cells there were, so the
+/// readback can take a mean that leaves the dry ground out.
+kernel void silt_rowsum(texture2d<float, access::read>   silt  [[texture(0)]],
+                        texture2d<float, access::sample> depth [[texture(1)]],
+                        device float *rows                     [[buffer(0)]],
+                        constant SiltParams &p                 [[buffer(1)]],
+                        uint y                                 [[thread_position_in_grid]])
 {
     if (y >= uint(p.size.y)) { return; }
+    constexpr sampler smp(filter::linear, address::clamp_to_edge);
     float aspect = p.viewport.x / p.viewport.y;
     float2 c = float2(p.mosaic.x * aspect, p.mosaic.y);
     float r = p.mosaic.z;
-    float sum = 0.0;
+    bool whole = p.mosaic.w > 0.5;
+    float sum = 0.0, count = 0.0;
     uint w = uint(p.size.x);
     for (uint x = 0; x < w; ++x) {
         float2 uv = (float2(x, y) + 0.5) / p.size.xy;
-        float2 q = float2(uv.x * aspect, uv.y);
-        if (distance(q, c) < r) { sum += silt.read(uint2(x, y)).r; }
+        if (whole) {
+            if (depth.sample(smp, uv).r > 0.15) { sum += silt.read(uint2(x, y)).r; count += 1.0; }
+        } else {
+            float2 q = float2(uv.x * aspect, uv.y);
+            if (distance(q, c) < r) { sum += silt.read(uint2(x, y)).r; }
+        }
     }
     rows[y] = sum;
+    if (whole) { rows[uint(p.size.y) + y] = count; }
+}
+
+// ---------------------------------------------------------------------------
+// Duckweed. A film of density over the water at the silt's resolution. The
+// surface carries it: each step the film is advected along the drift the
+// slope gives it (downhill, and mostly on a rising face, the way the debris
+// move), thinned where that drift spreads and piled where it gathers, and
+// blurred a little so its edges stay soft. What the water pushes onto the
+// shore is kept there in a second channel and never comes back. The drift is
+// written alongside the density so the next step can take its divergence
+// from the neighbours without sampling the field five times over.
+//   r density on the water, 0 to 1.5 (over 1 is a pile that settles back)
+//   g density stranded on the shore, 0 to 1
+//   ba the drift this step, in film texels
+// ---------------------------------------------------------------------------
+
+kernel void film_advect(texture2d<float, access::sample> filmIn  [[texture(0)]],
+                        texture2d<float, access::write>  filmOut [[texture(1)]],
+                        texture2d<float, access::sample> field   [[texture(2)]],
+                        texture2d<float, access::sample> depth   [[texture(3)]],
+                        constant FilmParams &p                   [[buffer(0)]],
+                        uint2 gid                                [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(p.size.x) || gid.y >= uint(p.size.y)) { return; }
+    constexpr sampler smp(filter::linear, address::clamp_to_edge);
+    float2 uv = (float2(gid) + 0.5) / p.size.xy;
+    float d = depth.sample(smp, uv).r;
+    bool water = d > p.gains.z;
+    if (p.misc.z > 0.5) {
+        // A fresh film: every water cell under weed, the shore bare.
+        filmOut.write(float4(water ? 1.0 : 0.0, 0.0, 0.0, 0.0), gid);
+        return;
+    }
+
+    float4 c = filmIn.read(gid);
+    uint2 maxc = uint2(p.size.xy) - 1;
+    uint2 l  = uint2(gid.x > 0 ? gid.x - 1 : 0, gid.y);
+    uint2 r  = uint2(min(gid.x + 1, maxc.x), gid.y);
+    uint2 dn = uint2(gid.x, gid.y > 0 ? gid.y - 1 : 0);
+    uint2 up = uint2(gid.x, min(gid.y + 1, maxc.y));
+    float4 fL = filmIn.read(l), fR = filmIn.read(r), fD = filmIn.read(dn), fU = filmIn.read(up);
+
+    // The surface's push here: downhill, at full strength while the water
+    // is rising and a fraction of it while it falls, so a passing ring
+    // leaves a net drift outward rather than rocking the weed in place.
+    float2 ft = 1.0 / p.size.zw;
+    float2 hv = field.sample(smp, uv).rg;
+    float hL = field.sample(smp, uv - float2(ft.x, 0)).r;
+    float hR = field.sample(smp, uv + float2(ft.x, 0)).r;
+    float hD = field.sample(smp, uv - float2(0, ft.y)).r;
+    float hU = field.sample(smp, uv + float2(0, ft.y)).r;
+    float2 slope = float2(hR - hL, hU - hD) * 0.5;          // height per field cell
+    float w = hv.g > 0.0 ? 1.0 : p.gains.w;
+    float2 drift = -slope * p.gains.x * w * (p.size.xy / p.size.zw);   // film texels this step
+    float len = length(drift);
+    if (len > p.misc.x) { drift *= p.misc.x / len; }
+
+    // Where the weed came from, and how much the drift around here spread
+    // or gathered it (the divergence of the last step's drift).
+    float div = (fR.b - fL.b) * 0.5 + (fU.a - fD.a) * 0.5;
+    float rho = filmIn.sample(smp, uv - drift / p.size.xy).r * (1.0 - clamp(div, -0.5, 0.5));
+
+    if (!water) {
+        // The shore keeps whatever the water pushed onto it.
+        float pile = min(1.0, c.g + max(rho, 0.0));
+        filmOut.write(float4(0.0, pile, drift), gid);
+        return;
+    }
+
+    // A little diffusion between water cells only: nothing leaks to the
+    // shore on its own, the water has to carry it there.
+    float k = p.gains.y;
+    float2 tx = float2(1.0 / p.size.x, 0.0), ty = float2(0.0, 1.0 / p.size.y);
+    if (depth.sample(smp, uv - tx).r > p.gains.z) { rho += k * (fL.r - c.r); }
+    if (depth.sample(smp, uv + tx).r > p.gains.z) { rho += k * (fR.r - c.r); }
+    if (depth.sample(smp, uv - ty).r > p.gains.z) { rho += k * (fD.r - c.r); }
+    if (depth.sample(smp, uv + ty).r > p.gains.z) { rho += k * (fU.r - c.r); }
+
+    // Weed heaped over a full carpet settles back toward one.
+    if (rho > 1.0) { rho = 1.0 + (rho - 1.0) * p.misc.y; }
+    rho = clamp(rho, 0.0, 1.5);
+    filmOut.write(float4(rho, c.g, drift), gid);
+}
+
+/// One thread per film row: the density total over the water cells and, in
+/// a second run of rows, how many water cells there were.
+kernel void film_rowsum(texture2d<float, access::read>   film  [[texture(0)]],
+                        texture2d<float, access::sample> depth [[texture(1)]],
+                        device float *rows                     [[buffer(0)]],
+                        constant FilmParams &p                 [[buffer(1)]],
+                        uint y                                 [[thread_position_in_grid]])
+{
+    if (y >= uint(p.size.y)) { return; }
+    constexpr sampler smp(filter::linear, address::clamp_to_edge);
+    float sum = 0.0, count = 0.0;
+    uint w = uint(p.size.x);
+    for (uint x = 0; x < w; ++x) {
+        float2 uv = (float2(x, y) + 0.5) / p.size.xy;
+        if (depth.sample(smp, uv).r > p.gains.z) {
+            sum += min(film.read(uint2(x, y)).r, 1.0);
+            count += 1.0;
+        }
+    }
+    rows[y] = sum;
+    rows[uint(p.size.y) + y] = count;
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +577,7 @@ fragment float4 floor_compose_fragment(VertexOut in                             
                                        texture2d<float, access::sample> bank1   [[texture(7)]],
                                        texture2d<float, access::sample> bank2   [[texture(8)]],
                                        texture2d<float, access::sample> bank3   [[texture(9)]],
+                                       texture2d<float, access::sample> film    [[texture(10)]],
                                        constant FloorParams &p                  [[buffer(0)]],
                                        constant CameraParams &cam               [[buffer(1)]])
 {
@@ -497,6 +622,10 @@ fragment float4 floor_compose_fragment(VertexOut in                             
     // a passing ring gives a bright travelling line, two rings crossing
     // give a knot of light: exactly what a pond does.
     float tm = p.bed.z;
+    // The caustic and the sun's colour are kept for the silt haze below,
+    // which catches a little of the light the bed would have had.
+    float caustic = 0.0;
+    float3 sun = p.shallow.rgb * 0.5 + 0.5;
     {
         float2 fieldTexel = 1.0 / float2(field.get_width(), field.get_height());
         float2 above = in.uv;
@@ -514,8 +643,7 @@ fragment float4 floor_compose_fragment(VertexOut in                             
         float lC = field.sample(smp, landing).r;
         float lap = (lL + lR + lD + lU - 4.0 * lC);
         float focus = 1.0 / max(1.0 + lap * 55.0 * depthHere, 0.25);
-        float caustic = clamp(focus - 1.0, -0.6, 2.5);
-        float3 sun = p.shallow.rgb * 0.5 + 0.5;
+        caustic = clamp(focus - 1.0, -0.6, 2.5);
         // Only water carries the light to the bed: nothing on dry ground.
         float underWater = smoothstep(0.05, 0.14, d);
         col += sun * max(caustic, 0.0) * 0.55 * mix(1.0, 0.5, deepness) * underWater;
@@ -552,6 +680,30 @@ fragment float4 floor_compose_fragment(VertexOut in                             
         float film = smoothstep(0.03, 0.70, s * patch) * p.mosaic.w * rim;
         float3 under = mix(tile, siltCol, film);
         col = mix(col, under, m.a);
+    }
+    // Silt over the whole pond: not a film on the bed but sediment hanging
+    // in the water above it, a warm murk that hides the pebbles and takes
+    // the edge off the caustics. It drifts slowly and is thicker in some
+    // clouds than others, and where the waves have scoured it the bed shows
+    // through clear.
+    if (p.bed.w > 0.5) {
+        float s = silt.sample(smp, in.uv).r;
+        float underWater = smoothstep(0.08, 0.16, d);
+        float cloud = 0.55 + 0.45 * fbm(q * 6.0 + float2(tm * 0.012, -tm * 0.008), 3);
+        float wisps = 0.80 + 0.40 * fbm(q * 22.0 - float2(tm * 0.02, tm * 0.015), 2);
+        float haze = smoothstep(0.02, 0.85, s * cloud * wisps) * underWater;
+        float3 murk = mix(p.siltColour.rgb * 1.05, p.siltColour.rgb * 0.55 + p.deep.rgb * 0.45, deepness * 0.6);
+        murk *= 0.88 + 0.24 * wisps;
+        // The sediment itself catches the light that falls through the surface.
+        murk += sun * max(caustic, 0.0) * 0.12;
+        col = mix(col, murk, haze * 0.88);
+    }
+    // The duckweed carpet shades the bed under it; where the water has
+    // parted it the light gets through again.
+    if (p.view.w > 0.5) {
+        float weed = min(film.sample(smp, in.uv).r, 1.0);
+        float shade = smoothstep(0.25, 0.75, weed) * (0.75 + 0.25 * fbm(q * 30.0, 2));
+        col *= 1.0 - shade * 0.38 * smoothstep(0.08, 0.16, d);
     }
     // The bank. Where the bed rises out of the water (p.view.z on, depth
     // near nothing) the floor is earth: moss, grass and pebbles from a
@@ -892,6 +1044,104 @@ kernel void ice_bake(texture2d<float, access::write> outTex  [[texture(0)]],
     outTex.write(float4(saturate(minD / 12.0), saturate(minG), radial, a.strike / 255.0), gid);
 }
 
+// ---------------------------------------------------------------------------
+// Duckweed on the surface. The film says how much weed is here. A closed
+// carpet comes from the painted tile when one is bound (an opaque print,
+// water in the gaps, about forty leaves across, so it is read through a
+// luminance mask), or from a hashed grid of small round leaves when it is
+// not. Down to a third of full density the carpet keeps its skin and loses
+// leaves one at a time; below a third what is left is single leaves, drawn
+// from the grid, each going or staying by its own hash against the density,
+// so the weed thins leaf by leaf and never fades like a wash.
+// ---------------------------------------------------------------------------
+
+/// Leaves on a grid of about eight points, one per cell, jittered. Returns
+/// rgb and a straight alpha. `keep` is the fraction of leaves to show.
+static float4 duckweedLeaves(float2 wp, float keep)
+{
+    float2 lp = wp / 8.0;
+    float2 cell = floor(lp);
+    float2 f = fract(lp);
+    float4 leaf = float4(0.0);
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            float2 cc = cell + float2(dx, dy);
+            float h1 = hash21(cc + 0.37), h2 = hash21(cc + 5.11), h3 = hash21(cc + 9.73);
+            if (h3 > keep) { continue; }
+            float2 centre = float2(dx, dy) + 0.5 + (float2(h1, h2) - 0.5) * 0.45;
+            float rad = 0.36 + 0.10 * h1;
+            float dist = distance(f, centre);
+            float a = 1.0 - smoothstep(rad - 0.07, rad + 0.02, dist);
+            if (a <= leaf.a) { continue; }
+            // Pale print green, two shades, a lighter rim and an ink edge.
+            float rim = smoothstep(rad - 0.22, rad - 0.05, dist);
+            float edge = smoothstep(rad - 0.10, rad - 0.03, dist);
+            float3 g = mix(float3(0.66, 0.80, 0.50), float3(0.78, 0.88, 0.60), h2);
+            g = mix(g, g * 1.10 + 0.04, rim * 0.6);
+            g = mix(g, float3(0.20, 0.30, 0.22), edge * 0.55);
+            // A dimple where the root hangs.
+            g *= 1.0 - 0.14 * (1.0 - smoothstep(0.0, rad * 0.35, dist));
+            leaf = float4(g, a);
+        }
+    }
+    return leaf;
+}
+
+/// How many leaves to show for a density: all at full, six in ten at the
+/// break point, and down to none from there.
+static float duckweedKeep(float dens)
+{
+    return dens >= 0.35 ? 0.6 + 0.4 * (dens - 0.35) / 0.65 : dens / 0.35 * 0.6;
+}
+
+/// The weed for one point: the tile's carpet thinned by round holes above
+/// the break point, single leaves below it. rgb and straight alpha.
+static float4 duckweedAt(float2 wp, float dens, bool painted,
+                         texture2d<float, access::sample> tile, constant RenderParams &p)
+{
+    constexpr sampler rep(filter::linear, address::repeat, mip_filter::linear);
+    float keep = duckweedKeep(dens);
+    if (!painted || dens < 0.35) { return duckweedLeaves(wp, keep); }
+    float2 lp = wp / 8.0;
+    float2 cell = floor(lp);
+    float4 t = tile.sample(rep, wp / max(p.filmTilePts, 8.0));
+    float lum = dot(t.rgb, float3(0.3, 0.59, 0.11));
+    float leaf = smoothstep(0.40, 0.56, lum);
+    // A missing leaf is a round hole about one leaf wide on its cell.
+    float gone = step(keep, hash21(cell + 9.73));
+    float hole = gone * (1.0 - smoothstep(0.30, 0.52, distance(fract(lp), float2(0.5))));
+    return float4(t.rgb, leaf * (1.0 - hole));
+}
+
+/// The weed laid over the water colour at one surface point. `dens` is the
+/// film on the water, `pile` the weed stranded on the shore, both 0 to 1.
+static float3 duckweedOver(float3 col, float2 worldPt, float2 grad, float hC, float crest,
+                           float dens, float pile, float onWater, float3 N, float3 L,
+                           texture2d<float, access::sample> tile, constant RenderParams &p)
+{
+    // The leaves ride the water: they slide downhill a little on a slope.
+    float2 wp = worldPt - grad * 220.0;
+    bool painted = p.filmTile > 0.5;
+    float lit = 0.82 + 0.30 * max(0.0, dot(N, L));
+    float shade = lit * (1.0 - 0.28 * crest - 0.15 * saturate(hC * 4.0));
+
+    if (dens > 0.004 && onWater > 0.001) {
+        float4 leaf = duckweedAt(wp, dens, painted, tile, p);
+        // Under a closed carpet the water between the leaves is in shadow.
+        float closed = smoothstep(0.35, 0.8, dens);
+        float3 gap = col * float3(0.40, 0.46, 0.38);
+        col = mix(col, gap, closed * 0.8 * onWater);
+        col = mix(col, leaf.rgb * shade, saturate(leaf.a) * onWater);
+    }
+    if (pile > 0.004) {
+        // Stranded weed on the bank: the same leaves, drying to olive.
+        float4 leaf = duckweedAt(wp, pile, painted, tile, p);
+        float3 dried = leaf.rgb * float3(0.86, 0.80, 0.62) * lit;
+        col = mix(col, dried, saturate(leaf.a) * smoothstep(0.004, 0.06, pile));
+    }
+    return col;
+}
+
 /// `noon` is 1 in the middle of the day and 0 at either end of it: the sky
 /// the water throws back warms and dims as the sun drops.
 static float3 skyLook(float3 R, float3 L, float noon)
@@ -913,6 +1163,8 @@ fragment float4 water_fragment(VertexOut in                              [[stage
                                texture2d<float, access::sample> iceLook   [[texture(4)]],
                                texture2d<float, access::sample> crackTex  [[texture(5)]],
                                texture2d<float, access::sample> wetTex    [[texture(6)]],
+                               texture2d<float, access::sample> filmTex   [[texture(7)]],
+                               texture2d<float, access::sample> weedTile  [[texture(8)]],
                                constant RenderParams &p                   [[buffer(0)]],
                                constant CameraParams &cam                 [[buffer(1)]],
                                constant IceStrike *iceStrikes             [[buffer(2)]])
@@ -1020,6 +1272,12 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     float f = 0.02 + 0.98 * pow(1.0 - saturate(N.z), 5.0);
     float3 R = reflect(-V, N);
 
+    // The duckweed film here, when a level has one. It is drawn on the
+    // water only, and its stranded weed on the bank.
+    float2 filmS = p.film > 0.5 ? filmTex.sample(smp, wuv).rg : float2(0.0);
+    float weedDens = min(filmS.r, 1.0);
+    float weedPile = filmS.g;
+
     if (!woodblock) {
         col += float3(0.40, 0.74, 0.80) * max(caustic, 0.0) * 0.50;
         col *= 1.0 + min(caustic, 0.0) * 0.34;
@@ -1031,6 +1289,9 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         float glint = step(0.9955, cell) * smoothstep(0.35, 1.3, caustic + crest);
         col += float3(1.0, 0.99, 0.95) * glint * p.sparkleGain;
 
+        if (p.film > 0.5) {
+            col = duckweedOver(col, worldPt, grad, hC, crest, weedDens, weedPile, 1.0 - dry, N, L, weedTile, p);
+        }
         float2 vc = in.uv - 0.5;
         col *= 1.0 - dot(vc, vc) * 0.40;
         col += (hash21(in.uv * p.viewport + p.time) - 0.5) * (1.5 / 255.0);
@@ -1059,6 +1320,11 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // Paper grain over everything.
     float paper = fbm(in.uv * p.viewport / 6.0, 2);
     col *= 0.92 + 0.14 * paper;
+
+    // The carpet sits on the water, under the bank where the bank covers it.
+    if (p.film > 0.5 && weedDens > 0.004) {
+        col = duckweedOver(col, worldPt, grad, hC, crest, weedDens, 0.0, 1.0 - dry, N, L, weedTile, p);
+    }
 
     if (dry > 0.001 || bankTop > 0.001) {
         // The face: damp dark earth between the water and the bank's top.
@@ -1092,6 +1358,10 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         float grain = fbm(wuv * float2(cam.world.x / cam.world.y, 1.0) * 90.0 + p.time * 0.3, 2);
         float foam = atLine * active * smoothstep(0.35, 0.7, grain);
         col = mix(col, float3(0.93, 0.95, 0.94), foam * 0.9);
+    }
+    // Weed the water has pushed onto the shore lies at the waterline.
+    if (p.film > 0.5 && weedPile > 0.004) {
+        col = duckweedOver(col, worldPt, grad, hC, crest, 0.0, weedPile, 0.0, N, L, weedTile, p);
     }
 
     // The frozen sheet. Where the mask says ice, the water is under a slab:
@@ -1546,6 +1816,22 @@ fragment float4 solid_fragment(SolidOut in [[stage_in]],
             // The ridges catch the light, the crevices between them hold shade.
             base = in.colourA.rgb * (0.80 + 0.32 * saturate(in.bump * 0.5 + 0.5));
             spec = 0.08;
+        }
+    } else if (in.shape == 6u) {
+        // Bamboo: the cane in its own colour, the node bands (bump 1) in the
+        // darker node colour, and the bore (bump under 0) in shadow with a
+        // damp green cast toward the mouth. A faint fibre runs down the cane.
+        float node = saturate(in.bump);
+        base = mix(in.colourA.rgb, in.colourB.rgb, node);
+        float fibre = 0.5 + 0.5 * sin(in.ang * 11.0 + in.lp.x * 4.0);
+        base *= 1.0 - 0.06 * fibre * (1.0 - node);
+        spec = mix(0.30, 0.10, node);
+        if (in.bump < 0.0) {
+            float bore = saturate(-in.bump);
+            base *= mix(1.0, 0.35, bore);
+            float3 damp = base * float3(0.82, 1.10, 0.84) + float3(0.0, 0.035, 0.0);
+            base = mix(base, damp, bore * smoothstep(0.70, 1.0, in.v) * 0.6);
+            spec = 0.05;
         }
     } else {
         // A bottle: glass you can half see through, with a solid cap.

@@ -313,4 +313,70 @@ final class Haptics {
         try? slidePlayer?.stop(atTime: CHHapticTimeImmediate)
         slidePlayer = nil
     }
+
+    // MARK: - Instruments
+
+    /// The bamboo lands on its stone: one firm knock with a short tail.
+    func knock() {
+        guard enabled else { return }
+        if engine != nil {
+            play([transient(0.9, 0.7), transient(0.3, 0.45, at: 0.05)])
+        } else {
+            rigid.impactOccurred(intensity: 0.9)
+            rigid.prepare()
+        }
+    }
+
+    /// A chime stone sounds: a light tick, sharper the higher the note.
+    func chime(note: Int) {
+        guard enabled else { return }
+        let n = Float(min(max(note, 0), 9))
+        if engine != nil {
+            play([transient(0.35, min(1, 0.45 + 0.06 * n))])
+        } else {
+            light.impactOccurred(intensity: 0.5)
+            light.prepare()
+        }
+    }
+
+    /// Water going over the lip: a soft rumble that dies away.
+    func spill() {
+        guard enabled else { return }
+        if engine != nil {
+            let rumble = CHHapticEvent(eventType: .hapticContinuous,
+                                       parameters: [CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.3),
+                                                    CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.1)],
+                                       relativeTime: 0, duration: 0.3)
+            let decay = CHHapticParameterCurve(parameterID: .hapticIntensityControl,
+                                               controlPoints: [.init(relativeTime: 0, value: 1.0),
+                                                               .init(relativeTime: 0.3, value: 0.0)],
+                                               relativeTime: 0)
+            play([rumble], curves: [decay])
+        } else {
+            soft.impactOccurred(intensity: 0.4)
+            soft.prepare()
+        }
+    }
+
+    /// A near miss shivers the target: the smallest tick there is.
+    func tremble() {
+        guard enabled else { return }
+        if engine != nil {
+            play([transient(0.15, 0.4)])
+        } else {
+            soft.impactOccurred(intensity: 0.25)
+            soft.prepare()
+        }
+    }
+
+    /// A koi takes something at the surface: a round little double tap.
+    func gulp() {
+        guard enabled else { return }
+        if engine != nil {
+            play([transient(0.3, 0.2), transient(0.2, 0.15, at: 0.07)])
+        } else {
+            soft.impactOccurred(intensity: 0.45)
+            soft.prepare()
+        }
+    }
 }

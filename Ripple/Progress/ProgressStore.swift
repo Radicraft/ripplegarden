@@ -8,6 +8,9 @@ final class LevelRecord {
     var levelID: String = ""
     var seasonID: String = ""
     var completedAt: Date = Date()
+    /// What finishing it left alive in its pool, as `WokeToken` raw values.
+    /// Optional so a record made before the pools could wake still mirrors.
+    var woke: [String]? = nil
 
     init(levelID: String, seasonID: String) {
         self.levelID = levelID
@@ -76,13 +79,75 @@ final class ProgressStore: ObservableObject {
             try? context.delete(model: GardenRecord.self)
             try? context.save()
         }
-        // `-unlockAll` opens every level for testing.
+        // `-unlockAll` opens every level for testing, and wakes each pool
+        // the way its level will once the goals land, so the map can be
+        // seen alive without playing the year through.
         if ProcessInfo.processInfo.arguments.contains("-unlockAll") {
             for l in Library.levels where !isComplete(levelID: l.id) {
                 context.insert(LevelRecord(levelID: l.id, seasonID: l.seasonID))
             }
             try? context.save()
+            for l in Library.levels {
+                markWoke(levelID: l.id, tokens: ProgressStore.rehearsalTokens(for: l))
+            }
         }
+    }
+
+    /// The tokens the roster in docs/gameplay-spec.md gives each level, for
+    /// `-unlockAll` only. Play records the real ones from the goals.
+    private static func rehearsalTokens(for level: LevelSpec) -> Set<WokeToken> {
+        guard let season = Library.season(id: level.seasonID),
+              let i = Library.levels(in: season).firstIndex(where: { $0.id == level.id }) else { return [] }
+        let roster: [[Set<WokeToken>]] = [
+            [[.clear], [.koi], [.shoal], [.bud], [.moon], [.koi, .shoal]],
+            [[.clear], [.seeds], [.koi, .bud], [.shoal], [.bamboo], [.clear, .seeds, .koi]],
+            [[.clear], [.bud], [.shoal], [.chime], [.shy, .koi], [.bud, .shoal]],
+            [[.clear], [.pool], [.shoal], [.shy, .koi], [.clear], [.moon]],
+        ]
+        let s = season.order - 1
+        guard s >= 0, s < roster.count, i < roster[s].count else { return [.clear] }
+        return roster[s][i]
+    }
+
+    // MARK: - What a pool has been woken into
+
+    /// Everything finishing this level has ever left alive in its pool. The
+    /// union over every record, since a level synced from two devices can
+    /// have two.
+    func woke(levelID: String) -> Set<WokeToken> {
+        guard let context else { return [] }
+        let descriptor = FetchDescriptor<LevelRecord>(predicate: #Predicate { $0.levelID == levelID })
+        var out: Set<WokeToken> = []
+        for record in (try? context.fetch(descriptor)) ?? [] {
+            for raw in record.woke ?? [] {
+                if let t = WokeToken(rawValue: raw) { out.insert(t) }
+            }
+        }
+        return out
+    }
+
+    /// Add what a finished level woke to what its pool already has. Nothing
+    /// is ever taken away: what you woke stays. A level with no record yet
+    /// gets one, since a pool that has woken has been played through.
+    func markWoke(levelID: String, tokens: Set<WokeToken>) {
+        guard let context else { return }
+        let had = woke(levelID: levelID)
+        let all = had.union(tokens)
+        let descriptor = FetchDescriptor<LevelRecord>(predicate: #Predicate { $0.levelID == levelID })
+        let records = (try? context.fetch(descriptor)) ?? []
+        guard all != had || records.isEmpty else { return }
+        let raw = WokeToken.allCases.filter { all.contains($0) }.map(\.rawValue)
+        if let record = records.first {
+            record.woke = raw
+        } else if let level = Library.levels.first(where: { $0.id == levelID }) {
+            let record = LevelRecord(levelID: levelID, seasonID: level.seasonID)
+            record.woke = raw
+            context.insert(record)
+        } else {
+            return
+        }
+        try? context.save()
+        version += 1
     }
 
     func isComplete(levelID: String) -> Bool {

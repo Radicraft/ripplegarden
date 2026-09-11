@@ -43,9 +43,12 @@ struct RenderParams {
     var world: SIMD4<Float>
     /// Where the day has got to, 0 to 1, with noon at a half.
     var dayPhase: Float = 0.5
-    var pad0: Float = 0
-    var pad1: Float = 0
-    var pad2: Float = 0
+    /// 1 when the duckweed film is on.
+    var film: Float = 0
+    /// 1 when a painted duckweed tile is bound; 0 draws the leaves in the shader.
+    var filmTile: Float = 0
+    /// World points one repeat of the tile covers.
+    var filmTilePts: Float = 0
 }
 
 /// Mirrors `IceBakeParams` in Shaders.metal.
@@ -226,6 +229,20 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     private var wetFront = 0
     private var needsWetReset = true
     private let siltSumPipeline: MTLComputePipelineState
+    private let filmPipeline: MTLComputePipelineState
+    private let filmSumPipeline: MTLComputePipelineState
+    /// The duckweed film, ping-ponged once per sim step while it is on.
+    private var filmA: MTLTexture?
+    private var filmB: MTLTexture?
+    private var filmOn = false
+    private var needsFilmReset = false
+    private var filmRowBuffer: MTLBuffer
+    private let filmLock = OSAllocatedUnfairLock(initialState: Float(0))
+    /// The painted tile, looked up once; nil draws the shader's own leaves.
+    private var filmTileTexture: MTLTexture?
+    private var filmTileLooked = false
+    /// Silt over every water cell rather than a mosaic disc.
+    private var siltWholePond = false
     private let iceBakePipeline: MTLComputePipelineState
     private let drawPipeline: MTLRenderPipelineState
     private let floorBasePipeline: MTLRenderPipelineState
@@ -495,6 +512,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
               let siltFn = library.makeFunction(name: "silt_erode"),
               let wetFn = library.makeFunction(name: "wet_update"),
               let siltSumFn = library.makeFunction(name: "silt_rowsum"),
+              let filmFn = library.makeFunction(name: "film_advect"),
+              let filmSumFn = library.makeFunction(name: "film_rowsum"),
               let iceBakeFn = library.makeFunction(name: "ice_bake"),
               let vertFn = library.makeFunction(name: "fullscreen_vertex"),
               let fragFn = library.makeFunction(name: "water_fragment"),
@@ -507,6 +526,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             siltPipeline = try device.makeComputePipelineState(function: siltFn)
             wetPipeline = try device.makeComputePipelineState(function: wetFn)
             siltSumPipeline = try device.makeComputePipelineState(function: siltSumFn)
+            filmPipeline = try device.makeComputePipelineState(function: filmFn)
+            filmSumPipeline = try device.makeComputePipelineState(function: filmSumFn)
             iceBakePipeline = try device.makeComputePipelineState(function: iceBakeFn)
 
             let desc = MTLRenderPipelineDescriptor()
@@ -560,6 +581,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
               let wbuf = device.makeBuffer(length: MemoryLayout<SIMD4<Float>>.stride * Tuning.maxWalls, options: .storageModeShared),
               let cbuf = device.makeBuffer(length: MemoryLayout<SIMD4<Float>>.stride * Tuning.maxCovers, options: .storageModeShared),
               let sbuf = device.makeBuffer(length: MemoryLayout<Float>.stride * 2048, options: .storageModeShared),
+              // Two runs of rows: the film total, then the water cell count.
+              let fbuf = device.makeBuffer(length: MemoryLayout<Float>.stride * 4096, options: .storageModeShared),
               let spbuf = device.makeBuffer(length: MemoryLayout<SIMD4<Float>>.stride * 13 * Tuning.maxSpines, options: .storageModeShared)
         else { return nil }
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false)
@@ -589,6 +612,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         wallBuffer = wbuf
         coverBuffer = cbuf
         siltRowBuffer = sbuf
+        filmRowBuffer = fbuf
         spineBuffer = spbuf
 
         self.device = device
@@ -700,6 +724,43 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         needsSiltReset = true
         needsWetReset = true
         siltLock.withLock { $0 = 1 }
+        if filmOn {
+            needsFilmReset = true
+            filmLock.withLock { $0 = 1 }
+        }
+    }
+
+    // MARK: - Materials (the class's own members override the protocol's stubs)
+
+    /// Duckweed over every water cell, or none. Turning it on lays a fresh
+    /// full carpet; off frees the frame of all film work.
+    func setFilm(on: Bool) {
+        filmOn = on
+        needsFilmReset = on
+        filmLock.withLock { $0 = on ? 1 : 0 }
+    }
+
+    /// Fraction of the water under duckweed, 0 to 1, read back every few
+    /// frames like the silt.
+    var filmCover: Float { filmLock.withLock { $0 } }
+
+    /// Silt haze over the whole bed: the film covers every water cell and
+    /// `siltRemaining` is its mean over the water. On lays a fresh film (a
+    /// level load); off leaves the silt pass to the mosaic, if there is one.
+    func setSilt(wholePond: Bool) {
+        siltWholePond = wholePond
+        if wholePond {
+            needsSiltReset = true
+            siltLock.withLock { $0 = 1 }
+        }
+    }
+
+    /// Paints the depth map again from `depthPainter` and re-uploads it. The
+    /// height field, the silt, the wet marks and the film are all left as
+    /// they are, so the pond keeps its waves; a pool that has just been
+    /// flooded starts still and silty, and the waves run into it.
+    func repaintDepth() {
+        rebuildDepth()
     }
 
     // MARK: - Probes
@@ -728,7 +789,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         guard let src = fieldA, let dst = fieldB,
               let depthTexture, let floorBase, let floorTexture,
-              let siltA, let siltB,
+              let siltA, let siltB, let filmA, let filmB,
               let descriptor = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable,
               let commands = queue.makeCommandBuffer() else { return }
@@ -788,6 +849,34 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             needsWetReset = false
         }
 
+        // --- the duckweed film, stepped with the water ------------------------
+
+        var filmFront = filmA
+        var filmBack = filmB
+        var fpar = filmParams(dt: 1 / Float(Tuning.simStepsPerSecond))
+        /// One film step reading `field`: the reset lays the carpet, a
+        /// normal step carries it. Ping-pongs the pair.
+        func encodeFilm(field: MTLTexture, reset: Bool) {
+            guard let encoder = commands.makeComputeCommandEncoder() else { return }
+            fpar.misc.z = reset ? 1 : 0
+            encoder.setComputePipelineState(filmPipeline)
+            encoder.setTexture(filmFront, index: 0)
+            encoder.setTexture(filmBack, index: 1)
+            encoder.setTexture(field, index: 2)
+            encoder.setTexture(depthTexture, index: 3)
+            encoder.setBytes(&fpar, length: MemoryLayout<FilmParams>.stride, index: 0)
+            let w = filmPipeline.threadExecutionWidth
+            let h = max(1, filmPipeline.maxTotalThreadsPerThreadgroup / w)
+            encoder.dispatchThreads(MTLSize(width: siltSize.x, height: siltSize.y, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: w, height: h, depth: 1))
+            encoder.endEncoding()
+            swap(&filmFront, &filmBack)
+        }
+        if filmOn, needsFilmReset {
+            encodeFilm(field: src, reset: true)
+            needsFilmReset = false
+        }
+
         // --- simulate -----------------------------------------------------------
 
         simAccumulator += Double(dt)
@@ -845,10 +934,36 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                                     threadsPerThreadgroup: MTLSize(width: w, height: h, depth: 1))
             encoder.endEncoding()
             swap(&read, &write)
+            // The film rides this step's surface.
+            if filmOn { encodeFilm(field: read, reset: false) }
         }
         statSteps += steps
         fieldA = read
         fieldB = write
+        self.filmA = filmFront
+        self.filmB = filmBack
+        let film = filmFront
+
+        // The film's cover over the water, read back on the frames between
+        // the silt's readbacks.
+        if filmOn, frameIndex % Tuning.siltReadEveryFrames == Tuning.siltReadEveryFrames / 2,
+           let encoder = commands.makeComputeCommandEncoder() {
+            encoder.setComputePipelineState(filmSumPipeline)
+            encoder.setTexture(film, index: 0)
+            encoder.setTexture(depthTexture, index: 1)
+            encoder.setBuffer(filmRowBuffer, offset: 0, index: 0)
+            encoder.setBytes(&fpar, length: MemoryLayout<FilmParams>.stride, index: 1)
+            encoder.dispatchThreads(MTLSize(width: siltSize.y, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+            encoder.endEncoding()
+            let rows = filmRowBuffer, n = siltSize.y, lock = filmLock
+            commands.addCompletedHandler { _ in
+                let (total, count) = rows.contents().withMemoryRebound(to: Float.self, capacity: n * 2) { ptr in
+                    ((0..<n).reduce(Float(0)) { $0 + ptr[$1] }, (0..<n).reduce(Float(0)) { $0 + ptr[n + $1] })
+                }
+                lock.withLock { $0 = min(1, max(0, total / max(count, 1))) }
+            }
+        }
 
         // --- silt ---------------------------------------------------------------
 
@@ -878,7 +993,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.endEncoding()
             wetFront = 1 - wetFront
         }
-        if steps > 0, let encoder = commands.makeComputeCommandEncoder() {
+        // The silt only moves for a mosaic or a whole-pond haze; a level with
+        // neither pays nothing for it.
+        let siltActive = siltWholePond || floorLook.mosaicRadius > 0
+        if steps > 0, siltActive, let encoder = commands.makeComputeCommandEncoder() {
             encoder.setComputePipelineState(siltPipeline)
             encoder.setTexture(siltA, index: 0)
             encoder.setTexture(siltB, index: 1)
@@ -895,21 +1013,26 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         }
         let silt = self.siltA ?? siltA
 
-        if frameIndex % Tuning.siltReadEveryFrames == 0, floorLook.mosaicRadius > 0,
+        if frameIndex % Tuning.siltReadEveryFrames == 0, siltActive,
            let encoder = commands.makeComputeCommandEncoder() {
             encoder.setComputePipelineState(siltSumPipeline)
             encoder.setTexture(silt, index: 0)
+            encoder.setTexture(depthTexture, index: 1)
             encoder.setBuffer(siltRowBuffer, offset: 0, index: 0)
             encoder.setBytes(&sp, length: MemoryLayout<SiltParams>.stride, index: 1)
             encoder.dispatchThreads(MTLSize(width: siltSize.y, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
             encoder.endEncoding()
             let rows = siltRowBuffer, n = siltSize.y, area = siltArea, lock = siltLock
+            let whole = siltWholePond
             commands.addCompletedHandler { _ in
-                let total = rows.contents().withMemoryRebound(to: Float.self, capacity: n) { ptr in
-                    (0..<n).reduce(Float(0)) { $0 + ptr[$1] }
+                // Over the whole pond the mean is over the water cells the
+                // kernel counted; over a mosaic it is over the disc's area.
+                let (total, count) = rows.contents().withMemoryRebound(to: Float.self, capacity: n * 2) { ptr in
+                    ((0..<n).reduce(Float(0)) { $0 + ptr[$1] },
+                     whole ? (0..<n).reduce(Float(0)) { $0 + ptr[n + $1] } : area)
                 }
-                lock.withLock { $0 = min(1, total / max(area, 1)) }
+                lock.withLock { $0 = min(1, max(0, total / max(count, 1))) }
             }
         }
 
@@ -982,6 +1105,7 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                     let tex = painted ? (textures.texture(name) ?? textures.texture("bank_tile") ?? blankMosaic) : blankMosaic
                     encoder.setFragmentTexture(tex, index: 6 + k)
                 }
+                encoder.setFragmentTexture(filmOn ? film : blankIce, index: 10)
                 encoder.setFragmentBytes(&fp, length: MemoryLayout<FloorParams>.stride, index: 0)
                 encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -1004,6 +1128,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         // The hour tints the water and takes the edge off the caustics as the
         // sun drops. The season's own tint stays underneath it.
         let hour = dayColour()
+        // The painted tile is looked for once; a nil draws the shader's leaves.
+        if filmOn, !filmTileLooked {
+            filmTileTexture = textures.texture(FilmTuning.tileName)
+            filmTileLooked = true
+        }
+        let weedTile = filmOn ? filmTileTexture : nil
         let dayTint = SIMD4(floorLook.waterTint * hour,
                             min(1, floorLook.waterTintStrength + 0.25 * (1 - noon)))
         var rp = RenderParams(size: gridSize, viewport: screenPixels,
@@ -1019,7 +1149,10 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                               world: SIMD4(viewportSize.x, viewportSize.y,
                                            (iceTexture != nil && iceStrikeCount > 0 && crackTexture != nil) ? 1 : 0,
                                            Float(iceStrikeCount)),
-                              dayPhase: dayPhase)
+                              dayPhase: dayPhase,
+                              film: filmOn ? 1 : 0,
+                              filmTile: filmOn && weedTile != nil ? 1 : 0,
+                              filmTilePts: FilmTuning.tilePoints)
 
         if let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) {
             encoder.setRenderPipelineState(drawPipeline)
@@ -1031,6 +1164,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(iceTexture == nil ? blankMosaic : (textures.texture("ice_surface") ?? blankMosaic), index: 4)
             encoder.setFragmentTexture(crackTexture ?? blankCracks, index: 5)
             encoder.setFragmentTexture((wetFront == 0 ? wetA : wetB) ?? blankIce, index: 6)
+            encoder.setFragmentTexture(filmOn ? film : blankIce, index: 7)
+            encoder.setFragmentTexture(weedTile ?? blankMosaic, index: 8)
             encoder.setFragmentBytes(&rp, length: MemoryLayout<RenderParams>.stride, index: 0)
             encoder.setFragmentBytes(&cam, length: MemoryLayout<CameraParams>.stride, index: 1)
             encoder.setFragmentBuffer(iceStrikeBuffer, offset: 0, index: 2)
@@ -1072,8 +1207,8 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
                            mosaic: SIMD4(look.mosaicCentre.x, look.mosaicCentre.y, look.mosaicRadius, 1),
                            siltColour: SIMD4(look.siltColour, 1),
                            camera: SIMD4(camera.x * scale, camera.y * scale, WaterRenderer.cameraHeight, WaterRenderer.cameraShiftGain),
-                           bed: SIMD4(bedTexture == nil ? 0 : 0.9, 1.0, Float(CACurrentMediaTime() - startTime), 0),
-                           view: SIMD4(viewCentre.x * scale, viewCentre.y * scale, bank.x, 0),
+                           bed: SIMD4(bedTexture == nil ? 0 : 0.9, 1.0, Float(CACurrentMediaTime() - startTime), siltWholePond ? 1 : 0),
+                           view: SIMD4(viewCentre.x * scale, viewCentre.y * scale, bank.x, filmOn ? 1 : 0),
                            bank: SIMD4(bank.x, bank.y, bank.z, 0))
     }
 
@@ -1082,8 +1217,14 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         return SiltParams(viewport: SIMD4(viewportSize.x, viewportSize.y, 0, 0),
                           size: SIMD4(Float(siltSize.x), Float(siltSize.y), 0, 0),
                           gains: SIMD4(Tuning.siltHeightGain, Tuning.siltLaplacianGain, Tuning.siltThreshold, Tuning.siltRate * dt),
-                          mosaic: SIMD4(look.mosaicCentre.x, look.mosaicCentre.y, look.mosaicRadius, 0),
+                          mosaic: SIMD4(look.mosaicCentre.x, look.mosaicCentre.y, look.mosaicRadius, siltWholePond ? 1 : 0),
                           coverCount: 0)
+    }
+
+    private func filmParams(dt: Float) -> FilmParams {
+        FilmParams(size: SIMD4(Float(siltSize.x), Float(siltSize.y), Float(gridSize.x), Float(gridSize.y)),
+                   gains: SIMD4(FilmTuning.filmGain * dt, FilmTuning.diffusion, FilmTuning.shoreDepth, FilmTuning.trailing),
+                   misc: SIMD4(FilmTuning.maxStep, FilmTuning.excessKeep, 0, 0))
     }
 
     private func recordFrame(now: TimeInterval, dt: Double) {
@@ -1199,6 +1340,13 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
         wetA = device.makeTexture(descriptor: siltDesc)
         wetB = device.makeTexture(descriptor: siltDesc)
         needsWetReset = true
+        // The film keeps its drift beside its density, so four channels.
+        let filmDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: sw, height: sh, mipmapped: false)
+        filmDesc.usage = [.shaderRead, .shaderWrite]
+        filmDesc.storageMode = .private
+        filmA = device.makeTexture(descriptor: filmDesc)
+        filmB = device.makeTexture(descriptor: filmDesc)
+        needsFilmReset = filmOn
         // Texels inside the mosaic circle, for normalising the readback.
         let r = floorLook.mosaicRadius * Float(sh)
         siltArea = max(1, Float.pi * r * r)

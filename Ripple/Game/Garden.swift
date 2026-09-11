@@ -93,6 +93,36 @@ final class Garden {
     /// How much of the pond is still under ice, 0...1. The koi stay deep
     /// until the water opens.
     var iceCover: Float = 0
+    /// Ice over a given point, 0...1, when the controller can say per cell.
+    /// Left nil, every koi reads `iceCover`. A sleeping koi wakes when the
+    /// sheet over it, by this reading, drops below a half.
+    var iceOverAt: ((CGPoint) -> Float)?
+
+    // MARK: - Life and coax state
+
+    /// The koi answering a held finger, and where the finger is.
+    private var called: Koi?
+    private var callPoint: CGPoint?
+    private var lastCallAt: TimeInterval = -1
+    /// After the finger lifts the fish stays up until this, then cruises off.
+    private var callHoldUntil: TimeInterval = 0
+    /// The one koi that lives under a shape, its home, and whether it has
+    /// been tempted all the way out (after which it is an ordinary fish).
+    private var shyKoi: Koi?
+    private var shyHome: Shape?
+    private var shyOut = false
+    /// The last time the water over the shy koi's home was churned.
+    private var shyDisturbedAt: TimeInterval = -100
+    private var shyEdging = false
+    /// The held finger this frame as the shy koi sees it: nil when none.
+    private var temptPoint: CGPoint?
+    /// Every koi lies on the bed under the ice until its sheet opens.
+    private var koiAsleep = false
+    /// How glassy the pond has lain, 0...1, from the controller.
+    private var stillAmount: Float = 0
+    /// The moon in the water, eased in and out.
+    private var moonAlpha: Float = 0
+    private var moonPhase: Float = 0
 
     init(art: ArtSet) {
         self.art = art
@@ -108,9 +138,35 @@ final class Garden {
         leanToward = SIMD2(Float(point.x - size.width / 2), Float(point.y - size.height / 2)) * 0.05
         for c in critters { c.startle(from: point) }
         for s in shoals { s.startle(from: point) }
-        for k in koi { k.startle(from: point, now: time) }
+        // A slap beside the called fish breaks the spell: it bolts like the rest.
+        if let c = called, hypot(c.position.x - point.x, c.position.y - point.y) < 220 {
+            c.freeGuide(now: time, in: size)
+            called = nil
+        }
+        for k in koi where !k.resting && !(k === shyKoi && !shyOut) {
+            k.startle(from: point, now: time)
+        }
+        disturb(at: point)
         frog?.startle(from: point, now: time)
         newt?.startle(from: point)
+        // The reed tufts nearest the splash are shoved away from it and
+        // spring back on their own stems.
+        for i in reeds.indices {
+            let dx = Float(reeds[i].position.x - point.x), dy = Float(reeds[i].position.y - point.y)
+            let dist = hypot(dx, dy)
+            guard dist < 260, dist > 0.5 else { continue }
+            let side: Float = dx >= 0 ? 1 : -1
+            reeds[i].swayVel += side * (1 - dist / 260) * 2.2
+        }
+    }
+
+    /// Something churned the water here. The shy koi notes it if it was
+    /// over its home.
+    private func disturb(at point: CGPoint) {
+        guard let home = shyHome, shyKoi != nil, !shyOut else { return }
+        if hypot(point.x - home.centre.x, point.y - home.centre.y) < home.radius * 1.6 {
+            shyDisturbedAt = time
+        }
     }
 
     /// Pixel size of a named texture, for keeping aspect; set by the controller.
@@ -126,6 +182,7 @@ final class Garden {
     func burstDroplets(at point: CGPoint, power: Float) {
         guard size.width > 0 else { return }
         let p = min(max(power, 0), 1)
+        if p > 0.3 { disturb(at: point) }
         let n = max(3, Int(Float.random(in: 10...16) * (0.4 + 0.6 * p)))
         guard droplets.count + n < 160 else { return }
         for _ in 0..<n {
@@ -169,7 +226,8 @@ final class Garden {
     /// this loud, so it is rare on purpose.
     func leapNow() {
         guard leaps.isEmpty, size.width > 0 else { return }
-        let ready = koi.filter { !$0.leaping && $0.depth < 0.3 }
+        // A fish being led, resting or asleep is not in the mood.
+        let ready = koi.filter { !$0.leaping && $0.depth < 0.3 && $0.guide == nil && !$0.resting }
         guard let k = ready.randomElement() else { return }
         let from = k.position
         let reach = CGFloat.random(in: 130...200)
@@ -196,8 +254,10 @@ final class Garden {
     /// A big splash beside a fish that is up at the surface may bring its
     /// leap forward, so a stone dropped in is now and then answered.
     func bigSplash(at point: CGPoint) {
+        disturb(at: point)
         let near = koi.contains {
-            !$0.leaping && $0.depth < 0.3 && hypot($0.position.x - point.x, $0.position.y - point.y) < 280
+            !$0.leaping && $0.depth < 0.3 && $0.guide == nil && !$0.resting
+                && hypot($0.position.x - point.x, $0.position.y - point.y) < 280
         }
         guard near else { return }
         nextLeapAt = min(nextLeapAt, time + Double.random(in: 2...15))
@@ -376,6 +436,19 @@ final class Garden {
         shoals = art.shoal.enumerated().map { i, name in
             Shoal(texture: name, count: 10 + i * 4, size: size, seed: i)
         }
+        // A fresh pond: nobody is called, nobody is shy, nobody is asleep,
+        // and the moon is not in the water.
+        called = nil
+        callPoint = nil
+        callHoldUntil = 0
+        shyKoi = nil
+        shyHome = nil
+        shyOut = false
+        shyEdging = false
+        temptPoint = nil
+        koiAsleep = false
+        stillAmount = 0
+        moonAlpha = 0
     }
 
     /// The bed is not a painting: it is stones and gravel lying at their own
@@ -459,8 +532,221 @@ final class Garden {
     }
 
     func dive(_ k: Koi) {
+        if k === called { called = nil }
         k.dive(now: time, quick: true)
         splashes.append((k.position, 16, -0.32))
+    }
+
+    // MARK: - Life and coax (the LifeCoax contract)
+
+    /// A koi that can answer a hand right now: not in the air, not lying
+    /// still, and not the shy one while it is still shy.
+    private func answers(_ k: Koi) -> Bool {
+        !k.leaping && !k.resting && !(k === shyKoi && !shyOut)
+    }
+
+    /// A charged hold. The nearest free koi within reach is drawn up and
+    /// comes under the finger; once one has answered it stays the one, so
+    /// the hand can lead it about. The shy koi reads the same finger.
+    func callKoi(at point: CGPoint, charge: Float, dt: Float) {
+        guard size.width > 0 else { return }
+        lastCallAt = time
+        callPoint = point
+        callHoldUntil = 0
+        temptPoint = charge > 0.1 ? point : nil
+        if called == nil, charge > 0.15 {
+            var best: Koi?
+            var bestDist = GoalTuning.callReach
+            for k in koi where answers(k) {
+                let d = hypot(k.position.x - point.x, k.position.y - point.y)
+                if d < bestDist { bestDist = d; best = k }
+            }
+            called = best
+        }
+        guard let c = called else { return }
+        // Up, and the mouth to the finger. Slow near it: a hover, not a bump.
+        c.lead(Koi.Guide(point: point, speed: 30, depth: 0.05, stop: 22, byHead: true))
+    }
+
+    /// The finger lifted. The called fish stays up three seconds, mouthing
+    /// where the finger was, then remembers it has somewhere to be.
+    func releaseCall() {
+        temptPoint = nil
+        callPoint = nil
+        guard called != nil else { return }
+        callHoldUntil = time + 3
+    }
+
+    var calledKoi: CGPoint? {
+        guard let c = called, !c.leaping, c.depth < 0.25 else { return nil }
+        return c.headPoint
+    }
+
+    func surfacedKoi() -> [CGPoint] {
+        koi.filter { !$0.leaping && $0.depth < 0.25 }.map(\.position)
+    }
+
+    func shoalCentroids() -> [CGPoint] {
+        shoals.compactMap { $0.centroid }
+    }
+
+    /// A fast stroke laid a wake. The shoal nearest its start takes it up:
+    /// its wander point becomes the far end for five seconds and the fish
+    /// nearest the start leads the rest along the line.
+    func followWake(path: [CGPoint]) {
+        guard let start = path.first, path.count >= 2 else { return }
+        let taker = shoals.min { a, b in
+            let pa = a.centroid ?? start, pb = b.centroid ?? start
+            return hypot(pa.x - start.x, pa.y - start.y) < hypot(pb.x - start.x, pb.y - start.y)
+        }
+        taker?.follow(path: path, now: time)
+    }
+
+    /// One koi goes to live under the shape: it lies there, hidden by the
+    /// pads or the log drawn over it, until a still pond and a patient
+    /// finger tempt it out. Nil makes every fish ordinary again.
+    func setShyHome(_ home: Shape?) {
+        shyHome = home
+        shyOut = false
+        shyEdging = false
+        shyDisturbedAt = time
+        guard let home, let k = koi.first else {
+            if let k = shyKoi, k.resting { k.stir(depth: 0.3, rate: 0.5, now: time, in: size) }
+            shyKoi = nil
+            return
+        }
+        if k === called { called = nil }
+        shyKoi = k
+        let angle = Float.random(in: 0...(2 * .pi))
+        let inside = CGPoint(x: home.centre.x + CGFloat(cos(angle)) * home.radius * 0.3,
+                             y: home.centre.y + CGFloat(sin(angle)) * home.radius * 0.3)
+        k.rest(at: inside, depth: 0.6, heading: angle + .pi, in: size)
+    }
+
+    var shyKoiOut: Bool { shyOut }
+
+    /// Under ice the koi lie on the bed. Each wakes as the sheet over it
+    /// opens (see the koi loop in `update`); clearing the flag wakes them all.
+    func sleepKoiUnderIce(_ asleep: Bool) {
+        guard asleep != koiAsleep else { return }
+        koiAsleep = asleep
+        if asleep {
+            called = nil
+            for k in koi where !k.leaping {
+                k.rest(at: nil, depth: 0.95, heading: nil, in: size)
+            }
+        } else {
+            for k in koi where k.resting && !(k === shyKoi && !shyOut) {
+                k.stir(depth: 0.15, rate: 0.25, now: time, in: size)
+            }
+        }
+    }
+
+    /// A single tap. On a calm pond the fish far off turn toward the ring's
+    /// source, stopping short of it; the near ones are startled by the
+    /// controller as before.
+    func curious(tap point: CGPoint, calm: Bool) {
+        guard calm else { return }
+        for k in koi where answers(k) && k !== called && k.guide == nil {
+            let dx = k.position.x - point.x, dy = k.position.y - point.y
+            let d = hypot(dx, dy)
+            guard d > 200 else { continue }
+            k.drawToward(point, stoppingShort: 90, now: time)
+        }
+    }
+
+    /// How long the pond has lain glassy, as 0...1. The moon eases into the
+    /// water and the dragonfly, if one is about, lands on a reed.
+    func stillness(_ amount: Float) {
+        stillAmount = max(0, min(1, amount))
+    }
+
+    /// The moon seen in the water: a wide soft disc riding the surface like
+    /// a petal, there only when the pond is still. Empty without `moon.png`.
+    func moonSprites() -> [Sprite] {
+        guard moonAlpha > 0.01, size.width > 0 else { return [] }
+        let t = textureSize("moon")
+        guard t.width > 1 || t.height > 1 else { return [] }
+        let side: CGFloat = 170
+        let at = CGPoint(x: size.width * 0.5 + CGFloat(sin(moonPhase)) * 3,
+                         y: size.height * 0.36 + CGFloat(cos(moonPhase * 0.8)) * 2)
+        return [Sprite("moon", at: at, size: CGSize(width: side, height: side * t.height / max(1, t.width)),
+                       mode: .floater, alpha: moonAlpha, tint: [1.0, 0.98, 0.92, 1], z: 0.01)]
+    }
+
+    /// The tip of the reed tuft nearest a point: where a dragonfly can land.
+    /// The tuft stands on the surface plane at its root and rises its full
+    /// drawn height, so the tip is that height over the root.
+    private func reedTip(nearest point: CGPoint) -> (point: CGPoint, height: CGFloat)? {
+        guard let r = reeds.min(by: {
+            hypot($0.position.x - point.x, $0.position.y - point.y) < hypot($1.position.x - point.x, $1.position.y - point.y)
+        }) else { return nil }
+        let height = r.size * 1.6
+        return (CGPoint(x: r.position.x + CGFloat(sin(r.sway)) * height * 0.15, y: r.position.y), height * 0.92)
+    }
+
+    /// The per-frame side of the coax: the called fish after the finger
+    /// lifts, and the shy koi's small courage.
+    private func updateCoax(dt: Float, now: TimeInterval) {
+        // A finger the controller stopped reporting counts as lifted.
+        if callPoint != nil, now - lastCallAt > 0.25 { releaseCall() }
+        if let c = called {
+            if c.leaping || c.resting {
+                called = nil
+            } else if callHoldUntil > 0, now > callHoldUntil {
+                c.freeGuide(now: now, in: size)
+                called = nil
+                callHoldUntil = 0
+            }
+        }
+
+        // The shy koi. Still in its home, it waits for the water over the
+        // home to have been quiet three seconds and a finger held a little
+        // way off; then it edges out toward the hand at half a cruise. Any
+        // churn over the home sends it back in. Once it is clear of the
+        // home it is out for good and swims like the others.
+        guard let k = shyKoi, let home = shyHome, !shyOut, !k.leaping else { return }
+        let fromHome = hypot(k.position.x - home.centre.x, k.position.y - home.centre.y)
+        if fromHome > home.radius + 40 {
+            shyOut = true
+            shyEdging = false
+            k.freeGuide(now: now, in: size)
+            return
+        }
+        let quiet = now - shyDisturbedAt > 3
+        var tempted: CGPoint?
+        if let f = temptPoint {
+            let d = hypot(f.x - home.centre.x, f.y - home.centre.y)
+            if d >= 150, d <= 300 { tempted = f }
+        }
+        if !quiet, shyEdging || !k.resting {
+            // Churned: straight back under, and lie still there.
+            shyEdging = false
+            if fromHome < 12 {
+                k.rest(at: nil, depth: 0.6, heading: nil, in: size)
+            } else {
+                k.lead(Koi.Guide(point: home.centre, speed: 60, depth: 0.6, stop: 10, byHead: false))
+            }
+            return
+        }
+        if let f = tempted, quiet {
+            if !shyEdging {
+                shyEdging = true
+                if k.resting { k.stir(depth: 0.32, rate: 0.6, now: now, in: size) }
+            }
+            k.lead(Koi.Guide(point: f, speed: 14, depth: 0.32, stop: 30, byHead: true))
+            return
+        }
+        if !k.resting {
+            // The hand went away: it drifts back to its shelter at a dawdle
+            // and lies down again once it is under.
+            shyEdging = false
+            if fromHome < 14 {
+                k.rest(at: nil, depth: 0.6, heading: nil, in: size)
+            } else {
+                k.lead(Koi.Guide(point: home.centre, speed: 12, depth: 0.5, stop: 10, byHead: false))
+            }
+        }
     }
 
     // MARK: - Per frame
@@ -514,6 +800,13 @@ final class Garden {
         for s in shoals { s.update(dt: dt, now: now, in: size, rocks: rocks, koi: koi.map(\.position)) }
         for c in clouds { c.update(dt: dt, in: size) }
         if let f = dragonfly {
+            // A still pond: it settles on a reed tip and folds its wings;
+            // the first stir of the water and it is off again.
+            if stillAmount > 0.6, f.perch == nil, let tip = reedTip(nearest: f.position) {
+                f.land(on: tip.point, height: tip.height)
+            } else if stillAmount < 0.5, f.perch != nil {
+                f.takeOff(in: size)
+            }
             f.update(dt: dt, now: now, in: size)
             // It touches the water once before it darts off: a bead of a
             // splat under it and the ring that spreads from it.
@@ -526,7 +819,14 @@ final class Garden {
             if f.done { dragonfly = nil; nextFlyerAt = now + Double.random(in: 25...50) }
         } else if now > nextFlyerAt, let name = art.flyers.first {
             dragonfly = Dragonfly(body: name, size: size, now: now)
+        } else if stillAmount > 0.6, !reeds.isEmpty {
+            // A glassy pond brings one over sooner, to land.
+            nextFlyerAt = min(nextFlyerAt, now + 2)
         }
+        // The moon comes and goes on its own ease: touched water loses it
+        // over a second and a half, no harder than that.
+        moonAlpha += (0.55 * stillAmount - moonAlpha) * min(1, dt * 1.5)
+        moonPhase += dt * 0.3
         for m in motes { m.update(dt: dt, in: size) }
         frog?.update(dt: dt, now: now)
         if let f = frog, f.justJumped {
@@ -551,7 +851,8 @@ final class Garden {
         // (The heron's shadow was cut: a flat silhouette sliding over the pond
         // read as a decal, not a bird. It will come back only with wings that beat.)
         // A surfaced koi mouths at the surface now and then: a small ring.
-        for k in koi where !k.leaping && k.depth < 0.2 && Float.random(in: 0...1) < dt * 0.18 {
+        // The one under a finger mouths at it over and over.
+        for k in koi where !k.leaping && k.depth < 0.2 && Float.random(in: 0...1) < dt * (k === called ? 0.9 : 0.18) {
             splashes.append((k.headPoint, 7, -0.09))
             events.append(.mouth(k.headPoint))
         }
@@ -573,8 +874,14 @@ final class Garden {
             if bloomStage >= bloomTarget { bloomRate = 0 }
         }
 
+        updateCoax(dt: dt, now: now)
         for k in koi where !k.leaping {
-            k.iceOver = iceCover
+            k.iceOver = iceOverAt?(k.position) ?? iceCover
+            // A sleeper wakes the moment the sheet over it opens: it lifts
+            // off the bed over a few seconds and swims.
+            if koiAsleep, k.resting, k.iceOver < 0.5 {
+                k.stir(depth: 0.15, rate: 0.25, now: now, in: size)
+            }
             let event = k.update(dt: dt, now: now, in: size, rocks: rocks)
             if let e = event { splashes.append(e) }
         }
@@ -983,6 +1290,25 @@ final class Koi {
     private var depthTarget: Float = 1
     private var depthRate: Float = 0.5
     private var started = false
+    /// Where the fish is being led, if it is: a held finger, the shy koi's
+    /// way out or back. While set it steers here instead of wandering, and
+    /// its own dive and surface timers wait.
+    struct Guide {
+        var point: CGPoint
+        /// Points per second when there is a way to go.
+        var speed: CGFloat
+        var depth: Float
+        /// Within this of the point it slows to a hover.
+        var stop: CGFloat
+        /// Measure from the mouth rather than the middle: a finger is nosed at.
+        var byHead: Bool
+    }
+    private(set) var guide: Guide?
+    /// The fish lies still: on the bed asleep, or under its home shape. A
+    /// tiny drift and a slow tail keep it from being a picture.
+    private(set) var resting = false
+    private var restPoint = CGPoint.zero
+    private var restPhase: Float = 0
     /// Where the head has been, newest first, one entry per couple of points.
     private var trail: [CGPoint] = []
     private var trailDistances: [Float] = []
@@ -1008,9 +1334,26 @@ final class Koi {
                 rocks: [(centre: CGPoint, radius: CGFloat)] = []) -> (at: CGPoint, radius: Float, amplitude: Float)? {
         if !started {
             started = true
-            position = CGPoint(x: CGFloat.random(in: 80...max(80, size.width - 80)),
-                               y: CGFloat.random(in: 140...max(140, size.height - 160)))
+            place(in: size)
             pickTarget(in: size)
+        }
+        if resting {
+            // Lying still: the depth settles, the body barely moves, the tail
+            // idles. Nothing steers and nothing times a dive.
+            depth += (depthTarget - depth) * min(1, dt * depthRate)
+            restPhase += dt * 0.5
+            position = CGPoint(x: restPoint.x + CGFloat(sin(restPhase)) * 2.5,
+                               y: restPoint.y + CGFloat(cos(restPhase * 0.7)) * 1.5)
+            phase += dt * 0.6
+            roll += (0 - roll) * min(1, dt * 2)
+            stateUntil = now + 4
+            return nil
+        }
+        if let g = guide {
+            // Led: the point is the target and the fish's own timers wait.
+            target = g.point
+            depthTarget = g.depth
+            stateUntil = now + 4
         }
         var splash: (at: CGPoint, radius: Float, amplitude: Float)?
         if now > stateUntil {
@@ -1026,9 +1369,15 @@ final class Koi {
         }
         depth += (depthTarget - depth) * min(1, dt * depthRate)
 
-        let dx = Float(target.x - position.x), dy = Float(target.y - position.y)
-        if hypot(dx, dy) < 30 { pickTarget(in: size) }
+        let from = (guide?.byHead ?? false) ? headPoint : position
+        let dx = Float(target.x - from.x), dy = Float(target.y - from.y)
+        let reach = hypot(dx, dy)
+        if guide == nil, reach < 30 { pickTarget(in: size) }
         var want = atan2(dy, dx)
+        // At the point it is led to, the heading holds with a slow sway of
+        // the nose rather than hunting after a point it is already on.
+        let hovering = guide.map { reach < Float($0.stop) } ?? false
+        if hovering { want = heading + sin(Float(now) * 1.1) * 0.25 }
         if Koi.diagnostics, Int(now * 2) != Int((now - Double(dt)) * 2) {
             var d0 = want - heading
             while d0 > .pi { d0 -= 2 * .pi }
@@ -1038,7 +1387,8 @@ final class Koi {
         // A bank ahead bends the wish away from it, well before it is reached,
         // so the fish sweeps round in open water instead of nosing the edge.
         do {
-            let margin: Float = 170
+            // A led fish may be brought near the bank: the finger is on water.
+            let margin: Float = guide != nil ? 70 : 170
             let px = Float(position.x), py = Float(position.y)
             let w = Float(size.width), h = Float(size.height)
             var push = SIMD2<Float>(0, 0)
@@ -1079,12 +1429,24 @@ final class Koi {
         // Fleeing, the fish turns as hard as its body allows and its speed
         // decays back to a cruise; otherwise it turns lazily.
         let fleeing = now < fleeUntil
+        if let g = guide {
+            // Led: slow as the point nears, stop at it. Turning round to a
+            // point behind needs way on, so it sweeps round in an arc
+            // rather than pivoting on the spot.
+            var desired: CGFloat = 0
+            if !hovering { desired = min(g.speed, 4 + CGFloat(reach - Float(g.stop)) * 0.5) }
+            if abs(diff) > 0.7 { desired = max(desired, 24) }
+            let ease = CGFloat(min(1, dt * 1.8))
+            speed += (desired - speed) * ease
+        }
         if speed > 46 { speed -= CGFloat(dt) * (fleeing ? 20 : 45) }
         // A fish that has to turn hard puts on a little speed to do it, so
         // the turn is a tail-flick sweep rather than a crawl.
         if abs(diff) > 1.0, speed < 40 { speed += CGFloat(dt) * 30 }
         let s = Float(speed) * (depth > 0.9 ? 0.5 : 1) * (1 - 0.15 * min(1, abs(diff)))
-        let maxRate = min(fleeing ? 1.6 : 0.55, max(0.32, s / (Float(width) * 1.1)))
+        // A led fish creeping up to a finger turns no tighter than its body
+        // allows either: the floor on the rate comes off at a crawl.
+        let maxRate = min(fleeing ? 1.6 : 0.55, max(guide != nil ? 0.10 : 0.32, s / (Float(width) * 1.1)))
         let wantRate = min(maxRate, abs(diff) * 0.8)
         let turn = max(-wantRate * dt, min(wantRate * dt, diff))
         heading += turn
@@ -1204,6 +1566,76 @@ final class Koi {
     }
     static let diagnostics = ProcessInfo.processInfo.arguments.contains("-diag")
 
+    /// Somewhere in open water, for a fish that has not been placed yet.
+    private func place(in size: CGSize) {
+        position = CGPoint(x: CGFloat.random(in: 80...max(80, size.width - 80)),
+                           y: CGFloat.random(in: 140...max(140, size.height - 160)))
+    }
+
+    // MARK: Led, resting, curious
+
+    /// Steer to a point (a finger, a shelter) instead of wandering.
+    func lead(_ g: Guide) {
+        resting = false
+        guide = g
+    }
+
+    /// Let go: it picks somewhere of its own and cruises off, and its own
+    /// timers run again so it dives in its own time.
+    func freeGuide(now: TimeInterval, in size: CGSize) {
+        guard guide != nil || resting else { return }
+        guide = nil
+        resting = false
+        if !started { started = true; place(in: size) }
+        pickTarget(in: size)
+        speed = max(speed, 20)
+        stateUntil = now + Double.random(in: 6...12)
+    }
+
+    /// Lie still here, at this depth. A nil point means where it is (a fish
+    /// not yet placed is given a spot first); a nil heading keeps its own.
+    func rest(at p: CGPoint?, depth d: Float, heading h: Float?, in size: CGSize) {
+        if !started { started = true; place(in: size) }
+        resting = true
+        guide = nil
+        if let p { position = p }
+        restPoint = position
+        if let h { heading = h }
+        depthTarget = d
+        depthRate = 0.5
+        speed = 0
+        roll = 0
+        straightTrail()
+    }
+
+    /// Up off the bed or out of shelter: it rises toward `depth` over about
+    /// 1/rate seconds and starts to swim.
+    func stir(depth d: Float, rate: Float, now: TimeInterval, in size: CGSize) {
+        resting = false
+        guide = nil
+        depthTarget = d
+        depthRate = rate
+        pickTarget(in: size)
+        speed = 16
+        stateUntil = now + Double.random(in: 8...14)
+    }
+
+    /// A ring far off caught its eye: its next target is toward the source,
+    /// stopping short of it, at a cruise. A deep fish comes up a little to
+    /// look. It cruises on from there as usual.
+    func drawToward(_ point: CGPoint, stoppingShort short: CGFloat, now: TimeInterval) {
+        guard guide == nil, !resting, !leaping else { return }
+        let dx = position.x - point.x, dy = position.y - point.y
+        let d = max(1, hypot(dx, dy))
+        target = CGPoint(x: point.x + dx / d * short, y: point.y + dy / d * short)
+        speed = max(speed, 28)
+        if iceOver < 0.5, depthTarget > 0.4 {
+            depthTarget = 0.4
+            depthRate = 0.35
+            stateUntil = max(stateUntil, now + 8)
+        }
+    }
+
     private func pickTarget(in size: CGSize) {
         // Somewhere ahead and far: a fish cruises in long arcs, it does not
         // dither or double back. If nothing ahead is open water (it is up
@@ -1248,6 +1680,8 @@ final class Koi {
     }
 
     func dive(now: TimeInterval, quick: Bool) {
+        guide = nil
+        resting = false
         depthTarget = 1
         depthRate = quick ? 1.4 : 0.45
         if quick { speed = 70 }
@@ -1259,6 +1693,8 @@ final class Koi {
     /// until it comes down.
     func beginLeap() {
         leaping = true
+        guide = nil
+        resting = false
         depth = 0
     }
 
@@ -1266,6 +1702,8 @@ final class Koi {
     /// the surface over the next second.
     func land(at p: CGPoint, heading h: Float, now: TimeInterval, in size: CGSize) {
         leaping = false
+        guide = nil
+        resting = false
         position = p
         heading = h
         straightTrail()
@@ -1696,6 +2134,13 @@ final class Dragonfly {
     /// Where it touched the water, once per hover, drained by the garden.
     var dip: CGPoint?
     private var dipped = false
+    /// A reed tip it has been asked to settle on, how high that is over the
+    /// water, and whether it is sitting there with its wings folded.
+    private(set) var perch: CGPoint?
+    private var perchHeight: CGFloat = 0
+    private(set) var landed = false
+    /// 0 flying, 1 sat down: the wings fold and the hover bob dies with it.
+    private var settle: Float = 0
 
     init(body: String, size: CGSize, now: TimeInterval) {
         self.body = body
@@ -1709,10 +2154,50 @@ final class Dragonfly {
 
     var rotation: Float { heading + .pi / 2 }   // the body image points up
 
+    /// Go and sit on this reed tip.
+    func land(on tip: CGPoint, height: CGFloat) {
+        perch = tip
+        perchHeight = height
+        target = tip
+        hoverUntil = 0
+    }
+
+    /// Up off the reed and on with its round.
+    func takeOff(in size: CGSize) {
+        guard perch != nil else { return }
+        perch = nil
+        landed = false
+        hoverUntil = 0
+        target = CGPoint(x: CGFloat.random(in: 80...max(80, size.width - 80)), y: CGFloat.random(in: 140...max(140, size.height * 0.6)))
+    }
+
     func update(dt: Float, now: TimeInterval, in size: CGSize) {
         bob += dt
         let dx = Float(target.x - position.x), dy = Float(target.y - position.y)
         let dist = hypot(dx, dy)
+        settle += ((landed ? 1 : 0) - settle) * min(1, dt * 3)
+        if let tip = perch {
+            if landed {
+                // Sat on the tip, and the tip sways under it a little.
+                position = CGPoint(x: tip.x + CGFloat(sin(bob * 0.9)) * 0.6, y: tip.y)
+                return
+            }
+            if dist < 4 {
+                landed = true
+                position = tip
+                return
+            }
+            // The last of the way in is slow, a settle rather than a dart.
+            let want = atan2(dy, dx)
+            var diff = want - heading
+            while diff > .pi { diff -= 2 * .pi }
+            while diff < -.pi { diff += 2 * .pi }
+            heading += max(-4 * dt, min(4 * dt, diff))
+            let speed = min(200, 14 + dist * 1.6)
+            position.x += CGFloat(cos(heading) * speed * dt)
+            position.y += CGFloat(sin(heading) * speed * dt)
+            return
+        }
         if dist < 6 {
             if hoverUntil == 0 {
                 hoverUntil = now + Double.random(in: 1.5...3.0)
@@ -1756,8 +2241,11 @@ final class Dragonfly {
         let wingTex = textureSize("dragonfly_wing")
         let wingL: CGFloat = 34
         let wingH = wingL * wingTex.height / max(1, wingTex.width)
-        let hover = CGFloat(sin(bob * 2.1)) * 2.0
+        let hover = CGFloat(sin(bob * 2.1)) * 2.0 * CGFloat(1 - settle)
         let at = CGPoint(x: position.x, y: position.y + hover)
+        // Flying it is drawn well over the water; sat on a reed it is at
+        // the tip's height, and its shadow falls that much farther off.
+        let lift: Float = 0.6 * (1 - settle) + Float(perchHeight) / WaterRenderer.depthScale * settle
         let r = rotation
         let cs = CGFloat(cos(r)), sn = CGFloat(sin(r))
         // Wing roots sit a little below the head on either side of the thorax.
@@ -1765,24 +2253,28 @@ final class Dragonfly {
             CGPoint(x: at.x + local.x * cs - local.y * sn, y: at.y + local.x * sn + local.y * cs)
         }
         var out: [Sprite] = []
-        let beat = sin(bob * 52) * 0.45
-        let shadowOffset = CGPoint(x: 12, y: 36)
+        // Sat down, the wings stop and lie back along the body.
+        let beat = sin(bob * 52) * 0.45 * (1 - settle)
+        let fold = settle * 0.55
+        let shadowOffset = CGPoint(x: 12 * CGFloat(lift / 0.6), y: 36 * CGFloat(lift / 0.6))
         // Shadow of body and wings on the water.
         out.append(Sprite(body, at: CGPoint(x: at.x + shadowOffset.x, y: at.y + shadowOffset.y),
                           size: CGSize(width: bodyW, height: bodyH), rotation: r, mode: .shadow, alpha: 0.45, z: 0))
         for (side, pairY) in [(CGFloat(1), CGFloat(-9)), (CGFloat(-1), CGFloat(-9)), (CGFloat(1), CGFloat(-2)), (CGFloat(-1), CGFloat(-2))] {
             let root = place(CGPoint(x: side * bodyW * 0.18, y: pairY))
-            let base: Float = side > 0 ? 0 : .pi
+            let base: Float = side > 0 ? fold : .pi - fold
             let flap = Float(pairY == -9 ? beat : -beat)
-            // Two ghosts per wing for the blur, plus the wing itself.
-            for (k, a) in [(-0.6, 0.25), (0.6, 0.25), (0.0, 0.7)] {
+            // Two ghosts per wing for the blur, plus the wing itself. The
+            // ghosts fade as the wings come to rest.
+            for (k, a) in [(-0.6, 0.25 * (1 - settle)), (0.6, 0.25 * (1 - settle)), (0.0, 0.7 + 0.25 * settle)] {
+                guard a > 0.01 else { continue }
                 let ang = base + flap * Float(1 + k)
                 let centre = CGPoint(x: root.x + CGFloat(cos(r + ang)) * wingL * 0.5, y: root.y + CGFloat(sin(r + ang)) * wingL * 0.5)
                 out.append(Sprite("dragonfly_wing", at: centre, size: CGSize(width: wingL, height: wingH),
-                                  rotation: r + ang, alpha: Float(a), flipX: side < 0, z: 0.6))
+                                  rotation: r + ang, alpha: Float(a), flipX: side < 0, z: lift))
             }
         }
-        out.append(Sprite(body, at: at, size: CGSize(width: bodyW, height: bodyH), rotation: r, alpha: 1, z: 0.6))
+        out.append(Sprite(body, at: at, size: CGSize(width: bodyW, height: bodyH), rotation: r, alpha: 1, z: lift))
         return out
     }
 }
@@ -1912,6 +2404,36 @@ final class Shoal {
     private var fright: Float = 0
     private let cruise: Float
     private let seed: Int
+    /// A wake the shoal is streaming along: the line, how far along it the
+    /// leader has got, who leads, and until when.
+    private var path: [CGPoint] = []
+    private var pathIndex = 0
+    private var leader: Fish?
+    private var followUntil: TimeInterval = 0
+
+    /// The middle of the shoal; nil with no fish.
+    var centroid: CGPoint? {
+        guard !fish.isEmpty else { return nil }
+        var x: CGFloat = 0, y: CGFloat = 0
+        for f in fish { x += f.position.x; y += f.position.y }
+        return CGPoint(x: x / CGFloat(fish.count), y: y / CGFloat(fish.count))
+    }
+
+    /// A wake laid across the water. The far end becomes where the shoal is
+    /// going for five seconds, and the fish nearest the start leads the rest
+    /// along it point by point; the others keep station on the leader the
+    /// way they always do.
+    func follow(path: [CGPoint], now: TimeInterval) {
+        guard let start = path.first, let end = path.last, !fish.isEmpty else { return }
+        wander = end
+        wanderUntil = now + 5
+        followUntil = now + 5
+        self.path = path
+        pathIndex = 0
+        leader = fish.min { a, b in
+            hypot(a.position.x - start.x, a.position.y - start.y) < hypot(b.position.x - start.x, b.position.y - start.y)
+        }
+    }
 
     init(texture: String, count: Int, size: CGSize, seed: Int) {
         self.texture = texture
@@ -1948,6 +2470,16 @@ final class Shoal {
         fright *= exp(-dt * 0.9)
         let n = fish.count
         guard n > 0 else { return }
+        // The leader, while the wake still holds: it moves on to the next
+        // point of the line as it reaches each one, and is done at the end.
+        var leading: Fish?
+        if now < followUntil, let l = leader {
+            while pathIndex < path.count,
+                  hypot(l.position.x - path[pathIndex].x, l.position.y - path[pathIndex].y) < 26 {
+                pathIndex += 1
+            }
+            if pathIndex < path.count { leading = l } else { followUntil = 0 }
+        }
         let neighbour: Float = 80
         for i in 0..<n {
             let f = fish[i]
@@ -1967,14 +2499,25 @@ final class Shoal {
                 if d < tooClose { apart -= (q - p) / max(0.5, d) * (tooClose - d) }
             }
             var steer = SIMD2<Float>(0, 0)
+            let leads = f === leading
             if count > 0 {
-                steer += (centre / count - p) * 0.8
-                steer += (align / count - f.velocity) * 1.4
+                // The leader is pulled less by the others: it is the one
+                // going somewhere, and they close on it.
+                steer += (centre / count - p) * (leads ? 0.2 : 0.8)
+                steer += (align / count - f.velocity) * (leads ? 0.5 : 1.4)
             }
             steer += apart * 22
-            // The wander point pulls gently; it is where the shoal is going.
-            let w = SIMD2(Float(wander.x), Float(wander.y))
-            steer += (w - p) * 0.25
+            if leads {
+                // Along the wake, point to point, with real pull.
+                let goal = SIMD2(Float(path[pathIndex].x), Float(path[pathIndex].y))
+                let to = goal - p
+                let d = simd_length(to)
+                if d > 0.5 { steer += to / d * 110 }
+            } else {
+                // The wander point pulls gently; it is where the shoal is going.
+                let w = SIMD2(Float(wander.x), Float(wander.y))
+                steer += (w - p) * 0.25
+            }
             // Banks, stones and the koi are kept clear of.
             let margin: Float = 50
             if p.x < margin { steer.x += (margin - p.x) * 3 }
@@ -1992,8 +2535,9 @@ final class Shoal {
                 if d < 110 { steer += (p - c) / max(1, d) * (110 - d) * 2.5 }
             }
             f.velocity += steer * dt
-            // Hold the cruising speed, faster while frightened.
-            let want = cruise * (1 + fright * 1.6)
+            // Hold the cruising speed, faster while frightened, and with a
+            // little more on while the shoal is streaming after a wake.
+            let want = cruise * (1 + fright * 1.6) * (leads ? 1.35 : (leading != nil ? 1.15 : 1))
             let sp = simd_length(f.velocity)
             if sp > 0.01 { f.velocity *= 1 + (want / sp - 1) * min(1, dt * 2.2) }
             let target = atan2(f.velocity.y, f.velocity.x)

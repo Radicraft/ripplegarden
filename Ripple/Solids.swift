@@ -27,7 +27,7 @@ struct SolidInstance {
     var tilt: SIMD2<Float>
     var length: Float            // points
     var radius: Float            // points
-    var shape: UInt32            // 0 can, 1 bottle, 2 stone, 3 log, 4 disc, 5 koi
+    var shape: UInt32            // 0 can, 1 bottle, 2 stone, 3 log, 4 disc, 5 koi, 6 bamboo
     var alpha: Float
     var colourA: SIMD4<Float>    // main body colour
     var colourB: SIMD4<Float>    // band / cap / moss / cut wood colour
@@ -413,6 +413,130 @@ enum SolidMesh {
         return (verts, idx)
     }
 
+    /// Where along a bamboo tube the pivot sits, as a fraction of the length
+    /// behind it. The mesh puts x = 0 there, so an instance placed at the
+    /// fulcrum and pitched with `tilt` swings about that point rather than
+    /// about its middle.
+    static let bambooPivot: Float = 0.35
+    /// How far back from the tip the diagonal cut runs, in lengths.
+    static let bambooCut: Float = 0.22
+    /// The bore, as a fraction of the outer radius.
+    static let bambooBore: Float = 0.76
+
+    /// A bamboo tube for the shishi-odoshi: a tapered cane with node bands,
+    /// closed at the rear, cut on a slant at the mouth and hollow behind the
+    /// cut. x runs -bambooPivot at the butt to 1 - bambooPivot at the tip.
+    ///
+    /// The fragment has no branch of its own for shape 6 yet, so a bamboo
+    /// falls through to the bottle's, where `part` 3 is the one opaque path
+    /// and paints `colourB`. Every vertex here is part 3 for that reason,
+    /// and the bands are told apart by `bump` (1 on a node, -1 inside the
+    /// bore, 0 on the cane) so a branch can colour them later without the
+    /// mesh changing.
+    static func bamboo() -> ([SolidVertex], [UInt16]) {
+        var verts: [SolidVertex] = []
+        var idx: [UInt16] = []
+        let cols = segments + 1
+        let rear = -bambooPivot, tip = 1 - bambooPivot
+        let cutStart = tip - bambooCut - 0.01
+        let floorX = cutStart - 0.30
+
+        // The cane thins toward the tip; each node stands a little proud.
+        func taper(_ x: Float) -> Float { 1 - 0.12 * (x - rear) / (tip - rear) }
+        func slant(_ a: Float) -> Float { tip - bambooCut * (0.5 + 0.5 * sin(a)) }
+
+        // A row of the wall: where each column sits along the axis (the cut
+        // row differs by column), how wide, and whether it is a node.
+        struct Row { var x: [Float]; var r: Float; var bump: Float }
+        var rows: [Row] = []
+        func flat(_ x: Float, band: Float = 0) {
+            rows.append(Row(x: [Float](repeating: x, count: cols), r: taper(x) * (1 + 0.07 * band), bump: band))
+        }
+        flat(rear)
+        for node in [Float(-0.20), 0.08, 0.36] {
+            flat(node - 0.035)
+            flat(node - 0.012, band: 1)
+            flat(node + 0.012, band: 1)
+            flat(node + 0.035)
+        }
+        flat(cutStart)
+        rows.append(Row(x: (0...segments).map { slant(Float($0) / Float(segments) * 2 * Float.pi) },
+                        r: taper(cutStart), bump: 0))
+
+        // The outer wall. Normals lean by the profile's slope between the
+        // rows either side, the way `revolve` does, so the bands catch a
+        // different toon step from the cane.
+        let wallStart = verts.count
+        for (i, row) in rows.enumerated() {
+            let prev = rows[max(0, i - 1)], next = rows[min(rows.count - 1, i + 1)]
+            for s in 0...segments {
+                let a = Float(s) / Float(segments) * 2 * Float.pi
+                let dx = next.x[s] - prev.x[s]
+                let slope = dx > 1e-5 ? (next.r - prev.r) / dx : 0
+                let n = simd_normalize(SIMD3<Float>(-slope, cos(a), sin(a)))
+                verts.append(SolidVertex(px: row.x[s], py: cos(a) * row.r, pz: sin(a) * row.r,
+                                         nx: n.x, ny: n.y, nz: n.z,
+                                         v: (row.x[s] - rear) / (tip - rear), ang: a, part: 3, rad: 1, bump: row.bump))
+            }
+        }
+        func quads(_ from: Int, _ to: Int) {
+            for s in 0..<segments {
+                let a = UInt16(from + s), b = a + 1
+                let c = UInt16(to + s), d = c + 1
+                idx += [a, c, b, b, c, d]
+            }
+        }
+        for i in 0..<(rows.count - 1) { quads(wallStart + i * cols, wallStart + (i + 1) * cols) }
+
+        // The bore: the wall seen from inside, from the cut down to a floor
+        // a third of the way in, its normals toward the axis.
+        let bore = taper(cutStart) * bambooBore
+        let boreStart = verts.count
+        for (k, xs) in [rows[rows.count - 1].x, [Float](repeating: floorX, count: cols)].enumerated() {
+            for s in 0...segments {
+                let a = Float(s) / Float(segments) * 2 * Float.pi
+                verts.append(SolidVertex(px: xs[s], py: cos(a) * bore, pz: sin(a) * bore,
+                                         nx: 0, ny: -cos(a), nz: -sin(a),
+                                         v: k == 0 ? 1 : 0.7, ang: a, part: 3, rad: 1, bump: -1))
+            }
+        }
+        quads(boreStart, boreStart + cols)
+
+        // The lip of the cut: the thickness of the wall, facing along the
+        // slant. The plane is x + (cut / 2 r) z = const, so its gradient is
+        // the normal, in the same normalised space the shader rescales.
+        let lipStart = verts.count
+        let lipN = simd_normalize(SIMD3<Float>(1, 0, bambooCut / (2 * taper(cutStart))))
+        for r in [taper(cutStart), bore] {
+            for s in 0...segments {
+                let a = Float(s) / Float(segments) * 2 * Float.pi
+                verts.append(SolidVertex(px: slant(a), py: cos(a) * r, pz: sin(a) * r,
+                                         nx: lipN.x, ny: lipN.y, nz: lipN.z,
+                                         v: 1, ang: a, part: 3, rad: r == bore ? 0.8 : 1, bump: 0))
+            }
+        }
+        quads(lipStart, lipStart + cols)
+
+        // The floor of the bore, facing the mouth, and the closed butt.
+        func disc(_ x: Float, r: Float, facing: Float, bump: Float) {
+            let centre = UInt16(verts.count)
+            verts.append(SolidVertex(px: x, py: 0, pz: 0, nx: facing, ny: 0, nz: 0,
+                                     v: (x - rear) / (tip - rear), ang: 0, part: 3, rad: 0, bump: bump))
+            for s in 0...segments {
+                let a = Float(s) / Float(segments) * 2 * Float.pi
+                verts.append(SolidVertex(px: x, py: cos(a) * r, pz: sin(a) * r, nx: facing, ny: 0, nz: 0,
+                                         v: (x - rear) / (tip - rear), ang: a, part: 3, rad: 1, bump: bump))
+            }
+            for s in 0..<segments {
+                let a = centre + 1 + UInt16(s)
+                idx += [centre, a, a + 1]
+            }
+        }
+        disc(floorX, r: bore, facing: 1, bump: -1)
+        disc(rear, r: taper(rear), facing: -1, bump: 1)
+        return (verts, idx)
+    }
+
     /// Value noise round a circle: `period` samples spread over the turn and
     /// smoothly joined, so the seam meets itself.
     private static func ringNoise(_ ang: Float, period: Int, seed: UInt32) -> Float {
@@ -556,7 +680,7 @@ final class SolidBatch {
         var idx: [UInt16] = []
         var built: [(offset: Int, count: Int, baseVertex: Int)] = []
         for (v, i) in [SolidMesh.can(), SolidMesh.bottle(), SolidMesh.stone(), SolidMesh.log(),
-                       SolidMesh.disc(), SolidMesh.koi()] {
+                       SolidMesh.disc(), SolidMesh.koi(), SolidMesh.bamboo()] {
             built.append((offset: idx.count * MemoryLayout<UInt16>.stride, count: i.count, baseVertex: verts.count))
             verts += v
             idx += i
