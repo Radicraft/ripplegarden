@@ -624,8 +624,8 @@ enum Library {
         // note; the pond hums the phrase, and the stones want playing in
         // that order.
         do {
-            let bed = Shape(centre: CGPoint(x: 0.5, y: 0.20), radius: 0.12)
-            let stones = ring(5, centre: CGPoint(x: 0.5, y: 0.23), radius: 0.07, from: -2.7, to: -0.44)
+            let bed = Shape(centre: CGPoint(x: 0.5, y: 0.22), radius: 0.16)
+            let stones = ring(5, centre: CGPoint(x: 0.5, y: 0.27), radius: 0.11, from: -2.7, to: -0.44)
             out["summer-4"] = LevelSpec(id: "summer-4", seasonID: "summer", index: 4, title: "Summer, four",
                                         goals: [goal(.suikinkutsu(stones: stones, order: [0, 2, 1, 3, 4]),
                                                      "Play the stones in the order the pond hums.", wakes: .chime)],
@@ -674,14 +674,14 @@ enum Library {
                                     goals: [goal(.clearDebris, "Send the fallen leaves to the banks.", wakes: .clear)],
                                     hint: .leaves, bloomTarget: 0.5, leaves: 12)
 
-        // Autumn two, "the dry pool": a hollow in the bottom bank beyond a
-        // lip. Rocking the pond in rhythm builds a wave that spills over the
-        // lip; every spill fills the pool a little, and full, it joins the
-        // pond.
+        // Autumn two, "the dry pool": a walled hollow in the top bank, dry,
+        // with a low sill toward the pond. Rocking the pond in rhythm builds
+        // a wave that spills over the sill; every spill fills the pool a
+        // little, and full, it joins the pond.
         out["autumn-2"] = LevelSpec(id: "autumn-2", seasonID: "autumn", index: 2, title: "Autumn, two",
-                                    goals: [goal(.fillPool(lip: CGPoint(x: 0.5, y: 0.94),
-                                                           pool: Shape(centre: CGPoint(x: 0.5, y: 0.985), radius: 0.06),
-                                                           lipHeight: 0.05), "Fill the dry pool.", wakes: .pool)],
+                                    goals: [goal(.fillPool(lip: CGPoint(x: 0.5, y: 0.145),
+                                                           pool: Shape(centre: CGPoint(x: 0.5, y: 0.08), radius: 0.05),
+                                                           lipHeight: 0.03), "Fill the dry pool.", wakes: .pool)],
                                     hint: .pool, bloomTarget: 1.0)
 
         // Autumn three, "the weir": two logs and two stones close the pond

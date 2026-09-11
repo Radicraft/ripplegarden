@@ -30,14 +30,15 @@ final class SoundDirector {
     private var started = false
     private var loaded = false
 
-    /// Two ambience layers so one can fade into the next.
+    /// Ambience layers: a season's air fading into the next, and on the map
+    /// the brook under whichever seasons the camera is between, so several
+    /// can sound at once at their own levels.
     private final class Layer {
         let player = AVAudioPlayerNode()
         var name = ""
         var target: Float = 0
     }
-    private var layers = [Layer(), Layer()]
-    private var front = 0
+    private var layers = (0..<5).map { _ in Layer() }
 
     /// A small pool of one-shot voices, each with its own varispeed for pitch.
     private final class Voice {
@@ -146,7 +147,7 @@ final class SoundDirector {
         for l in layers {
             let want = l.target * duck * airLift
             l.player.volume += (want - l.player.volume) * 0.08
-            if l.target == 0, l.player.volume < 0.005, l.player.isPlaying { l.player.stop() }
+            if l.target == 0, l.player.volume < 0.005, l.player.isPlaying { l.player.stop(); l.name = "" }
         }
     }
 
@@ -155,20 +156,35 @@ final class SoundDirector {
     /// The air of a season, or the stream on the map: one loop fading into
     /// the last, with the same file left alone.
     func startAmbience(named name: String) {
+        blendAmbience([name: 1])
+    }
+
+    /// Several airs at once, each at a share of its own gain (0...1); any
+    /// layer not named fades out. The map calls this as the camera moves
+    /// up the stream, so the brook stays under the season around it and one
+    /// season's air gives way to the next.
+    func blendAmbience(_ shares: [String: Float]) {
         guard enabled else { return }
         setUp()
-        guard layers[front].name != name else { return }
-        guard let buf = buffer(name), let e = entries[name] else { return }
-        layers[front].target = 0
-        front = 1 - front
-        let l = layers[front]
-        l.name = name
-        l.player.stop()
-        guard running() else { return }
-        l.player.scheduleBuffer(buf, at: nil, options: [.loops])
-        l.player.volume = 0
-        l.target = e.gain
-        l.player.play()
+        for l in layers where !l.name.isEmpty && shares[l.name] == nil { l.target = 0 }
+        for (name, share) in shares {
+            guard let e = entries[name] else { continue }
+            if let l = layers.first(where: { $0.name == name }) {
+                l.target = e.gain * share
+                continue
+            }
+            guard share > 0.001, let buf = buffer(name) else { continue }
+            // A free layer: one silent and unnamed, or the quietest one going out.
+            guard let l = layers.first(where: { $0.name.isEmpty })
+                    ?? layers.filter({ $0.target == 0 }).min(by: { $0.player.volume < $1.player.volume }) else { continue }
+            l.name = name
+            l.player.stop()
+            guard running() else { return }
+            l.player.scheduleBuffer(buf, at: nil, options: [.loops])
+            l.player.volume = 0
+            l.target = e.gain * share
+            l.player.play()
+        }
     }
 
     func startAmbience(root: Float) {
@@ -350,7 +366,9 @@ final class SoundDirector {
 
     // MARK: - Things on the water
 
-    func iceCrack(x: Float) { play(pick("fx_ice_crack", 3), x: x, gain: 0.9) }
+    func iceCrack(x: Float, gain: Float = 0.9) { play(pick("fx_ice_crack", 3), x: x, gain: gain, pitch: gain < 0.5 ? 0.85 : 1) }
+    /// A bird in the trees, a little way off.
+    func bird(x: Float) { play("fx_bird_flutter", x: x, gain: 0.35, pitch: Float.random(in: 0.9...1.1)) }
 
     func iceBreak(x: Float, size: Float) {
         play(pick("fx_ice_break", 2), x: x, gain: 0.6 + 0.4 * size, pitch: 1.1 - 0.3 * size)
@@ -370,7 +388,7 @@ final class SoundDirector {
     func wood(x: Float) { play("fx_wood_knock", x: x, gain: 0.7) }
     func bell(x: Float) { play("fx_bell", x: x, gain: 0.9) }
     func bud(x: Float) { play("fx_bird_flutter", x: x, gain: 0.45, pitch: 1.2) }
-    func frog(x: Float) { play("fx_frog_jump", x: x, gain: 0.7) }
+    func frog(x: Float, gain: Float = 0.7) { play("fx_frog_jump", x: x, gain: gain) }
     func reeds(x: Float) { play("fx_reeds", x: x, gain: 0.5) }
     /// The camera drops into a pool on the map.
     func dive() { play("fx_splash_big", gain: 0.9, pitch: 0.9) }

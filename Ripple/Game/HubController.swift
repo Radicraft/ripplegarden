@@ -150,7 +150,62 @@ final class HubController: ObservableObject, TouchInput {
         garden.textureSize = { [weak renderer] name in renderer?.textures.size(name) ?? CGSize(width: 1, height: 1) }
         renderer.onFrame = { [weak self] dt in self?.frame(dt: dt) }
         renderer.zoom = 0.9
-        sound.startAmbience(named: "amb_stream")
+        sound.blendAmbience(["amb_stream": 0.5])
+        nextLifeSoundAt = 6
+    }
+
+    // MARK: - The air along the stream
+
+    /// The stream's air is the season the camera is over: the brook runs
+    /// under everything, quieter than before, and each season's own
+    /// recording comes up as its stretch fills the screen and gives way
+    /// to the next over a pool's length at the lip between them. Now and
+    /// then something lives in it: a bird, a frog, a creak of ice, leaves.
+    private var airUpdateAt: Float = 0
+    private var nextLifeSoundAt: Float = 0
+
+    private func updateAir(dt: Float) {
+        guard let renderer, placed else { return }
+        airUpdateAt -= dt
+        let seasons = Library.seasons
+        let y = CGFloat(renderer.viewCentre.y)
+        let h = viewSize.height
+        let top = h * 0.06, bottom = h * 0.915
+        let stretch = (bottom - top) / CGFloat(seasons.count)
+        // Position up the stream in stretches: 0 at the mouth (winter), 4 at the source.
+        let u = max(0, min(CGFloat(seasons.count) - 0.001, (bottom - y) / stretch))
+        if airUpdateAt <= 0 {
+            airUpdateAt = 0.25
+            var shares: [String: Float] = ["amb_stream": 0.45]
+            let i = Int(u)
+            let f = u - CGFloat(i)
+            // Blend across the lip: the last fifth of one stretch and the
+            // first fifth of the next share the air.
+            let blend: CGFloat = 0.2
+            var wHere: CGFloat = 1, wNext: CGFloat = 0
+            if f > 1 - blend, i + 1 < seasons.count {
+                wNext = (f - (1 - blend)) / (2 * blend)
+                wHere = 1 - wNext
+            } else if f < blend, i > 0 {
+                let wPrev = (blend - f) / (2 * blend)
+                shares["amb_\(seasons[i - 1].id)"] = Float(wPrev) * 0.9
+                wHere = 1 - wPrev
+            }
+            shares["amb_\(seasons[i].id)"] = Float(wHere) * 0.9
+            if wNext > 0 { shares["amb_\(seasons[i + 1].id)"] = Float(wNext) * 0.9 }
+            sound.blendAmbience(shares)
+        }
+        // Sparse life, from the season under the camera.
+        if elapsed > nextLifeSoundAt {
+            nextLifeSoundAt = elapsed + Float.random(in: 14...32)
+            let x = Float.random(in: 0.15...0.85)
+            switch seasons[Int(u)].id {
+            case "winter": sound.iceCrack(x: x, gain: 0.22)
+            case "spring": sound.bird(x: x)
+            case "summer": sound.frog(x: x, gain: 0.5)
+            default: sound.leaves(x: x)
+            }
+        }
     }
 
     private func place() {
@@ -472,6 +527,7 @@ final class HubController: ObservableObject, TouchInput {
             renderer.rebuildDepth()
         }
         guard placed else { return }
+        updateAir(dt: dt)
 
         // Drift: momentum from the last drag, eased and kept on the stream.
         if scroll == nil, abs(momentum) > 1 {

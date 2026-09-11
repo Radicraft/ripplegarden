@@ -46,10 +46,11 @@ final class ShishiOdoshi: Instrument {
     /// A pause at the stop while the water runs out, before the swing back.
     static let drainSeconds: Float = 0.15
     static let returnSeconds: Float = 1.2
-    /// A crest at the mouth above this height puts water in the tube.
-    static let crestThreshold: Float = 0.03
+    /// A wave at the mouth above this height (crest or trough: a passing
+    /// wave heaves water in either way) puts water in the tube.
+    static let crestThreshold: Float = 0.015
     /// Height above the threshold, times this, per second, into `fill`.
-    static let fillGain: Float = 18
+    static let fillGain: Float = 30
     /// The mouth sits this far out over the water from `at`.
     static let spoutReach: Float = 30
     static let tubeLength: Float = 110
@@ -97,7 +98,7 @@ final class ShishiOdoshi: Instrument {
         switch phase {
         case .filling:
             if let s = samples.first {
-                let over = s.height - ShishiOdoshi.crestThreshold
+                let over = abs(s.height) - ShishiOdoshi.crestThreshold
                 if over > 0 { fill = min(1, fill + over * ShishiOdoshi.fillGain * dt) }
             }
             tilt += (ShishiOdoshi.restAngle - tilt) * min(1, dt * 6)
@@ -183,7 +184,10 @@ final class ShishiOdoshi: Instrument {
 final class Suikinkutsu: Instrument {
 
     // Tuning.
-    static let crestThreshold: Float = 0.032
+    static let crestThreshold: Float = 0.05
+    /// After one stone sounds, the others hold their peace this long: the
+    /// ring sounds the stone it reaches first, not every stone it passes.
+    static let othersWait: Float = 0.45
     /// A stone will not sound again inside this.
     static let noteSpacing: Float = 0.6
     /// A stone sounding again this soon after itself is the same ripple,
@@ -235,11 +239,14 @@ final class Suikinkutsu: Instrument {
             events.append(.phraseReplay)
         }
 
+        let lastAny = lastSound.max() ?? -10
         for (i, s) in samples.enumerated() where i < stones.count {
-            guard s.height > Suikinkutsu.crestThreshold,
-                  clock - lastSound[i] >= Suikinkutsu.noteSpacing else { continue }
+            guard abs(s.height) > Suikinkutsu.crestThreshold,
+                  clock - lastSound[i] >= Suikinkutsu.noteSpacing,
+                  clock - lastAny >= Suikinkutsu.othersWait else { continue }
             lastSound[i] = clock
             sound(i, events: &events)
+            break
         }
 
         for i in glow.indices {
@@ -317,7 +324,7 @@ final class DryPool: Instrument {
     // Tuning.
     /// Height over the lip, times this, per second, into `fill`. The three
     /// probes are one crest, so the highest of them counts, not their sum.
-    static let spillGain: Float = 12
+    static let spillGain: Float = 20
     /// Spills are reported no closer than this.
     static let spillSpacing: Float = 0.4
     /// The probes flank the lip point this far along it.
@@ -360,7 +367,7 @@ final class DryPool: Instrument {
         guard !full else { return }
         var best: (over: Float, at: CGPoint)? = nil
         for (i, s) in samples.enumerated() where i < probes.count {
-            let over = s.height - lipHeight
+            let over = abs(s.height) - lipHeight
             if over > 0, over > (best?.over ?? 0) { best = (over, probes[i]) }
         }
         guard let best else { return }

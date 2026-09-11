@@ -518,14 +518,18 @@ final class GameController: ObservableObject, TouchInput {
         for g in goals {
             switch g.kind {
             case .shishiOdoshi(let at, _):
-                // On the bank nearest the point, facing the water.
+                // On the bank nearest the point, facing the water, with the
+                // spout out over water that waves can reach.
                 let dir = SIMD2<Float>(Float(viewSize.width / 2 - at.x), Float(viewSize.height / 2 - at.y))
                 let into = simd_length(dir) > 1 ? simd_normalize(dir) : SIMD2<Float>(0, 1)
-                instruments.append(ShishiOdoshi(at: at, bankDirection: into))
+                let edge = onWater(from: at, inset: 12)
+                let foot = CGPoint(x: edge.x - CGFloat(into.x) * 30, y: edge.y - CGFloat(into.y) * 30)
+                instruments.append(ShishiOdoshi(at: foot, bankDirection: into))
             case .suikinkutsu(let stones, let order):
                 instruments.append(Suikinkutsu(stones: stones, order: order))
             case .fillPool(let lip, let pool, let h):
-                instruments.append(DryPool(lip: lip, pool: pool, lipHeight: h))
+                // The lip is the last of the water before the dry pool.
+                instruments.append(DryPool(lip: onWater(from: lip, inset: 10), pool: pool, lipHeight: h))
             case .temptShyKoi(let home):
                 shy = home
             case .leadShoal(let gate):
@@ -1321,6 +1325,28 @@ final class GameController: ObservableObject, TouchInput {
 
     /// The instruments read their samples and say what they did; the pond
     /// answers with sound, a shiver in the hand and a splash.
+    private var instrumentPeak: [Int: Float] = [:]
+    private var instrumentTrough: [Int: Float] = [:]
+
+    /// Water depth at a world point, as the level's painter sees it.
+    private func depthAt(_ p: CGPoint) -> Float {
+        guard viewSize != .zero else { return 0 }
+        let f = CGPoint(x: p.x / viewSize.width, y: p.y / viewSize.height)
+        return DepthPainter.depth(at: f, level: level, aspect: Float(viewSize.width / viewSize.height), poolFill: poolFill)
+    }
+
+    /// From a point on or near the bank, the nearest point in open water
+    /// along the way to the pond's centre, `inset` points past the edge.
+    private func onWater(from p: CGPoint, inset: CGFloat) -> CGPoint {
+        let c = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+        let dx = c.x - p.x, dy = c.y - p.y
+        let len = max(1, hypot(dx, dy))
+        let dir = CGVector(dx: dx / len, dy: dy / len)
+        var t: CGFloat = 0
+        while t < len, depthAt(CGPoint(x: p.x + dir.dx * t, y: p.y + dir.dy * t)) < 0.25 { t += 6 }
+        return CGPoint(x: p.x + dir.dx * (t + inset), y: p.y + dir.dy * (t + inset))
+    }
+
     private func updateInstruments(dt: Float, samples: [FieldSample]) {
         guard let renderer, !instruments.isEmpty else { return }
         var cursor = instrumentProbeStart
@@ -1331,6 +1357,21 @@ final class GameController: ObservableObject, TouchInput {
             var mine: [FieldSample] = []
             for k in 0..<n { mine.append(cursor + k < samples.count ? samples[cursor + k] : flat) }
             cursor += n
+            if diagnostics {
+                for (k, m) in mine.enumerated() {
+                    instrumentPeak[k + cursor - n] = max(instrumentPeak[k + cursor - n] ?? 0, m.height)
+                    instrumentTrough[k + cursor - n] = min(instrumentTrough[k + cursor - n] ?? 0, m.height)
+                }
+                if diagFrames % 120 == 0 {
+                    let peaks = (0..<n).map { String(format: "%+.3f/%+.3f", instrumentPeak[$0 + cursor - n] ?? 0, instrumentTrough[$0 + cursor - n] ?? 0) }.joined(separator: " ")
+                    let d = (0..<n).map { String(format: "%.2f", depthAt(inst.probePoints[$0])) }.joined(separator: " ")
+                    let extra = (inst as? ShishiOdoshi).map { String(format: "fill=%.2f knocks=%d", $0.fill, $0.knocks) }
+                        ?? (inst as? DryPool).map { String(format: "fill=%.2f", $0.fill) }
+                        ?? (inst as? Suikinkutsu).map { "played=\($0.state.played)" } ?? ""
+                    NSLog("[instrument] %@ peaks=%@ depth=%@ %@ n=%d", String(describing: type(of: inst)), peaks, d, extra, instruments.count)
+                    for k in 0..<n { instrumentPeak[k + cursor - n] = 0; instrumentTrough[k + cursor - n] = 0 }
+                }
+            }
             if phase == .playing { inst.update(dt: dt, samples: mine, events: &events) }
             for sp in inst.splashes { renderer.addSplat(at: sp.at, in: viewSize, radius: sp.radius, amplitude: sp.amplitude) }
             inst.splashes.removeAll()
@@ -2479,21 +2520,21 @@ enum DepthPainter {
             let dist = (dx * dx + dy * dy).squareRoot() / r
             if dist < 1 { d = 0 } else if dist < 1.3 { d = min(d, (dist - 1) / 0.3) }
         }
-        // The pool on the bank fills from the lip inward: water where it
-        // has reached, a channel over the lip joining it to the pond.
-        if poolFill > 0, let pool = pool(of: level) {
+        // The dry pool: a walled hollow at the bank, dry until it fills,
+        // ringed by a rim of ground with one low sill on the pond side.
+        // Water crossing the sill fills it; full, it is as deep as the
+        // shelf and the sill sinks so it joins the pond.
+        if let pool = pool(of: level) {
             let r = Float(pool.radius)
             let dx = (px - Float(pool.centre.x)) * aspect, dy = py - Float(pool.centre.y)
             let dist = (dx * dx + dy * dy).squareRoot() / r
             if dist < 1 {
-                let wet = poolFill * 0.3 * (1 - dist * dist * 0.5)
-                d = max(d, wet)
-            }
-            // The lip: a short channel between the pond and the pool.
-            let lx = (px - Float(pool.lip.x)) * aspect, ly = py - Float(pool.lip.y)
-            let along = ly / max(0.01, Float(pool.centre.y - pool.lip.y))
-            if abs(lx) < r * 0.5, along > -0.2, along < 1.2 {
-                d = max(d, poolFill * 0.3 * (1 - abs(lx) / (r * 0.5)))
+                d = max(dryDepth, poolFill * 0.3 * (1 - dist * dist * 0.5))
+            } else if dist < 1.16 {
+                let gx = Float(pool.lip.x - pool.centre.x) * aspect, gy = Float(pool.lip.y - pool.centre.y)
+                let gl = max(0.001, (gx * gx + gy * gy).squareRoot())
+                let toward = (dx * gx + dy * gy) / (dist * r * gl)
+                d = toward > 0.8 ? min(d, 0.09 + poolFill * 0.25) : dryDepth
             }
         }
         return d
