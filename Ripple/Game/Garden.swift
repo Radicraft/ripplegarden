@@ -636,6 +636,15 @@ final class Garden {
                 let d = hypot(k.position.x - point.x, k.position.y - point.y)
                 if d < bestDist { bestDist = d; best = k }
             }
+            // Nobody awake: a finger held on open water stirs the nearest
+            // sleeper, so the player is never holding over a pond of stones.
+            if best == nil {
+                for k in koi where k.resting && !k.leaping && !(k === shyKoi && !shyOut) {
+                    let d = hypot(k.position.x - point.x, k.position.y - point.y)
+                    if d < bestDist { bestDist = d; best = k }
+                }
+                best?.stir(depth: 0.15, rate: 0.5, now: time, in: size)
+            }
             called = best
         }
         guard let c = called else { return }

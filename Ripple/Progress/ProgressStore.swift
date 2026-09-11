@@ -181,6 +181,7 @@ final class ProgressStore: ObservableObject {
             try? context.delete(model: PlotDeedRecord.self)
             try? context.delete(model: ColourwayRecord.self)
             try? context.save()
+            UserDefaults.standard.removeObject(forKey: ProgressStore.tutorialKey)
         }
         // `-unlockAll` opens every level for testing, and wakes each pool
         // the way its level will once the goals land, so the map can be
@@ -200,6 +201,18 @@ final class ProgressStore: ObservableObject {
         if ProcessInfo.processInfo.arguments.contains(where: gardenFlags.contains) {
             DispatchQueue.main.async { _ = Inventory.shared }
         }
+    }
+
+    // MARK: - The first walk
+
+    private static let tutorialKey = "tutorial.done"
+
+    /// Whether the first walk through the game has been made. Kept in
+    /// defaults rather than a record: it is one bit about this device's
+    /// player, and the schema stays as it is. Off until the walk is done.
+    var tutorialDone: Bool {
+        get { UserDefaults.standard.bool(forKey: ProgressStore.tutorialKey) }
+        set { UserDefaults.standard.set(newValue, forKey: ProgressStore.tutorialKey) }
     }
 
     /// The tokens the roster in docs/gameplay-spec.md gives each level, for

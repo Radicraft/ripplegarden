@@ -86,7 +86,7 @@ final class RewardReveal {
     private var goldPetals: [Floater] = []
     private var goldSpawned = 0
     /// The item's height in pond units: -1 the bed, 0 the surface.
-    private var z: Float = -0.9
+    private var z: Float = -0.35
     private var position: CGPoint
     private var turn: Float = 0
     private var ringAlpha: Float = 0
@@ -152,7 +152,7 @@ final class RewardReveal {
         if stage == .waiting { burst() }
         stage = .rising
         stageTime = 0
-        z = -0.9
+        z = -0.35
         if award.rarity != .common { events.append(.revealNote) }
     }
 
@@ -197,7 +197,7 @@ final class RewardReveal {
             let t = min(1, stageTime / riseSeconds)
             // Out of the dark quickly, then slowing as it breaks the surface.
             let eased = 1 - pow(1 - t, 3)
-            z = -0.9 + 1.05 * eased
+            z = -0.35 + 0.5 * eased
             ringAlpha = min(1, stageTime / 0.6)
             itemAlpha = min(1, stageTime / 0.4)
             // Breaking the surface lifts a little water with it.
@@ -378,7 +378,7 @@ final class RewardReveal {
         let across = shownSize
         var size = CGSize(width: across * t.width / max(1, long), height: across * t.height / max(1, long))
         let submerged = z < 0
-        let haze = submerged ? min(0.9, -z * 0.8) : 0
+        let haze = submerged ? min(0.35, -z * 0.6) : 0
         if stands {
             // A plant stands on its root and turns to show its sides.
             return Sprite(name, at: position, size: size, rotation: -.pi / 2 + 0.12 * sin(turn * 1.3),

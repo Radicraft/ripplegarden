@@ -245,6 +245,7 @@ final class PlotController: ObservableObject, TouchInput {
         self.renderer = renderer
         viewSize = .zero
         placed = false
+        Tutorial.shared.note(.plotOpened)
         renderer.style = .woodblock
         renderer.pitchLimit = WaterRenderer.maxPitch
         var look = art.floor
@@ -295,6 +296,7 @@ final class PlotController: ObservableObject, TouchInput {
     func leave() {
         letGoOfEverything()
         save()
+        Tutorial.shared.note(.plotLeft)
         presented = nil
         words = nil
         if sluice == .filling { sound.inletEnd(id: sluiceSoundID) }
@@ -386,7 +388,8 @@ final class PlotController: ObservableObject, TouchInput {
         }
         catchUpPetals(since: state.lastVisit)
         if plotIndex == 0, args.contains("-plotFull") { demoPlace() }
-        if firstVisit {
+        // The first walk says this itself, one thing at a time.
+        if firstVisit, !Tutorial.shared.running {
             words = PondWords(title: nil, line: "Drag on the earth to dig. Tap the stone to let the water in.")
             wordsUntil = elapsed + 6
         }
@@ -624,6 +627,7 @@ final class PlotController: ObservableObject, TouchInput {
         if state.water != was {
             if abs(state.water - lastPaintedWater) > 0.004 { depthDirty = true }
             noteChange()
+            Tutorial.shared.note(.water(state.water))
         }
         if sluice == .filling, state.water >= 1 { closeSluice() }
         if sluice == .draining, state.water <= 0 { sluice = .closed }
@@ -641,6 +645,7 @@ final class PlotController: ObservableObject, TouchInput {
     private func openSluice() {
         sluice = .filling
         state.sluiceOpen = true
+        Tutorial.shared.note(.sluiceOpened)
         garden.inlet = sluicePoint
         sound.inletBegin(id: sluiceSoundID)
         sound.plop()
@@ -1048,6 +1053,7 @@ final class PlotController: ObservableObject, TouchInput {
 
     /// The sound and the water of a thing arriving.
     private func land(_ l: LiveItem, at q: CGPoint) {
+        Tutorial.shared.note(.itemPlaced)
         let x = Float(q.x / viewSize.width)
         if isWater(q) {
             let heavy = l.item.category == .stone || l.item.category == .wood
@@ -1203,6 +1209,16 @@ final class PlotController: ObservableObject, TouchInput {
 
     private func worldPoint(_ p: CGPoint) -> CGPoint { renderer?.worldPoint(screen: p) ?? p }
 
+    /// Where the first walk's ring goes on this plot.
+    private func tutorialPoint(_ spot: Tutorial.Spot) -> CGPoint? {
+        switch spot {
+        case .earth: return CGPoint(x: viewSize.width * 0.5, y: viewSize.height * 0.45)
+        case .sluice: return sluicePoint
+        case .trayStone: return trayStonePoint
+        default: return nil
+        }
+    }
+
     func touchBegan(id: Int, at screen: CGPoint, in size: CGSize, weight: Float) {
         screenSize = size
         guard presented == nil, placed, let renderer else { return }
@@ -1306,6 +1322,7 @@ final class PlotController: ObservableObject, TouchInput {
             s.speed += (Float(step / CGFloat(dtS)) - s.speed) * 0.4
             s.lastAt = now
             touches[id] = .dig(s)
+            Tutorial.shared.note(.dug(step))
             digStamp(from: s.last, to: p, stroke: &touches[id])
             if case .dig(var t) = touches[id]! {
                 t.last = p
@@ -1745,6 +1762,8 @@ final class PlotController: ObservableObject, TouchInput {
         }
 
         for s in garden.skaterSprites() { sink.paper(s) }
+        // The first walk's ring of light: on the earth, the sluice or the tray's stone.
+        if let at = Tutorial.shared.spot(for: .plot).flatMap(tutorialPoint) { sink.over += Tutorial.shared.ring(at: at, time: elapsed) }
         if sluice == .filling { sink.over += garden.inletSprites() }
         for s in garden.petalSprites() { sink.paper(s) }
         sink.over += garden.dropletSprites()

@@ -200,6 +200,7 @@ private struct PlotPage: View {
     @ObservedObject var plot: PlotController
     @ObservedObject var pager: PlotPager
     @ObservedObject private var inventory = Inventory.shared
+    @ObservedObject private var tutorial = Tutorial.shared
     let onExit: () -> Void
 
     var body: some View {
@@ -223,16 +224,18 @@ private struct PlotPage: View {
         .onAppear { plot.onExit = onExit }
     }
 
-    /// The first visit's one line, low in the water like a level's.
+    /// The first visit's one line, low in the water like a level's; the
+    /// first walk's line in its place while the walk is on.
     @ViewBuilder private var words: some View {
         ZStack {
-            if let w = plot.words, plot.presented == nil {
+            if let w = tutorial.lines[.plot] ?? plot.words, plot.presented == nil {
                 PondVeil(words: w)
                     .transition(.opacity)
                     .id(w)
             }
         }
         .animation(Motion.words, value: plot.words)
+        .animation(Motion.words, value: tutorial.lines)
         .allowsHitTesting(false)
     }
 
@@ -244,6 +247,8 @@ private struct PlotPage: View {
                     pager.leave()
                     onExit()
                 }
+                // The first walk's ring on the way back to the stream.
+                .overlay { TutorialPulse(on: tutorial.spot(for: .plot) == .chevron, diameter: 60) }
                 Spacer()
                 PetalPurse(petals: inventory.petals)
                     .padding(.trailing, 6)

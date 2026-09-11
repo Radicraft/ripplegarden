@@ -181,7 +181,7 @@ final class HubController: ObservableObject, TouchInput {
         renderer.zoom = 0.9
         renderer.pitchLimit = 0.8
         renderer.pitchTarget = min(renderer.pitchTarget, 0.8)
-        sound.blendAmbience(["amb_stream": 0.5])
+        sound.blendAmbience([:])
         nextLifeSoundAt = 6
     }
 
@@ -294,7 +294,9 @@ final class HubController: ObservableObject, TouchInput {
             airUpdateAt = 0.25
             // Over a living pool the brook falls back and the season's air
             // thins a little, so what lives there can be heard.
-            var shares: [String: Float] = ["amb_stream": 0.45 * (1 - 0.55 * nearness) * (1 - 0.3 * rain)]
+            // No brook: the owner found the running water wearing. The season's
+            // own air and its life are the sound of the map.
+            var shares: [String: Float] = [:]
             if rain > 0.02 { shares["amb_rain_light"] = rain * 0.9 }
             let seasonShare: Float = 0.9 * (1 - 0.25 * nearness) * (1 - 0.5 * rain)
             let i = Int(u)
@@ -759,6 +761,7 @@ final class HubController: ObservableObject, TouchInput {
         if let o = opening, now - o.at > 0.75 {
             opening = nil
             sound.stopAmbience()
+            Tutorial.shared.note(.dived(levelID: o.level.id))
             onPlay?(o.level)
         }
     }
@@ -912,6 +915,8 @@ final class HubController: ObservableObject, TouchInput {
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
         over += garden.dropletSprites()
+        // The first walk's ring of light on the pool it wants tapped.
+        if Tutorial.shared.spot(for: .map) == .firstPool, let pool = pools.first { over += Tutorial.shared.ring(at: pool.centre, time: elapsed) }
         for s in stretchBranches { paper(s, cast: 18) }
         for (i, m) in sourceMist.enumerated() {
             guard let name = cloud(i) else { break }

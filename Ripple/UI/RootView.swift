@@ -25,7 +25,9 @@ struct RootView: View {
         if let i = args.firstIndex(of: "-level"), i + 1 < args.count, let l = Library.level(id: args[i + 1]) {
             start = l
             first = .level(l.id)
-        } else if args.contains("-demo"), !args.contains("-tour") {
+        } else if args.contains("-demo"), !args.contains("-tour"), !args.contains("-tutorial") {
+            // `-tutorial -demo` starts on the map as a first launch does,
+            // and the demo takes the level up once a pool is opened.
             first = .level(start.id)
         } else if args.contains("-plot") || args.contains("-plotDug") || args.contains("-plotFull") {
             first = .plot
@@ -62,9 +64,12 @@ struct RootView: View {
             case .plot:
                 // `-plot`, `-plotDug` and `-plotFull` land here on plot 0.
                 PlotView(pager: plots) {
-                    withAnimation(.easeInOut(duration: 0.6)) { screen = .garden }
+                    withAnimation(.easeInOut(duration: 0.55)) { screen = .garden }
                 }
-                .transition(.opacity)
+                // The plot lies to the right of the stream: it slides in from
+                // there and goes back the same way, over the map.
+                .zIndex(2)
+                .transition(.move(edge: .trailing))
             }
         }
         .progressContainer()

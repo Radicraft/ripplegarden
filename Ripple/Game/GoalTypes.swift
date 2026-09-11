@@ -109,6 +109,8 @@ struct GoalContext {
     var targetWoke: Bool
     /// Seconds since a wake was last laid for the shoal to follow.
     var sinceWake: Float = 99
+    /// The koi that has answered a held finger and is at the surface, if any.
+    var calledKoi: CGPoint? = nil
 }
 
 struct ShishiOdoshiState { var fill: Float; var knocks: Int; var tilt: Float }

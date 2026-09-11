@@ -7,6 +7,7 @@ struct HubView: View {
 
     @ObservedObject var hub: HubController
     @ObservedObject private var inventory = Inventory.shared
+    @ObservedObject private var tutorial = Tutorial.shared
     let onPlay: (LevelSpec) -> Void
     @Environment(\.openPlot) private var openPlot
 
@@ -17,6 +18,7 @@ struct HubView: View {
             }
             .ignoresSafeArea()
 
+            walk
             purse
             gear
             menu
@@ -29,6 +31,19 @@ struct HubView: View {
             // A finger drawn sideways across the stream goes to the player's pond.
             hub.onSwipeToPlot = openPlot
         }
+    }
+
+    /// The first walk's line, low in the water as a level's words are.
+    @ViewBuilder private var walk: some View {
+        ZStack {
+            if let w = tutorial.lines[.map], hub.presented == nil {
+                PondVeil(words: w)
+                    .transition(.opacity)
+                    .id(w)
+            }
+        }
+        .animation(Motion.scrim, value: tutorial.lines)
+        .allowsHitTesting(false)
     }
 
     /// The petals picked, in the serif, where the plot keeps its own.

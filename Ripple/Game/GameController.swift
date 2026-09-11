@@ -359,6 +359,7 @@ final class GameController: ObservableObject, TouchInput {
         phase = .playing
         elapsed = 0
         touchedYet = false
+        Tutorial.shared.note(.levelOpened(id: newLevel.id, frozen: newLevel.frozen))
         hintsShown = []
         hint = nil
         current = .zero
@@ -638,6 +639,7 @@ final class GameController: ObservableObject, TouchInput {
             afterBreak(at: point, shards: field.breakOut(index, time: now))
         } else {
             field.strike(at: point, ring: CGFloat.random(in: 110...190), time: now)
+            Tutorial.shared.note(.iceStruck(at: point))
             haptics.iceStrike()
             sound.iceCrack(x: Float(point.x / viewSize.width))
             renderer?.addSplat(at: point, in: viewSize, radius: 6, amplitude: -0.04)
@@ -649,6 +651,7 @@ final class GameController: ObservableObject, TouchInput {
     /// gives way: one floating chunk per shard, sized to the shard it was.
     private func afterBreak(at point: CGPoint, shards: [(centre: CGPoint, area: CGFloat)]) {
         guard let field = iceField, !shards.isEmpty else { return }
+        Tutorial.shared.note(.iceBroke)
         let total = shards.reduce(CGFloat(0)) { $0 + $1.area }
         haptics.iceBreak(size: Float(min(1, total / 60000)))
         sound.iceBreak(x: Float(point.x / viewSize.width), size: Float(min(1, total / 60000)))
@@ -1197,6 +1200,8 @@ final class GameController: ObservableObject, TouchInput {
         }
         // A leaping fish is a painting in the air, not a cut-out on the water.
         over += garden.leapSprites()
+        // The first walk's ring of light, where the next tap should land.
+        if let at = Tutorial.shared.spot(for: .level).flatMap(tutorialPoint) { over += Tutorial.shared.ring(at: at, time: elapsed) }
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
         over += garden.skySprites()
         // The moon in the water on a still pond: light, not paper.
@@ -1523,7 +1528,8 @@ final class GameController: ObservableObject, TouchInput {
                               chime: chimeState,
                               pool: poolState,
                               targetWoke: targets.allSatisfy(\.woke),
-                              sinceWake: elapsed - lastWakeAt)
+                              sinceWake: elapsed - lastWakeAt,
+                              calledKoi: garden.calledKoi)
         evaluator.update(goals: goals, ctx: ctx)
         // Stillness rises with the wait and falls away softly at a touch.
         let still = evaluator.stillness(of: goals)
@@ -1542,6 +1548,8 @@ final class GameController: ObservableObject, TouchInput {
 
     private func updateHints() {
         guard phase == .playing else { return }
+        // The first walk is saying what to do; a hint would say it twice.
+        guard Tutorial.shared.lines[.level] == nil else { return }
         if let h = level.hint, !touchedYet, elapsed > 4.0 { show(h) }
         // Once, a little way in: how to look at the pond from the side.
         if elapsed > 30, touchedYet, !HintMemory.seen(.tilt), hint == nil { show(.tilt) }
@@ -2191,6 +2199,7 @@ final class GameController: ObservableObject, TouchInput {
             // Ice already wiped feels glassy; frost is grainy.
             let grain = max(0, 1 - field.scuffValue(at: point) * 0.8)
             haptics.slide(speed: t.speed, grain: grain, travel: Float(step))
+            Tutorial.shared.note(.iceSlid(step))
             t.sinceStamp += step
             if t.sinceStamp >= 4 {
                 t.sinceStamp = 0
@@ -2289,6 +2298,7 @@ final class GameController: ObservableObject, TouchInput {
     private func finish() {
         phase = .celebrating
         winNow = false
+        Tutorial.shared.note(.levelFinished)
         iceField?.sinkAll(time: renderer?.clock ?? 0)
         garden.releaseCall()
         calling.removeAll()
@@ -2375,14 +2385,16 @@ final class GameController: ObservableObject, TouchInput {
     private static func golden(_ base: FloorLook, by t: Float) -> FloorLook {
         var look = base
         func warm(_ c: SIMD3<Float>) -> SIMD3<Float> {
-            let gold = c * SIMD3(1.45, 1.22, 0.62) + SIMD3(0.16, 0.11, 0.0)
-            return simd_mix(c, gold, SIMD3(repeating: t * 0.75))
+            // A warm breath of light on the bed, not a wash: the pond must
+            // still look like itself while the prize comes up.
+            let gold = c * SIMD3(1.25, 1.15, 0.85) + SIMD3(0.06, 0.04, 0.0)
+            return simd_mix(c, gold, SIMD3(repeating: t * 0.35))
         }
         look.deep = warm(base.deep)
         look.mid = warm(base.mid)
         look.shallow = warm(base.shallow)
-        look.waterTint = simd_mix(base.waterTint, SIMD3(1.0, 0.90, 0.66), SIMD3(repeating: t))
-        look.waterTintStrength = base.waterTintStrength + 0.25 * t
+        look.waterTint = simd_mix(base.waterTint, SIMD3(1.0, 0.92, 0.72), SIMD3(repeating: t * 0.5))
+        look.waterTintStrength = base.waterTintStrength + 0.08 * t
         return look
     }
 
@@ -2401,6 +2413,16 @@ final class GameController: ObservableObject, TouchInput {
         let p = worldPoint(CGPoint(x: screenSize.width * f.x, y: screenSize.height * f.y))
         return CGPoint(x: min(max(p.x, 50), viewSize.width - 50),
                        y: min(max(p.y, 50), viewSize.height - 50))
+    }
+
+    /// Where the first walk's ring goes in this pond: the middle of the
+    /// sheet that is left, or inside the ring the last strike opened.
+    private func tutorialPoint(_ spot: Tutorial.Spot) -> CGPoint? {
+        switch spot {
+        case .iceCentre: return iceField?.nearestIcePoint(to: worldAt(CGPoint(x: 0.5, y: 0.5)), range: 2000)
+        case .iceAt(let p): return (iceField?.ice(at: p) ?? 0) > 0.5 ? p : iceField?.nearestIcePoint(to: p, range: 2000)
+        default: return nil
+        }
     }
 
     /// The level opens: its name and what it is for, low in the pond.
@@ -2481,7 +2503,7 @@ final class GameController: ObservableObject, TouchInput {
             if left == 1 { return "One seed still to root" }
             return "\(Words.count(left, capitalised: true)) seeds still to root"
         case .callKoi:
-            return "The koi is still below"
+            return "Hold a finger on the water and the koi will rise to it"
         case .koiOpensBud:
             return "The bud waits for the koi"
         case .leadShoal:
@@ -2536,6 +2558,7 @@ final class GameController: ObservableObject, TouchInput {
     /// The pond is clear: four words and two ways on.
     func showCompletion() {
         withAnimation(Motion.scrim) { presented = .complete }
+        Tutorial.shared.note(.completionShown)
     }
 
     /// Arriving is savoured; leaving is instant.
@@ -2824,7 +2847,9 @@ final class GoalEvaluator {
             case .rootSeeds(_, let n):
                 st.done = ctx.rootedSeeds >= n
             case .callKoi(let at, let r):
-                let near = ctx.surfacedKoi.contains { hypot($0.x - at.x, $0.y - at.y) < r }
+                // A koi that has come up to the finger anywhere counts, as
+                // does one surfaced where the level asked for it.
+                let near = ctx.calledKoi != nil || ctx.surfacedKoi.contains { hypot($0.x - at.x, $0.y - at.y) < r }
                 st.held = near ? st.held + ctx.dt : 0
                 st.done = st.held >= GoalTuning.callHold
             case .koiOpensBud:

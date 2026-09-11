@@ -6,6 +6,7 @@ import SwiftUI
 struct LevelView: View {
 
     @ObservedObject var controller: GameController
+    @ObservedObject private var tutorial = Tutorial.shared
     let onExit: () -> Void
 
     var body: some View {
@@ -16,6 +17,7 @@ struct LevelView: View {
             words
             hud
             menu
+            walk
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
@@ -23,16 +25,40 @@ struct LevelView: View {
         .onAppear { controller.onExit = onExit }
     }
 
-    /// The line that opens the level, what is left, a hint.
+    /// The line that opens the level, what is left, a hint. The first
+    /// walk's line stands in for them all while it has one.
     @ViewBuilder private var words: some View {
         ZStack {
-            if let w = controller.words, controller.presented == nil {
+            if let w = controller.words, controller.presented == nil, tutorial.lines[.level] == nil {
                 PondVeil(words: w)
                     .transition(.opacity)
                     .id(w)
             }
         }
         .animation(Motion.scrim, value: controller.words)
+        .allowsHitTesting(false)
+    }
+
+    /// The first walk: its line in the same veil, over the completion too,
+    /// and its ring on the completion's word for the player's own pond.
+    @ViewBuilder private var walk: some View {
+        ZStack {
+            if let w = tutorial.lines[.level], controller.presented == nil || controller.presented == .complete {
+                PondVeil(words: w)
+                    .transition(.opacity)
+                    .id(w)
+            }
+            if controller.presented == .complete {
+                // The completion lays its words out in the safe area, so
+                // this reader keeps to it too: "Your pond" sits a little
+                // right of centre, between the longer word and the shorter.
+                GeometryReader { g in
+                    TutorialPulse(on: tutorial.spot(for: .level) == .yourPond)
+                        .position(x: g.size.width / 2 + 10, y: g.size.height * 0.744)
+                }
+            }
+        }
+        .animation(Motion.scrim, value: tutorial.lines)
         .allowsHitTesting(false)
     }
 

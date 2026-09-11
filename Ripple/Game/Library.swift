@@ -258,7 +258,13 @@ struct LevelSpec: Identifiable {
     var mosaicRadius: CGFloat = 0
 
     /// The line shown when the level opens: every goal's own line, in order.
-    var goal: String { goals.map(\.text).joined(separator: " ") }
+    /// The goal sentence. A frozen pond says the ice comes first, so the
+    /// player knows the order of things.
+    var goal: String {
+        let line = goals.map(\.text).joined(separator: " ")
+        return frozen && !goals.contains(where: { if case .breakIce = $0.kind { return true }; return false })
+            ? "Break through the ice first. " + line : line
+    }
 
     func has(_ test: (GoalKind) -> Bool) -> Bool { goals.contains { test($0.kind) } }
     var wantsSilt: Bool { has { if case .clearSilt = $0 { return true }; return false } }
@@ -466,7 +472,7 @@ enum Library {
         return (rocks, (CGPoint(x: x0 + inset, y: y), CGPoint(x: x1 - inset, y: y)))
     }
 
-    private static let callLine = "Call the koi up with a held finger."
+    private static let callLine = "Then hold a finger still on the open water until the koi rises to it."
     private static let shoalLine = "Lead the shoal through the gap."
 
     // MARK: Winter
