@@ -152,8 +152,10 @@ final class DigField {
                 guard r < 1 else { continue }
                 var d = 1 - r * r
                 d = d * d * (3 - 2 * d)
-                // A shelf on the near left, where the bed stays lily deep.
-                if dx < -0.25, dy > 0 { d = min(d, 0.42) }
+                // A shelf on the near left where the bed stays lily deep,
+                // its edge a curve, not a step.
+                let shelf = smoothstepF(-0.15, -0.45, dx) * smoothstepF(-0.1, 0.25, dy)
+                d = min(d, 1 - shelf * 0.58)
                 dug[y * width + x] = max(dug[y * width + x], min(1, d * 1.15))
             }
         }
@@ -233,4 +235,10 @@ final class DigField {
         }
         dirtyRect = (0, 0, width - 1, height - 1)
     }
+}
+
+
+private func smoothstepF(_ a: Float, _ b: Float, _ x: Float) -> Float {
+    let t = max(0, min(1, (x - a) / (b - a)))
+    return t * t * (3 - 2 * t)
 }

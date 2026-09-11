@@ -331,7 +331,7 @@ final class RewardReveal {
         if wordsAlpha > 0.01 {
             let key = wordsTexture()
             let t = textures.size(key)
-            let h: CGFloat = 46 * 1.9
+            let h: CGFloat = 56 * 1.9
             over.append(Sprite(key, at: wordsAt, size: CGSize(width: h * t.width / max(1, t.height), height: h),
                                mode: .floater, alpha: wordsAlpha, z: 0.08))
         }
@@ -354,7 +354,9 @@ final class RewardReveal {
 
     /// Points across the item is shown at: its own size, kept where a mote
     /// still reads and a tree still fits in the ring.
-    private var shownSize: CGFloat { min(150, max(56, award.item.size)) }
+    /// Shown big, whatever it will be in the pond: the reveal is the prize,
+    /// and it fills most of the ring.
+    private var shownSize: CGFloat { min(150, max(118, award.item.size)) }
 
     /// The item as a painting, or nil if it is a body. A koi is its painting,
     /// a feature its sprite if one is in the bundle, else a stone body.

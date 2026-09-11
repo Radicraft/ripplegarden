@@ -338,7 +338,19 @@ final class PlotController: ObservableObject, TouchInput {
     func depth(at p: CGPoint) -> Float {
         guard let dig else { return DepthPainter.dryDepth }
         let dug = dig.depth(at: p)
-        return max(DepthPainter.dryDepth + dug * PlotController.turnedEarth, dug * state.water)
+        return PlotController.effectiveDepth(dug: dug, water: state.water)
+    }
+
+    /// The bed the sim reads from what has been dug and how full the hollow
+    /// is. The edge of the water is kept crisp: where there is water at all
+    /// it is at least ankle deep, so the shoreline is a line and not a wide
+    /// wet smear over the brush's soft rim.
+    static func effectiveDepth(dug: Float, water: Float) -> Float {
+        let turned = DepthPainter.dryDepth + dug * turnedEarth
+        let wet = dug * water
+        guard wet > 0.02 else { return turned }
+        let filled = 0.13 + 0.87 * min(1, (wet - 0.02) / 0.98)
+        return max(turned, filled)
     }
 
     private func isWater(_ p: CGPoint) -> Bool { depth(at: p) >= PlotController.dryLine }
@@ -347,13 +359,12 @@ final class PlotController: ObservableObject, TouchInput {
         var map = [Float](repeating: DepthPainter.dryDepth, count: w * h)
         guard let dig, viewSize.width > 0 else { return map }
         let water = state.water
-        let dry = DepthPainter.dryDepth
         let sx = viewSize.width / CGFloat(w), sy = viewSize.height / CGFloat(h)
         for y in 0..<h {
             let py = (CGFloat(y) + 0.5) * sy
             for x in 0..<w {
                 let dug = dig.depth(at: CGPoint(x: (CGFloat(x) + 0.5) * sx, y: py))
-                map[y * w + x] = max(dry + dug * PlotController.turnedEarth, dug * water)
+                map[y * w + x] = PlotController.effectiveDepth(dug: dug, water: water)
             }
         }
         return map
