@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 // ---------------------------------------------------------------------------
 // What the player owns: the items won from the catalogue, the petal purse
@@ -19,6 +20,10 @@ final class Inventory: ObservableObject {
     /// Wins since the last rare or better, and since the last super rare.
     @Published private(set) var winsSinceRare: Int = 0
     @Published private(set) var winsSinceGold: Int = 0
+    /// The plots along the bank that may be dug: 0 always, the rest bought.
+    @Published private(set) var plotsOwned: Set<Int> = [0]
+    /// Item id to the tint it wears, for the ones a colourway was bought for.
+    @Published private(set) var colourways: [String: String] = [:]
 
     private let store: ProgressStore
 
@@ -41,6 +46,8 @@ final class Inventory: ObservableObject {
         petals = w.petals
         winsSinceRare = w.sinceRare
         winsSinceGold = w.sinceGold
+        plotsOwned = store.ownedPlots()
+        colourways = store.colourways()
     }
 
     // MARK: - Winning
@@ -112,6 +119,77 @@ final class Inventory: ObservableObject {
     func owns(_ id: String) -> Bool { ownedIDs.contains(id) }
 
     func count(of id: String) -> Int { owned.first { $0.id == id }?.count ?? 0 }
+
+    // MARK: - Plots along the bank
+
+    /// How many plots the bank has room for, and what each costs. Plot 0
+    /// is free; the price is in petals, never money.
+    static let plotCount = 3
+    static let plotPrices: [Int] = [0, 120, 300]
+
+    static func plotPrice(_ index: Int) -> Int {
+        index >= 0 && index < plotPrices.count ? plotPrices[index] : plotPrices.last ?? 0
+    }
+
+    func ownsPlot(_ index: Int) -> Bool { plotsOwned.contains(index) }
+
+    /// The plots owned, in order along the bank.
+    var ownedPlotIndices: [Int] { plotsOwned.sorted() }
+
+    /// The next plot that could be bought, or nil when the bank is full.
+    var nextPlotIndex: Int? {
+        let next = (plotsOwned.max() ?? 0) + 1
+        return next < Inventory.plotCount ? next : nil
+    }
+
+    /// Pays for a plot and records the deed. False and nothing taken if
+    /// the purse is short, the plot is owned, or the bank has no room.
+    @discardableResult
+    func buyPlot(_ index: Int) -> Bool {
+        guard index > 0, index < Inventory.plotCount, !plotsOwned.contains(index) else { return false }
+        guard spend(Inventory.plotPrice(index)) else { return false }
+        plotsOwned.insert(index)
+        store.addPlotDeed(index: index)
+        return true
+    }
+
+    // MARK: - Colourways
+
+    /// The tints a thing can be bought in, by name, and what each costs.
+    /// Independent of the catalogue: any item can wear any of these.
+    static let tintNames = ["indigo", "gold", "white", "crimson"]
+    static let colourwayPrice = 40
+
+    /// The tint as a multiplier the plot lays over the sprite's own colour.
+    /// A name it does not know, or none, is plain white: no change.
+    static func tintColour(named name: String?) -> SIMD4<Float> {
+        switch name {
+        case "indigo": return [0.55, 0.62, 0.98, 1]
+        case "gold": return [1.0, 0.84, 0.45, 1]
+        case "white": return [1.05, 1.05, 1.02, 1]
+        case "crimson": return [1.0, 0.42, 0.40, 1]
+        default: return [1, 1, 1, 1]
+        }
+    }
+
+    /// Buys a tint for an item. A second colourway for the same item costs
+    /// again and replaces the first. False and nothing taken if the tint is
+    /// not one offered, the item is not owned, or the purse is short.
+    @discardableResult
+    func buyColourway(item: String, tint: String) -> Bool {
+        guard Inventory.tintNames.contains(tint), ownedIDs.contains(item) else { return false }
+        guard colourways[item] != tint else { return true }
+        guard spend(Inventory.colourwayPrice) else { return false }
+        colourways[item] = tint
+        store.setColourway(item: item, tint: tint)
+        return true
+    }
+
+    /// The multiplier the plot puts on an item's sprite: its bought tint,
+    /// or white for the item's own colours.
+    func tint(for item: String) -> SIMD4<Float> {
+        Inventory.tintColour(named: colourways[item])
+    }
 
     private func saveWallet() {
         store.setWallet(petals: petals, sinceRare: winsSinceRare, sinceGold: winsSinceGold)

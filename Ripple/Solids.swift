@@ -27,7 +27,7 @@ struct SolidInstance {
     var tilt: SIMD2<Float>
     var length: Float            // points
     var radius: Float            // points
-    var shape: UInt32            // 0 can, 1 bottle, 2 stone, 3 log, 4 disc, 5 koi, 6 bamboo
+    var shape: UInt32            // 0 can, 1 bottle, 2 stone, 3 log, 4 disc, 5 koi, 6 bamboo, 7 sail
     var alpha: Float
     var colourA: SIMD4<Float>    // main body colour
     var colourB: SIMD4<Float>    // band / cap / moss / cut wood colour
@@ -537,6 +537,69 @@ enum SolidMesh {
         return (verts, idx)
     }
 
+    /// A sail for the toy boat on the plot: a thin triangle of cloth
+    /// standing on its foot, the mast at x -0.5 and the boom running to
+    /// x 0.5 along the instance's yaw, the head as high as the instance's
+    /// `radius`. It bellies out to +y a little, the way a sail fills, so the
+    /// toon steps catch a curve rather than a flat card. A thin mast stands
+    /// at the luff. Like the bamboo it has no fragment branch of its own,
+    /// so it falls through to the bottle's, where `part` 3 paints `colourB`
+    /// opaque: every vertex is part 3 and the sail is the colour of paper.
+    static func sail() -> ([SolidVertex], [UInt16]) {
+        var verts: [SolidVertex] = []
+        var idx: [UInt16] = []
+        let cols = 8, rows = 4
+        let belly: Float = 0.16
+
+        func point(_ u: Float, _ v: Float) -> SIMD3<Float> {
+            SIMD3(u - 0.5, belly * sin(u * .pi) * sin(v * .pi), (1 - u) * v)
+        }
+        for r in 0...rows {
+            let v = Float(r) / Float(rows)
+            for c in 0...cols {
+                let u = Float(c) / Float(cols)
+                let p = point(u, v)
+                // The normal from the cloth's own slopes either way.
+                let e: Float = 0.01
+                let du = (point(min(1, u + e), v) - point(max(0, u - e), v))
+                let dv = (point(u, min(1, v + e)) - point(u, max(0, v - e)))
+                var n = simd_cross(du, dv)
+                let len = simd_length(n)
+                n = len > 1e-6 ? n / len : SIMD3(0, 1, 0)
+                if n.y < 0 { n = -n }
+                verts.append(SolidVertex(px: p.x, py: p.y, pz: p.z, nx: n.x, ny: n.y, nz: n.z,
+                                         v: v, ang: u * 2 * .pi, part: 3, rad: 1))
+            }
+        }
+        for r in 0..<rows {
+            for c in 0..<cols {
+                let a = UInt16(r * (cols + 1) + c), b = a + 1
+                let d = UInt16((r + 1) * (cols + 1) + c), f = d + 1
+                idx += [a, d, b, b, d, f]
+            }
+        }
+
+        // The mast: a thin tube up the luff, a hair past the head and below
+        // the foot so it is seen to stand on the deck.
+        let mastSegments = 6
+        let mastR: Float = 0.035
+        let mastBase = UInt16(verts.count)
+        for (k, z) in [Float(-0.06), 1.08].enumerated() {
+            for s in 0...mastSegments {
+                let a = Float(s) / Float(mastSegments) * 2 * .pi
+                let cy = cos(a), cz = sin(a)
+                verts.append(SolidVertex(px: -0.5 + cy * mastR, py: cz * mastR, pz: z,
+                                         nx: cy, ny: cz, nz: 0, v: Float(k), ang: a, part: 3, rad: 1))
+            }
+        }
+        for s in 0..<mastSegments {
+            let a = mastBase + UInt16(s), b = a + 1
+            let c = mastBase + UInt16(mastSegments + 1 + s), d = c + 1
+            idx += [a, c, b, b, c, d]
+        }
+        return (verts, idx)
+    }
+
     /// Value noise round a circle: `period` samples spread over the turn and
     /// smoothly joined, so the seam meets itself.
     private static func ringNoise(_ ang: Float, period: Int, seed: UInt32) -> Float {
@@ -680,7 +743,7 @@ final class SolidBatch {
         var idx: [UInt16] = []
         var built: [(offset: Int, count: Int, baseVertex: Int)] = []
         for (v, i) in [SolidMesh.can(), SolidMesh.bottle(), SolidMesh.stone(), SolidMesh.log(),
-                       SolidMesh.disc(), SolidMesh.koi(), SolidMesh.bamboo()] {
+                       SolidMesh.disc(), SolidMesh.koi(), SolidMesh.bamboo(), SolidMesh.sail()] {
             built.append((offset: idx.count * MemoryLayout<UInt16>.stride, count: i.count, baseVertex: verts.count))
             verts += v
             idx += i

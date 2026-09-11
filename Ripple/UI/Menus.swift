@@ -20,6 +20,8 @@ enum MenuScreen: Equatable {
 struct PondWords: Equatable, Hashable {
     var title: String?
     var line: String
+    /// The small line over the title when a level opens: "Winter, one".
+    var chapter: String? = nil
 }
 
 /// Arriving is savoured, leaving is instant.
@@ -100,6 +102,45 @@ private extension Row where Trailing == EmptyView {
     }
 }
 
+/// A switch in the menu's own language: a short hairline with a small paper
+/// disc on it, at the left for off and the right for on, the line turning
+/// vermilion when it is on. No pill, no tint, no glass. The target is 44pt
+/// tall and the whole row takes the tap as well.
+private struct Switch: View {
+    let label: String
+    @Binding var isOn: Bool
+    /// The tick of surface tension the menu gives every press.
+    var press: () -> Void = {}
+
+    private let track: CGFloat = 40
+    private let disc: CGFloat = 12
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Rectangle()
+                .fill(isOn ? Ink.vermilion : Ink.paper.opacity(0.38))
+                .frame(width: track, height: 1)
+            Circle()
+                .fill(Ink.paper)
+                .frame(width: disc, height: disc)
+                .offset(x: isOn ? track - disc : 0)
+        }
+        .frame(width: track + 16, height: 44)
+        .contentShape(Rectangle())
+        .onTapGesture { flip() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { flip() }
+    }
+
+    func flip() {
+        press()
+        withAnimation(Motion.words) { isOn.toggle() }
+    }
+}
+
 /// A menu over the pond. Both screens build the same thing.
 struct MenuLayer: View {
 
@@ -150,13 +191,13 @@ struct MenuLayer: View {
     private var settingsRows: some View {
         VStack(spacing: 0) {
             rise(0) {
-                Row(label: "Sound", closing: false) {
-                    Toggle("", isOn: $settings.soundOn).labelsHidden().tint(Ink.vermilion)
+                Row(label: "Sound", closing: false, press: { flip($settings.soundOn) }) {
+                    Switch(label: "Sound", isOn: $settings.soundOn, press: pressed)
                 }
             }
             rise(1) {
-                Row(label: "Haptics", closing: store.isSubscribed) {
-                    Toggle("", isOn: $settings.hapticsOn).labelsHidden().tint(Ink.vermilion)
+                Row(label: "Haptics", closing: store.isSubscribed, press: { flip($settings.hapticsOn) }) {
+                    Switch(label: "Haptics", isOn: $settings.hapticsOn, press: pressed)
                 }
             }
             if !store.isSubscribed {
@@ -172,6 +213,12 @@ struct MenuLayer: View {
                     .padding(.top, 26)
             }
         }
+    }
+
+    /// A tap on the row's words turns its switch too.
+    private func flip(_ value: Binding<Bool>) {
+        pressed()
+        withAnimation(Motion.words) { value.wrappedValue.toggle() }
     }
 
     // MARK: - Seasons pass
@@ -335,6 +382,12 @@ struct PondVeil: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let chapter = words.chapter {
+                Text(chapter)
+                    .font(Ink.serif(Size.legal))
+                    .tracking(0.6)
+                    .foregroundStyle(Ink.paper.opacity(Ink.dim))
+            }
             if let title = words.title {
                 Text(title)
                     .font(Ink.serif(Size.word))

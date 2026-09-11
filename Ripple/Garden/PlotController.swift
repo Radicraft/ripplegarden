@@ -21,7 +21,8 @@ final class PlotController: ObservableObject, TouchInput {
 
     static let worldScale = CGSize(width: 1.4, height: 1.4)
     static let gridLongSide = Tuning.gridLongSide
-    static let plotIndex = 0
+    /// Which of the player's plots this is; the pager sets it before the first frame.
+    var plotIndex = 0
     /// Depth the water shader reads as dry ground below.
     static let dryLine: Float = 0.11
 
@@ -62,7 +63,6 @@ final class PlotController: ObservableObject, TouchInput {
 
     /// Everything put down, alive.
     private var live: [LiveItem] = []
-    private var fish: [PlotFish] = []
     private var petalsAfloat: [Debris] = []
     private var pellets: [Debris] = []
     private var grains: [Grain] = []
@@ -73,6 +73,61 @@ final class PlotController: ObservableObject, TouchInput {
     /// Two fingers on one thing: a twist turns it, a pinch sizes it.
     private var pair: Pair?
     private var probeOrder: [Debris] = []
+    /// The koi are being called to a pellet rather than a finger.
+    private var pelletCall = false
+
+    /// The season the real calendar says it is: its art, its bank painting
+    /// and its air. Winter is December to February and so on round.
+    private let season: Season
+
+    // MARK: The view
+
+    /// Zoom and centre, eased toward what the fingers asked for.
+    private var zoomTarget: Float = 0.76
+    private var centreTarget = SIMD2<Float>(0, 0)
+    /// Two fingers on the water with nothing held: a pinch zooms, a drag
+    /// the same way tilts, as in a level.
+    private struct CameraPair {
+        var ids: [Int]
+        var startDistance: CGFloat
+        var startZoom: Float
+        var anchorWorld: SIMD2<Float>
+        var active = false
+        var tilting = false
+        var last: [Int: CGPoint] = [:]
+        var travel: [Int: CGPoint] = [:]
+        var lastAt: TimeInterval = 0
+    }
+    private var cameraPair: CameraPair?
+
+    // MARK: The weather
+
+    /// A gentle wind that changes its mind every twenty seconds, in points
+    /// per second of drift for a light thing on the water, eased so the
+    /// boats swing round rather than jump.
+    private var breeze = SIMD2<Float>(0, 0)
+    private var breezeTarget = SIMD2<Float>(0, 0)
+    private var nextBreezeAt: Float = 0
+    /// A gust two fingers threw: a line of water marching across the pond
+    /// and a shove on everything with a sail.
+    private struct Gust {
+        var direction: SIMD2<Float>
+        var origin: CGPoint
+        var length: CGFloat
+        var age: Float = 0
+    }
+    private var gust: Gust?
+    private var lastGustAt: TimeInterval = 0
+    /// Snow, when the sky item is on: flakes falling to land on the water.
+    private var snow: [FallingPetal] = []
+    private var snowAccumulator: Float = 0
+    /// Fireflies after dusk, when the sky item is on.
+    private struct Firefly {
+        var position: CGPoint
+        var drift: CGVector
+        var phase: Float
+    }
+    private var fireflies: [Firefly] = []
 
     // MARK: Touch
 
@@ -102,6 +157,12 @@ final class PlotController: ObservableObject, TouchInput {
         var isWake = false
         var sinceSplat: CGFloat = 0
         var sounding = false
+        /// Which way the finger is going, for reading two of them as a gust.
+        var heading: SIMD2<Float>?
+        /// Thrown as a gust: the water is done with it.
+        var spent = false
+        /// It has been calling a koi: the call is let go when it lifts.
+        var calling = false
     }
     private final class Carry {
         let item: CatalogueItem
@@ -137,13 +198,29 @@ final class PlotController: ObservableObject, TouchInput {
     private var saveAt: TimeInterval?
     private let sluiceSoundID = -8
 
+    /// The season the calendar says: December to February winter, then
+    /// three months each of spring, summer and autumn.
+    static func seasonNow(month: Int = Calendar.current.component(.month, from: Date())) -> Season {
+        let id: String
+        switch month {
+        case 3...5: id = "spring"
+        case 6...8: id = "summer"
+        case 9...11: id = "autumn"
+        default: id = "winter"
+        }
+        return Library.season(id: id) ?? Library.spring
+    }
+
     init() {
-        // Spring's air over the plot. Nothing the garden would lay out on
-        // its own: no reeds, flowers, weeds, fish or small life, and no
+        // The season's air over the plot. Nothing the garden would lay out
+        // on its own: no reeds, flowers, weeds, fish or small life, and no
         // stones in the bed either, since those are drawn into the floor
         // wherever they fall and the plot is bare earth until the player
-        // digs. The branches, the clouds and the dragonfly stay.
-        var a = Library.spring.woodblock
+        // digs. The branches, the clouds and the dragonfly stay. Snow falls
+        // only when the snow item is on, whatever the month.
+        season = PlotController.seasonNow()
+        var a = season.woodblock
+        a.ambientFall = nil
         a.koi = []
         a.shoal = []
         a.reeds = []
@@ -175,8 +252,8 @@ final class PlotController: ObservableObject, TouchInput {
         renderer.floorLook = look
         renderer.setSilt(wholePond: false)
         renderer.setFilm(on: false)
-        // The whole world wears spring's bank, as a level does.
-        let painting = "bank_\(Library.spring.id)"
+        // The whole world wears the season's bank, as a level does.
+        let painting = "bank_\(season.id)"
         renderer.bankPaintings = [painting, painting, painting, painting]
         renderer.bank = SIMD3(1, 1, 1)
         renderer.depthPainter = { [weak self] w, h in
@@ -196,7 +273,22 @@ final class PlotController: ObservableObject, TouchInput {
             self?.sound.swell()
             self?.haptics.swell()
         }
-        sound.startAmbience(named: "amb_\(Library.spring.id)")
+        sound.startAmbience(named: "amb_\(season.id)")
+    }
+
+    /// The season's air, with the night under it after dusk and a little
+    /// rain's hush when the mist is up. Set every frame; the director eases
+    /// each layer itself.
+    private func blendAir() {
+        guard let renderer else { return }
+        var shares: [String: Float] = ["amb_\(season.id)": 1]
+        let evening = max(0, min(1, (renderer.dayPhase - 0.68) / 0.12))
+        if evening > 0.01 {
+            shares["amb_night"] = evening * 0.8
+            shares["amb_\(season.id)"] = 1 - evening * 0.5
+        }
+        if state.sky.contains("mist") { shares["amb_rain_light"] = 0.25 }
+        sound.blendAmbience(shares)
     }
 
     /// On the way out: the plot is written now, not two seconds from now.
@@ -220,6 +312,9 @@ final class PlotController: ObservableObject, TouchInput {
         }
         touches.removeAll()
         screenTouches.removeAll()
+        cameraPair = nil
+        garden.releaseCall()
+        pelletCall = false
         if let c = carry, let l = c.lifted {
             l.lifted = false
             wake(l)
@@ -243,12 +338,12 @@ final class PlotController: ObservableObject, TouchInput {
         trayStonePoint = renderer.worldPoint(screen: CGPoint(x: screenSize.width - 30, y: screenSize.height - 100))
 
         // What was saved, if anything.
-        let saved = progress.plot(index: PlotController.plotIndex)
+        let saved = progress.plot(index: plotIndex)
         firstVisit = saved == nil
         state = saved ?? PlotState()
         dig = DigField(state: state, world: viewSize) ?? DigField(world: viewSize)
         sluice = state.sluiceOpen ? .filling : .closed
-        if args.contains("-plotDug") || args.contains("-plotFull") {
+        if plotIndex == 0, args.contains("-plotDug") || args.contains("-plotFull") {
             if dig?.isEmpty ?? true { dig?.digDemoHollow() }
             state.water = 1
             state.sluiceOpen = false
@@ -258,17 +353,26 @@ final class PlotController: ObservableObject, TouchInput {
 
         garden.depthAt = { [weak self] p in self?.depth(at: p) ?? 1 }
         garden.groundAt = { [weak self] p in self?.depth(at: p) ?? 1 }
+        // The fish keep to the water the player dug.
+        garden.confineToWater = true
         garden.configure(art: art, size: viewSize, bloomStage: 3)
         garden.mistAmount = state.sky.contains("mist") ? 1.0 : 0.3
+        zoomTarget = 0.76
+        centreTarget = SIMD2(Float(viewSize.width) / 2, Float(viewSize.height) / 2)
+        cameraPair = nil
+        gust = nil
+        snow = []
+        fireflies = []
+        nextBreezeAt = 0
 
         // Everything placed comes back, and the fish that were let go.
         live = []
-        fish = []
         petalsAfloat = []
         pellets = []
         grains = []
         carry = nil
         pair = nil
+        pelletCall = false
         touches.removeAll()
         screenTouches.removeAll()
         for p in state.placed {
@@ -281,7 +385,7 @@ final class PlotController: ObservableObject, TouchInput {
             petalsAfloat.append(makeFloater(sprite: art.petalParticle, at: p, radius: 8, light: true))
         }
         catchUpPetals(since: state.lastVisit)
-        if args.contains("-plotFull") { demoPlace() }
+        if plotIndex == 0, args.contains("-plotFull") { demoPlace() }
         if firstVisit {
             words = PondWords(title: nil, line: "Drag on the earth to dig. Tap the stone to let the water in.")
             wordsUntil = elapsed + 6
@@ -291,12 +395,14 @@ final class PlotController: ObservableObject, TouchInput {
         placed = true
     }
 
-    /// Ten things put down for a screenshot: reeds and blossom along the
-    /// shore, pads on the shelf, a stone, a log, two koi and the bowl.
+    /// Things put down for a screenshot: reeds and blossom along the shore,
+    /// pads on the shelf, a stone, a log, two koi and a shoal, the toys and
+    /// the bowl.
     private func demoPlace() {
         let wanted = ["reeds-spring", "reeds-spring-tall", "blossom-spring-1", "blossom-spring-2", "fern",
                       "lilypad-1", "lilypad-2", "lotus", "stone-medium", "driftwood-log",
-                      "koi-orange", "koi-kohaku", "food-bowl"]
+                      "koi-orange", "koi-kohaku", "shoal-minnow", "food-bowl",
+                      "paper-boat", "sailing-boat", "floating-lantern", "tea-bowl"]
         inventory.grant(wanted, level: "grant")
         var rng = SystemRandomNumberGenerator()
         for id in wanted where !live.contains(where: { $0.item.id == id }) {
@@ -382,9 +488,12 @@ final class PlotController: ObservableObject, TouchInput {
             place()
         }
         guard placed, let dig else { return }
-        renderer.zoom += (0.76 - renderer.zoom) * min(1, dt * 8)
-        let centre = SIMD2(Float(viewSize.width) / 2, Float(viewSize.height) / 2)
-        renderer.viewCentre += (centre - renderer.viewCentre) * min(1, dt * 8)
+        // Ease the view toward where the fingers want it, and keep it on the plot.
+        renderer.zoom += (zoomTarget - renderer.zoom) * min(1, dt * 8)
+        let halfW = Float(screenSize.width) / renderer.zoom / 2, halfH = Float(screenSize.height) / renderer.zoom / 2
+        centreTarget.x = max(halfW, min(Float(viewSize.width) - halfW, centreTarget.x))
+        centreTarget.y = max(halfH, min(Float(viewSize.height) - halfH, centreTarget.y))
+        renderer.viewCentre += (centreTarget - renderer.viewCentre) * min(1, dt * 8)
 
         if words != nil, elapsed > wordsUntil { withAnimation(Motion.words) { words = nil } }
 
@@ -400,15 +509,17 @@ final class PlotController: ObservableObject, TouchInput {
             repaintAt = elapsed + 0.2
         }
 
-        updateTouches(now: now)
+        updateTouches(now: now, dt: dt)
         updateGrowth(now: now)
         updatePetals(now: now)
+        updateWeather(dt: dt, now: now)
 
         // The floaters read the water where they lie.
         let samples = renderer.latestSamples()
         var byID: [Int: FieldSample] = [:]
         for (i, d) in probeOrder.enumerated() where i < samples.count { byID[d.id] = samples[i] }
         let floaters = petalsAfloat + pellets + live.compactMap(\.body)
+        let wind = windNow()
         for d in floaters {
             let was = d.position
             DebrisPhysics.integrate(d, sample: byID[d.id], current: .zero, dt: dt)
@@ -416,28 +527,52 @@ final class PlotController: ObservableObject, TouchInput {
             if !isWater(d.position) { d.position = was; d.velocity = .zero }
             keepOffWalls(d)
         }
+        // The boats feel the wind on their sails and turn their bows into
+        // their own motion, the way a boat with way on lies.
+        for l in live where l.sail > 0 {
+            guard let d = l.body else { continue }
+            d.velocity += wind * l.sail * dt
+            d.spin = 0
+            let sp = simd_length(d.velocity)
+            if sp > 3 {
+                var diff = CGFloat(atan2(d.velocity.y, d.velocity.x)) - d.angle
+                while diff > .pi { diff -= 2 * .pi }
+                while diff < -.pi { diff += 2 * .pi }
+                d.angle += diff * CGFloat(min(1, dt * (0.6 + Float(sp) * 0.03)))
+            }
+        }
         DebrisPhysics.separate(floaters, dt: dt)
         for l in live where l.body != nil {
             l.placed.position = l.body!.position
             l.placed.rotation = Float(l.body!.angle)
         }
+        updateToys(dt: dt)
         for g in grains { g.update(dt: dt) }
         grains.removeAll(where: \.landed)
 
         // Sway on the bank: a spring the wind and the fingers shove.
         for l in live {
-            let force = -l.sway * 24 - l.swayVel * 4.5
+            let force = -l.sway * 24 - l.swayVel * 4.5 + breeze.x * 0.15
             l.swayVel += force * dt
             l.sway += l.swayVel * dt
             l.sway = max(-0.45, min(0.45, l.sway))
         }
 
         updateFish(dt: dt, now: now)
-        garden.stillness(state.sky.contains("moon") ? 1 : 0)
-        if state.sky.contains("dusk"), renderer.dayPhase < 0.74 { renderer.dayPhase = 0.74 }
+        // The sky things. Dusk holds the hour at evening; the moon lies in
+        // the water only once the light has gone; the mist is the garden's.
+        if state.sky.contains("dusk"), renderer.dayPhase < 0.8 { renderer.dayPhase = 0.8 }
+        let dark = renderer.dayPhase > 0.7 || renderer.dayPhase < 0.18
+        garden.stillness(state.sky.contains("moon") && dark ? 1 : 0)
+        updateSky(dt: dt, dark: dark)
         garden.update(dt: dt, now: now)
         for s in garden.splashes { renderer.addSplat(at: s.at, in: viewSize, radius: s.radius, amplitude: s.amplitude) }
         garden.splashes.removeAll()
+        // The koi mouthing at the surface, heard.
+        for e in garden.events {
+            if case .mouth(let p) = e, isWater(p) { sound.mouth(x: Float(p.x / viewSize.width)) }
+        }
+        if Int(elapsed * 2) != Int((elapsed - dt) * 2) { blendAir() }
 
         // Probes for next frame: one per floater, within the renderer's room.
         probeOrder = Array(floaters.prefix(Tuning.maxProbes))
@@ -543,8 +678,12 @@ final class PlotController: ObservableObject, TouchInput {
     }
 
     private func updateGrowth(now: TimeInterval) {
-        // Growth is read when drawn; nothing to step. Fish carry their size.
-        for f in fish { f.size = f.owner.placed.size }
+        // Growth is read when drawn; nothing to step. A koi carries its
+        // size in its body, eased so a feeding is seen to swell it.
+        for l in live {
+            guard let k = l.koi else { continue }
+            k.bodyScale += (l.placed.size - k.bodyScale) * 0.02
+        }
     }
 
     /// A flowering plant lets a petal go every `petalMinutes` of real time,
@@ -635,41 +774,205 @@ final class PlotController: ObservableObject, TouchInput {
         }
     }
 
+    /// The koi and the pellets. While pellets lie on the water the nearest
+    /// one to a koi calls the fish the way a finger does, and a pellet under
+    /// any koi's mouth is taken with a gulp: the feeding that counts grows
+    /// the fish. A charged finger on the water calls them itself, and wins
+    /// over the food while it is down.
     private func updateFish(dt: Float, now: TimeInterval) {
-        // The finger a fish may answer: a charged hold on the water.
-        var call: CGPoint?
-        if let r = renderer {
-            for (id, role) in touches {
-                if case .water(let t) = role, !t.isWake, r.charge(of: id) > 0.15 { call = t.last }
+        let koi = live.compactMap(\.koi)
+        // A finger calling: the touches route their charge in `updateTouches`.
+        let fingerCalling = touches.values.contains { if case .water(let t) = $0 { return t.calling }; return false }
+        if !fingerCalling, !pellets.isEmpty, !koi.isEmpty {
+            // The pellet nearest any koi's mouth is the one called to.
+            var best: Debris?
+            var bestD: CGFloat = .greatestFiniteMagnitude
+            for p in pellets {
+                for k in koi {
+                    let d = hypot(p.position.x - k.headPoint.x, p.position.y - k.headPoint.y)
+                    if d < bestD { bestD = d; best = p }
+                }
+            }
+            if let p = best {
+                garden.callKoi(at: p.position, charge: 1, dt: dt, stop: 6)
+                pelletCall = true
+            }
+        } else if pelletCall {
+            garden.releaseCall()
+            pelletCall = false
+        }
+        // A pellet under a mouth is taken.
+        for k in koi where !pellets.isEmpty && k.depth < 0.6 {
+            let head = k.headPoint
+            guard let i = pellets.firstIndex(where: { hypot($0.position.x - head.x, $0.position.y - head.y) < 16 }) else { continue }
+            let p = pellets.remove(at: i)
+            renderer?.addSplat(at: p.position, in: viewSize, radius: 6, amplitude: -0.1)
+            sound.gulp(x: Float(p.position.x / viewSize.width))
+            haptics.gulp()
+            if pelletCall { garden.releaseCall(); pelletCall = false }
+            guard let l = live.first(where: { $0.koi === k }) else { continue }
+            let date = Date()
+            if let last = l.placed.fedAt, date.timeIntervalSince(last) < PlotTuning.feedHours * 3600 {
+                // Fed again too soon: eaten, not grown.
+            } else {
+                l.placed.fedAt = date
+                l.placed.size = min(PlotTuning.koiMaxSize, l.placed.size + PlotTuning.growPerFeed)
+            }
+            noteChange()
+        }
+    }
+
+    // MARK: - The weather
+
+    /// The breeze changes its mind every twenty seconds and eases there;
+    /// a thrown gust marches its line of water across the pond.
+    private func updateWeather(dt: Float, now: TimeInterval) {
+        if elapsed > nextBreezeAt {
+            nextBreezeAt = elapsed + 20
+            let a = Float.random(in: 0...(2 * .pi))
+            breezeTarget = SIMD2(cos(a), sin(a)) * Float.random(in: 6...18)
+        }
+        breeze += (breezeTarget - breeze) * min(1, dt * 0.25)
+
+        guard var g = gust, let renderer else { return }
+        g.age += dt
+        let t = min(1, g.age / GameTuning.gustSeconds)
+        let along = g.length * CGFloat(t)
+        let mid = CGPoint(x: g.origin.x + CGFloat(g.direction.x) * along, y: g.origin.y + CGFloat(g.direction.y) * along)
+        let perp = SIMD2(-g.direction.y, g.direction.x)
+        let across = abs(perp.x) * Float(viewSize.width) + abs(perp.y) * Float(viewSize.height)
+        let n = GameTuning.gustSplatsPerFrame
+        let body = sin(Float.pi * t)
+        if g.age <= GameTuning.gustSeconds {
+            for i in 0..<n {
+                let f = (Float(i) / Float(n - 1) - 0.5) * across
+                let at = CGPoint(x: mid.x + CGFloat(perp.x * f), y: mid.y + CGFloat(perp.y * f))
+                if isWater(at) {
+                    renderer.addSplat(at: at, in: viewSize, radius: GameTuning.gustRadius,
+                                      amplitude: GameTuning.gustAmplitude * (0.55 + 0.45 * body))
+                }
             }
         }
-        for f in fish {
-            var target: (point: CGPoint, kind: PlotFish.Draw)?
-            if let nearest = pellets.min(by: { hypot($0.position.x - f.position.x, $0.position.y - f.position.y)
-                                               < hypot($1.position.x - f.position.x, $1.position.y - f.position.y) }) {
-                target = (nearest.position, .food)
-            } else if let c = call, hypot(c.x - f.position.x, c.y - f.position.y) < GoalTuning.callReach {
-                target = (c, .finger)
+        for s in snow { s.blow(dx: CGFloat(g.direction.x * 70 * dt), dy: CGFloat(g.direction.y * 70 * dt)) }
+        garden.blow(direction: g.direction, strength: 70 * dt)
+        // The sails keep the push a while after the line has crossed.
+        gust = g.age >= 1.4 ? nil : g
+    }
+
+    /// What pushes on a sail this frame, as acceleration: the breeze as a
+    /// steady lean, a gust as a shove that fades.
+    private func windNow() -> SIMD2<Float> {
+        var w = breeze * GameTuning.lightDrag
+        if let g = gust {
+            let fade = max(0, 1 - g.age / 1.4)
+            w += g.direction * 380 * fade
+        }
+        return w
+    }
+
+    /// Two fast fingers going the same way over the water throw a gust.
+    private func gustPair(now: TimeInterval) -> (ids: [Int], direction: SIMD2<Float>)? {
+        var fast: [(Int, SIMD2<Float>)] = []
+        for (id, role) in touches {
+            guard case .water(let t) = role, t.isWake, !t.spent, let h = t.heading,
+                  t.speed > GameTuning.gustSpeed, now - t.lastAt < 0.12 else { continue }
+            fast.append((id, h))
+        }
+        guard fast.count >= 2 else { return nil }
+        for i in 0..<fast.count {
+            for j in (i + 1)..<fast.count {
+                let a = fast[i].1, b = fast[j].1
+                guard acos(max(-1, min(1, simd_dot(a, b)))) <= GameTuning.gustAngle else { continue }
+                return ([fast[i].0, fast[j].0], simd_normalize(a + b))
             }
-            f.update(dt: dt, now: now, draw: target, depthAt: { [weak self] p in self?.depth(at: p) ?? 0 }, in: viewSize)
-            if f.mouthed {
-                renderer?.addSplat(at: f.head, in: viewSize, radius: 5, amplitude: -0.06)
+        }
+        return nil
+    }
+
+    private func startGust(direction: SIMD2<Float>, ids: [Int], now: TimeInterval) {
+        lastGustAt = now
+        for id in ids {
+            guard case .water(var t)? = touches[id] else { continue }
+            if t.sounding { sound.holdEnd(id: id); t.sounding = false }
+            if t.isWake { sound.wakeEnd(id: id) }
+            t.spent = true
+            t.isWake = false
+            touches[id] = .water(t)
+            renderer?.cancelHold(id: id)
+        }
+        haptics.slideEnd()
+        let w = Float(viewSize.width), h = Float(viewSize.height)
+        let centre = SIMD2(w / 2, h / 2)
+        let span = abs(direction.x) * w + abs(direction.y) * h
+        let start = centre - direction * (span / 2 + 40)
+        gust = Gust(direction: direction, origin: CGPoint(x: CGFloat(start.x), y: CGFloat(start.y)), length: CGFloat(span + 80))
+        garden.blow(direction: direction, strength: 90)
+        for s in snow { s.blow(dx: CGFloat(direction.x * 90), dy: CGFloat(direction.y * 90)) }
+        // The reeds and blossom on the bank lean after it.
+        for l in live { l.swayVel += direction.x * 2.2 }
+        sound.gust(x: 0.5)
+        haptics.swell()
+    }
+
+    /// The toys with something of their own: the tea bowl fills from the
+    /// waves that pass it, like the bamboo, and tips when it is full.
+    private func updateToys(dt: Float) {
+        for l in live where !l.lifted {
+            guard case .feature(let kind) = l.item.art, kind == "bowl", let d = l.body else { continue }
+            l.tip = max(0, l.tip - dt * 1.6)
+            let over = abs(d.height) - 0.02
+            if over > 0 { l.fill = min(1, l.fill + over * 30 * dt) }
+            if l.fill >= 1 {
+                l.fill = 0
+                l.tip = 1
+                renderer?.addSplat(at: d.position, in: viewSize, radius: 10, amplitude: -0.14)
+                garden.burstDroplets(at: d.position, power: 0.3)
+                sound.spill(x: Float(d.position.x / viewSize.width))
+                haptics.plop()
             }
-            // A pellet under its head is taken.
-            if !pellets.isEmpty, let i = pellets.firstIndex(where: { hypot($0.position.x - f.head.x, $0.position.y - f.head.y) < 14 }) {
-                let p = pellets.remove(at: i)
-                renderer?.addSplat(at: p.position, in: viewSize, radius: 6, amplitude: -0.1)
-                sound.gulp(x: Float(p.position.x / viewSize.width))
-                haptics.gulp()
-                let date = Date()
-                if let last = f.owner.placed.fedAt, date.timeIntervalSince(last) < PlotTuning.feedHours * 3600 {
-                    // Fed again too soon: eaten, not grown.
-                } else {
-                    f.owner.placed.fedAt = date
-                    f.owner.placed.size = min(PlotTuning.koiMaxSize, f.owner.placed.size + PlotTuning.growPerFeed)
-                }
-                noteChange()
+        }
+    }
+
+    /// Snow when its item is on, fireflies after dusk when theirs is.
+    private func updateSky(dt: Float, dark: Bool) {
+        if state.sky.contains("snow") {
+            snowAccumulator += 1.2 * dt
+            while snowAccumulator >= 1, snow.count < 90 {
+                snowAccumulator -= 1
+                let f = FallingPetal(x: CGFloat.random(in: 0...viewSize.width), y: -20, texture: PlotArt.first(of: ["snow_2", "snow_1", "mote"]))
+                f.scale *= 0.55
+                snow.append(f)
             }
+            snowAccumulator = min(snowAccumulator, 1)
+        }
+        for f in snow {
+            f.update(dt: dt)
+            if !f.landed, f.y > viewSize.height * CGFloat.random(in: 0.35...0.9) {
+                f.land()
+                let p = CGPoint(x: f.x, y: f.y)
+                if isWater(p) { renderer?.addSplat(at: p, in: viewSize, radius: 5, amplitude: -0.04) }
+            }
+        }
+        snow.removeAll { $0.dead }
+
+        if state.sky.contains("fireflies"), dark {
+            while fireflies.count < 12 {
+                fireflies.append(Firefly(position: CGPoint(x: CGFloat.random(in: 40...(viewSize.width - 40)),
+                                                           y: CGFloat.random(in: 60...(viewSize.height - 60))),
+                                         drift: CGVector(dx: CGFloat.random(in: -12...12), dy: CGFloat.random(in: -8...8)),
+                                         phase: Float.random(in: 0...(2 * .pi))))
+            }
+        } else if !fireflies.isEmpty {
+            fireflies.removeLast()
+        }
+        for i in fireflies.indices {
+            fireflies[i].phase += dt * 1.3
+            var p = fireflies[i].position
+            p.x += (fireflies[i].drift.dx + CGFloat(sin(fireflies[i].phase * 0.7)) * 10) * CGFloat(dt)
+            p.y += (fireflies[i].drift.dy + CGFloat(cos(fireflies[i].phase * 0.5)) * 8) * CGFloat(dt)
+            if p.x < 20 || p.x > viewSize.width - 20 { fireflies[i].drift.dx *= -1 }
+            if p.y < 20 || p.y > viewSize.height - 20 { fireflies[i].drift.dy *= -1 }
+            fireflies[i].position = p
         }
     }
 
@@ -758,10 +1061,11 @@ final class PlotController: ObservableObject, TouchInput {
         }
     }
 
-    /// A placed thing comes alive: floaters get a body, fish are let go.
+    /// A placed thing comes alive: floaters get a body, fish are let go
+    /// into the garden as the real koi and shoals a level has.
     private func wake(_ l: LiveItem) {
         l.body = nil
-        fish.removeAll { $0.owner === l }
+        takeOutOfWater(l)
         let r = l.item.size * 0.5 * l.placed.scale
         switch l.item.category {
         case .wood:
@@ -772,18 +1076,17 @@ final class PlotController: ObservableObject, TouchInput {
             let d = makeFloater(sprite: toySprite(l.item), at: l.placed.position, radius: r, light: true)
             d.angle = CGFloat(l.placed.rotation)
             l.body = d
+            if case .feature(let kind) = l.item.art, kind == "boat" {
+                l.sail = l.item.id == "sailing-boat" ? 1.0 : 0.6
+            }
         case .koi:
             if case .koi(let texture) = l.item.art {
-                fish.append(PlotFish(owner: l, texture: texture, length: l.item.size, at: l.placed.position, seed: fish.count))
+                let k = garden.addKoi(texture: texture, at: l.placed.position, size: l.placed.size)
+                l.koi = k
             }
         case .shoal:
             if case .shoal(let texture) = l.item.art {
-                for k in 0..<6 {
-                    let p = CGPoint(x: l.placed.position.x + CGFloat.random(in: -18...18), y: l.placed.position.y + CGFloat.random(in: -18...18))
-                    let f = PlotFish(owner: l, texture: texture, length: l.item.size, at: p, seed: fish.count + k)
-                    f.small = true
-                    fish.append(f)
-                }
+                l.shoal = garden.addShoal(texture: texture, at: l.placed.position, count: 8)
             }
         default:
             break
@@ -792,9 +1095,15 @@ final class PlotController: ObservableObject, TouchInput {
         garden.rocks = live.filter { $0.item.category == .stone && !$0.lifted }.map { ($0.placed.position, $0.item.size * 0.5 * $0.placed.scale) }
     }
 
+    /// The fish a thing let go are taken back out of the garden.
+    private func takeOutOfWater(_ l: LiveItem) {
+        if let k = l.koi { garden.removeKoi(k); l.koi = nil }
+        if let s = l.shoal { garden.removeShoal(s); l.shoal = nil }
+    }
+
     private func removeLive(_ l: LiveItem) {
         live.removeAll { $0 === l }
-        fish.removeAll { $0.owner === l }
+        takeOutOfWater(l)
         state.placed.removeAll { $0.id == l.placed.id }
         garden.rocks = live.filter { $0.item.category == .stone && !$0.lifted }.map { ($0.placed.position, $0.item.size * 0.5 * $0.placed.scale) }
     }
@@ -807,7 +1116,7 @@ final class PlotController: ObservableObject, TouchInput {
     private func lift(_ l: LiveItem, by id: Int, at p: CGPoint) {
         l.lifted = true
         l.body = nil
-        fish.removeAll { $0.owner === l }
+        takeOutOfWater(l)
         garden.rocks = live.filter { $0.item.category == .stone && !$0.lifted }.map { ($0.placed.position, $0.item.size * 0.5 * $0.placed.scale) }
         carry = Carry(item: l.item, lifted: l, position: p, rotation: l.placed.rotation, scale: l.placed.scale, fingerID: id)
         touches[id] = .carrying
@@ -853,8 +1162,9 @@ final class PlotController: ObservableObject, TouchInput {
         guard placed, let dig else { return }
         for l in live where !l.lifted {
             if let i = state.placed.firstIndex(where: { $0.id == l.placed.id }) {
-                // A fish is saved where it swims.
-                if let f = fish.first(where: { $0.owner === l }) { l.placed.position = f.position }
+                // A fish is saved where it swims, a shoal where its middle is.
+                if let k = l.koi { l.placed.position = k.position }
+                if let c = l.shoal?.centroid { l.placed.position = c }
                 state.placed[i] = l.placed
             } else {
                 state.placed.append(l.placed)
@@ -864,7 +1174,7 @@ final class PlotController: ObservableObject, TouchInput {
         state.sluiceOpen = sluice == .filling
         state.lastVisit = Date()
         dig.encode(into: &state)
-        progress.savePlot(state, index: PlotController.plotIndex)
+        progress.savePlot(state, index: plotIndex)
     }
 
     // MARK: - Menus over the plot
@@ -923,6 +1233,16 @@ final class PlotController: ObservableObject, TouchInput {
                 touches[id] = .idle
                 return
             }
+            // A second finger beside one on the water may be a pinch or a
+            // tilt. It is watched from here; what it is gets decided as it
+            // moves, and until then it works the water like the first.
+            if cameraPair == nil, case .water? = touches[other], isWater(p) {
+                let mid = CGPoint(x: (op.x + screen.x) / 2, y: (op.y + screen.y) / 2)
+                let anchor = worldPoint(mid)
+                cameraPair = CameraPair(ids: [other, id], startDistance: hypot(op.x - screen.x, op.y - screen.y),
+                                        startZoom: renderer.zoom, anchorWorld: SIMD2(Float(anchor.x), Float(anchor.y)),
+                                        last: [other: op, id: screen], lastAt: now)
+            }
         }
 
         if let item = tray.item(at: p) {
@@ -954,7 +1274,6 @@ final class PlotController: ObservableObject, TouchInput {
             renderer.touchDown(id: id, at: p, in: viewSize, weight: weight)
             sound.tap(x: Float(p.x / viewSize.width), weight: weight)
             haptics.tap(weight: weight)
-            for f in fish { f.startle(from: p) }
             garden.startle(at: p, in: viewSize)
             sound.holdBegin(id: id)
             touches[id] = .water(WaterTouch(last: p, lastAt: now, sounding: true))
@@ -974,6 +1293,10 @@ final class PlotController: ObservableObject, TouchInput {
             updatePair(&pr)
             pair = pr
             return
+        }
+        if let cp = cameraPair, cp.ids.contains(id) {
+            updateCameraPair(id: id, now: now)
+            if cameraPair?.active == true || cameraPair?.tilting == true { return }
         }
         guard let role = touches[id] else { return }
         switch role {
@@ -1001,9 +1324,11 @@ final class PlotController: ObservableObject, TouchInput {
             }
             noteChange()
         case .water(var t):
+            guard !t.spent else { t.last = p; t.lastAt = now; touches[id] = .water(t); return }
             let step = hypot(p.x - t.last.x, p.y - t.last.y)
             let dtS = max(1.0 / 240, now - t.lastAt)
             t.speed += (Float(step / CGFloat(dtS)) - t.speed) * 0.4
+            if step > 1.5 { t.heading = simd_normalize(SIMD2(Float(p.x - t.last.x), Float(p.y - t.last.y))) }
             if !t.isWake, t.speed > GameTuning.wakeSpeed {
                 t.isWake = true
                 renderer.cancelHold(id: id)
@@ -1024,7 +1349,7 @@ final class PlotController: ObservableObject, TouchInput {
                         let q = CGPoint(x: t.last.x + (p.x - t.last.x) * f, y: t.last.y + (p.y - t.last.y) * f)
                         if isWater(q) { renderer.addSplat(at: q, in: viewSize, radius: GameTuning.wakeRadius, amplitude: GameTuning.wakeAmplitude * strength) }
                     }
-                    for f in fish { f.startle(from: p) }
+                    garden.startle(at: p, in: viewSize)
                 }
             } else {
                 renderer.touchMoved(id: id, to: p, in: viewSize)
@@ -1032,6 +1357,12 @@ final class PlotController: ObservableObject, TouchInput {
             t.last = p
             t.lastAt = now
             touches[id] = .water(t)
+            // Two fingers thrown the same way over the water are a gust.
+            if gust == nil, now - lastGustAt > GameTuning.gustCooldown, cameraPair?.active != true,
+               let g = gustPair(now: now) {
+                cameraPair = nil
+                startGust(direction: g.direction, ids: g.ids, now: now)
+            }
         case .sluice(let began, let acted):
             // Slid off the stone: it was not a press on it.
             if hypot(p.x - sluicePoint.x, p.y - sluicePoint.y) > 46 { touches[id] = .idle }
@@ -1092,6 +1423,7 @@ final class PlotController: ObservableObject, TouchInput {
         // A pair breaks up: the other finger goes on holding or carrying,
         // and this one is seen through to whatever it was doing.
         if let pr = pair, pr.ids.contains(id) { pair = nil }
+        if let cp = cameraPair, cp.ids.contains(id) { cameraPair = nil }
         guard let role = touches.removeValue(forKey: id) else { return }
         guard presented == nil, let renderer else { return }
         switch role {
@@ -1101,6 +1433,7 @@ final class PlotController: ObservableObject, TouchInput {
         case .water(let t):
             if t.sounding { sound.holdEnd(id: id) }
             if t.isWake { sound.wakeEnd(id: id); haptics.slideEnd() }
+            if t.calling { garden.releaseCall() }
             renderer.touchUp(id: id)
         case .sluice(let began, let acted):
             guard !acted else { return }
@@ -1140,12 +1473,21 @@ final class PlotController: ObservableObject, TouchInput {
 
     /// Presses that take time: a long press on a placed thing lifts it, a
     /// long press on the sluice lets the water out.
-    private func updateTouches(now: TimeInterval) {
+    private func updateTouches(now: TimeInterval, dt: Float) {
         for (id, role) in touches {
             switch role {
-            case .water(let t):
-                // The swell under a still finger is heard building.
-                if t.sounding, let r = renderer { sound.holdLevel(id: id, charge: r.charge(of: id)) }
+            case .water(var t):
+                // The swell under a still finger is heard building, and a
+                // charged finger calls the nearest koi up to it, as in a level.
+                guard let r = renderer else { continue }
+                let charge = r.charge(of: id)
+                if t.sounding { sound.holdLevel(id: id, charge: charge) }
+                if !t.isWake, !t.spent, charge > 0.15 {
+                    if !t.calling, pelletCall { garden.releaseCall(); pelletCall = false }
+                    t.calling = true
+                    garden.callKoi(at: t.last, charge: charge, dt: dt)
+                    touches[id] = .water(t)
+                }
             case .hold(let l, let began, let start):
                 if began != .infinity, now - began > 0.5 {
                     lift(l, by: id, at: start)
@@ -1179,6 +1521,70 @@ final class PlotController: ObservableObject, TouchInput {
             l.placed.scale = sc
             l.body?.angle = CGFloat(rot)
             noteChange()
+        }
+    }
+
+    /// Two fingers on the water: a drag the same way tilts the camera, a
+    /// spread or a squeeze zooms it, read leniently as in a level. Until
+    /// one is decided the fingers go on working the water.
+    private func updateCameraPair(id: Int, now: TimeInterval) {
+        guard var p = cameraPair, p.ids.contains(id),
+              let a = screenTouches[p.ids[0]], let b = screenTouches[p.ids[1]], let r = renderer else { return }
+        let here = id == p.ids[0] ? a : b
+        var step = CGPoint.zero
+        if let was = p.last[id] {
+            step = CGPoint(x: here.x - was.x, y: here.y - was.y)
+            var t = p.travel[id] ?? .zero
+            t.x += step.x
+            t.y += step.y
+            p.travel[id] = t
+        }
+        p.last[id] = here
+        p.lastAt = now
+        let dist = hypot(a.x - b.x, a.y - b.y)
+
+        if !p.active, !p.tilting, let ta = p.travel[p.ids[0]], let tb = p.travel[p.ids[1]] {
+            let mid = CGPoint(x: (ta.x + tb.x) / 2, y: (ta.y + tb.y) / 2)
+            let sameWay = ta.y * tb.y > 0
+            let upright = abs(mid.y) > (abs(mid.x) + abs(mid.y)) * GameTuning.tiltUpright
+            let held = abs(dist - p.startDistance) < GameTuning.tiltSpread
+            if sameWay, upright, held, hypot(mid.x, mid.y) > GameTuning.tiltTravel {
+                p.tilting = true
+                forgetWaterTouches(p.ids)
+            }
+        }
+        if p.tilting {
+            // Half the step from each of the two fingers is their average.
+            // Drawn up the screen the camera lies down toward the water.
+            r.pitchTarget -= Float(step.y) * 0.5 * GameTuning.tiltPerPoint
+            cameraPair = p
+            return
+        }
+        if !p.active {
+            guard abs(dist - p.startDistance) > 18 else { cameraPair = p; return }
+            // Two fingers thrown the same way are a gust, not a pinch.
+            if gustPair(now: now) != nil { cameraPair = p; return }
+            p.active = true
+            forgetWaterTouches(p.ids)
+        }
+        let z = max(GameTuning.zoomMin, min(GameTuning.zoomMax, p.startZoom * Float(dist / max(1, p.startDistance))))
+        zoomTarget = z
+        // Keep the world point that was under the fingers under them.
+        let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        centreTarget = p.anchorWorld - SIMD2(Float(mid.x - screenSize.width / 2), Float(mid.y - screenSize.height / 2)) / z
+        cameraPair = p
+    }
+
+    /// Fingers that turned out to belong to the camera and not the water:
+    /// their holds, their wakes and their voices all go.
+    private func forgetWaterTouches(_ ids: [Int]) {
+        for id in ids {
+            guard case .water(let t)? = touches[id] else { continue }
+            if t.sounding { sound.holdEnd(id: id) }
+            if t.isWake { sound.wakeEnd(id: id); haptics.slideEnd() }
+            if t.calling { garden.releaseCall() }
+            renderer?.cancelHold(id: id)
+            touches[id] = .idle
         }
     }
 
@@ -1234,27 +1640,19 @@ final class PlotController: ObservableObject, TouchInput {
             paintings.append(name)
             return UInt32(paintings.count)
         }
+        // The fish, as in a level: the garden lays each koi's spine along
+        // the path its head swam and the body bends on it, the shoals go
+        // as cut-outs, and both cast their shadows on the bed.
         let submerged = garden.submergedSprites()
         renderer.spines = submerged.spines
         var under = submerged.sprites
         under += garden.reflectionSprites()
-        let underBodies = garden.bedStoneBodies(depthScale: WaterRenderer.depthScale, mossy: true)
+        let koiBodies = garden.koiBodies(depthScale: WaterRenderer.depthScale, textureIndex: painting,
+                                         tailCentre: { renderer.textures.tailCentre($0) })
+        var underBodies = koiBodies.under
+        underBodies += garden.bedStoneBodies(depthScale: WaterRenderer.depthScale, mossy: season.id != "winter")
         let t = Double(elapsed)
 
-        // The fish: cut-outs under the surface, each with its shadow on the bed.
-        for f in fish {
-            let ts = garden.textureSize(f.texture)
-            let width = f.drawLength
-            let height = width * ts.height / max(1, ts.width)
-            let d = f.depth
-            let offset = CGFloat(8 + 22 * d)
-            under.append(Sprite(f.texture, at: CGPoint(x: f.position.x + offset * 0.6, y: f.position.y + offset),
-                                size: CGSize(width: width, height: height), rotation: f.heading - .pi / 2,
-                                mode: .shadow, alpha: 0.6 * (1 - d * 0.6), wave: f.phase, waveAmp: f.small ? 0.14 : 0.09, z: -1.0))
-            under.append(Sprite(f.texture, at: f.position, size: CGSize(width: width, height: height),
-                                rotation: f.heading - .pi / 2, mode: .submerged, alpha: 1, depth: d,
-                                wave: f.phase, waveAmp: f.small ? 0.14 : 0.09, z: -0.2 - 0.7 * d))
-        }
         // Floaters' shadows on the bed.
         for d in petalsAfloat + pellets + live.compactMap(\.body) {
             let s = spriteSize(d)
@@ -1263,6 +1661,7 @@ final class PlotController: ObservableObject, TouchInput {
         }
 
         var sink = DrawSink()
+        sink.solids += koiBodies.surface
 
         // The two stones the plot is worked with.
         sink.solids.append(stoneBody(at: sluicePoint, radius: 26, colourA: [0.50, 0.53, 0.52, 1], colourB: [0.36, 0.55, 0.30, 1],
@@ -1297,9 +1696,23 @@ final class PlotController: ObservableObject, TouchInput {
                                             lift: radius * Float(body.lift), yaw: Float(d.angle), roll: d.roll, tilt: d.slope,
                                             length: Float(d.radius * body.length), radius: radius, shape: body.shape, alpha: 1,
                                             colourA: [0.42, 0.30, 0.20, 1], colourB: [0.78, 0.66, 0.48, 1]))
+            } else if l.item.category == .toy {
+                drawToy(l, body: d, sink: &sink)
             } else {
                 sink.paper(Sprite(d.sprite, at: d.position, size: spriteSize(d), rotation: Float(d.angle), mode: .floater, alpha: 1))
             }
+        }
+        // Snow on its way down and lying on the water; fireflies in the dark.
+        for f in snow {
+            sink.over.append(Sprite(f.texture, at: CGPoint(x: f.x, y: f.y), size: CGSize(width: 14 * f.scale, height: 14 * f.scale),
+                                    rotation: f.rotation, mode: f.landed ? .floater : .plain, alpha: f.alpha, z: f.landed ? 0 : 0.5))
+        }
+        for f in fireflies {
+            let glow = 0.5 + 0.5 * sin(f.phase * 2.1)
+            sink.over.append(Sprite("mote", at: f.position, size: CGSize(width: 9, height: 9), alpha: 0.35 + 0.55 * glow,
+                                    tint: [1.0, 0.9, 0.45, 1], z: 0.3))
+            sink.over.append(Sprite("mote", at: f.position, size: CGSize(width: 22, height: 22), alpha: 0.18 * glow,
+                                    tint: [1.0, 0.8, 0.3, 1], z: 0.29))
         }
         // Earth in the air.
         for g in grains {
@@ -1447,6 +1860,60 @@ final class PlotController: ObservableObject, TouchInput {
         }
     }
 
+    /// A toy on the water: an upright cut-out standing at its body's point,
+    /// lifted by the water under it and facing the way it goes. The sailing
+    /// boat's sail is a body yawed with the wind, once the art gives it a
+    /// hull to stand on; the lantern glows as the light goes; the tea bowl
+    /// shows the water it has caught.
+    private func drawToy(_ l: LiveItem, body d: Debris, sink: inout DrawSink) {
+        let name = d.sprite
+        let ts = garden.textureSize(name)
+        let w = l.item.size * l.placed.scale
+        let h = w * ts.height / max(1, ts.width)
+        let p = d.position
+        var kind = ""
+        if case .feature(let k) = l.item.art { kind = k }
+        // A hull painting on its own lets the sail be a body; without one
+        // the painted sail stands and the body sail stays away.
+        let hullOnly = l.item.id == "sailing-boat" && PlotArt.exists("sail_boat_hull")
+        let picture = hullOnly ? "sail_boat_hull" : name
+        // Riding the water: the height under it lifts the cut-out.
+        let bob = max(0, Float(d.height) * 40 / WaterRenderer.depthScale)
+        let squash: CGFloat = kind == "bowl" ? 1 - 0.25 * CGFloat(l.tip) : 1
+        sink.over.append(Sprite(picture, at: CGPoint(x: p.x + 5, y: p.y + h * 0.28), size: CGSize(width: w, height: h * 0.45),
+                                mode: .shadow, alpha: 0.3, z: 0))
+        sink.over.append(Sprite(picture, at: p, size: CGSize(width: w, height: h * squash), rotation: -.pi / 2, alpha: 1,
+                                flipX: cos(Double(d.angle)) < 0, wave: Float(elapsed) * 0.9 + l.phase,
+                                z: bob + 0.004, stands: true))
+        switch kind {
+        case "boat" where hullOnly:
+            // The sail swings to the lee of the wind, its boom downwind.
+            var wind = windNow()
+            if simd_length(wind) < 0.5 { wind = SIMD2(cos(Float(d.angle)), sin(Float(d.angle))) }
+            let yaw = atan2(wind.y, wind.x)
+            sink.solids.append(SolidInstance(position: SIMD2(Float(p.x), Float(p.y)), lift: Float(h) * 0.22 + bob * WaterRenderer.depthScale,
+                                             yaw: yaw, roll: 0, tilt: d.slope, length: Float(w) * 0.55, radius: Float(h) * 0.8,
+                                             shape: 7, alpha: 1, colourA: [0.96, 0.93, 0.86, 1], colourB: [0.96, 0.93, 0.86, 1]))
+        case "lantern":
+            // Warm light on the water, more of it the further the day is
+            // from noon.
+            let noon = 1 - min(1, abs((renderer?.dayPhase ?? 0.5) - 0.5) * 2)
+            let glow = (1 - noon) * (0.85 + 0.15 * sin(Float(elapsed) * 5 + l.phase))
+            guard glow > 0.02 else { break }
+            sink.over.append(Sprite("mote", at: CGPoint(x: p.x, y: p.y + 4), size: CGSize(width: w * 2.6, height: w * 1.7),
+                                    mode: .floater, alpha: 0.5 * glow, tint: [1.0, 0.72, 0.36, 1], z: 0.006))
+            sink.over.append(Sprite("mote", at: p, size: CGSize(width: w * 1.3, height: w * 1.3),
+                                    alpha: 0.45 * glow, tint: [1.0, 0.82, 0.5, 1], z: bob + (h * 0.5).asZ))
+        case "bowl":
+            if l.fill > 0.05 {
+                sink.over.append(Sprite("mote", at: p, size: CGSize(width: w * 0.55 * CGFloat(l.fill), height: w * 0.22 * CGFloat(l.fill)),
+                                        alpha: 0.55, tint: [0.35, 0.5, 0.55, 1], z: bob + (h * 0.55).asZ))
+            }
+        default:
+            break
+        }
+    }
+
     /// An item's picture, on the tray or under the finger: its sprite, or a
     /// small body for a thing that has none.
     private func drawIcon(_ item: CatalogueItem, at p: CGPoint, scale: CGFloat, rotation: Float, z: Float, alpha: Float,
@@ -1539,6 +2006,14 @@ final class LiveItem {
     var swayVel: Float = 0
     /// A body on the water, for the things that float.
     var body: Debris?
+    /// The fish this let go, swimming in the garden.
+    var koi: Koi?
+    var shoal: Shoal?
+    /// How much of the wind a floater catches: 0 for anything without a sail.
+    var sail: Float = 0
+    /// The tea bowl: how full it is, and how far into its tip it is.
+    var fill: Float = 0
+    var tip: Float = 0
     /// Under a finger right now, so it is not drawn where it was.
     var lifted = false
     var nextPetalAt: Date?
@@ -1578,109 +2053,9 @@ final class Grain {
     }
 }
 
-/// A fish let go in the plot. Like the map's pool koi it is a cut-out that
-/// wags rather than a spined body, and it keeps to the water: it picks
-/// its next point where the pond is deep enough and turns back from the
-/// earth. A pellet on the water or a charged finger draws it.
-final class PlotFish {
-    enum Draw { case food, finger }
-
-    let owner: LiveItem
-    let texture: String
-    /// Full length in points, times how big it has grown.
-    let length: CGFloat
-    var size: CGFloat = 1
-    var small = false
-    private(set) var position: CGPoint
-    private(set) var heading: Float
-    /// 0 at the surface, 1 on the bed.
-    private(set) var depth: Float = 0.5
-    private(set) var phase: Float
-    private(set) var mouthed = false
-    private var depthTarget: Float = 0.5
-    private var target: CGPoint
-    private var retargetAt: TimeInterval = 0
-    private var riseAt: TimeInterval = 0
-    private var mouthAt: TimeInterval = 0
-    private var fright: Float = 0
-    private let cruise: Float
-
-    init(owner: LiveItem, texture: String, length: CGFloat, at p: CGPoint, seed: Int) {
-        self.owner = owner
-        self.texture = texture
-        self.length = length
-        position = p
-        heading = Float.random(in: 0...(2 * .pi))
-        phase = Float.random(in: 0...(2 * .pi))
-        cruise = Float.random(in: 22...30) * (length < 40 ? 1.5 : 1)
-        target = p
-        size = owner.placed.size
-    }
-
-    var drawLength: CGFloat { (small ? length * 0.8 : length) * size }
-
-    var head: CGPoint {
-        CGPoint(x: position.x + CGFloat(cos(heading)) * drawLength * 0.4, y: position.y + CGFloat(sin(heading)) * drawLength * 0.4)
-    }
-
-    func startle(from point: CGPoint) {
-        let dx = Float(position.x - point.x), dy = Float(position.y - point.y)
-        let d = (dx * dx + dy * dy).squareRoot()
-        guard d < 160 else { return }
-        fright = 1
-        depthTarget = 0.85
-        riseAt = CACurrentMediaTime() + Double.random(in: 5...9)
-        let a = atan2(dy, dx)
-        target = CGPoint(x: position.x + CGFloat(cos(a)) * 90, y: position.y + CGFloat(sin(a)) * 90)
-        retargetAt = CACurrentMediaTime() + 3
-    }
-
-    func update(dt: Float, now: TimeInterval, draw: (point: CGPoint, kind: Draw)?, depthAt: (CGPoint) -> Float, in size: CGSize) {
-        mouthed = false
-        fright *= exp(-dt * 0.8)
-        if let d = draw, fright < 0.3 {
-            target = d.point
-            depthTarget = 0.08
-            retargetAt = now + 1
-        } else if now > retargetAt || hypot(target.x - position.x, target.y - position.y) < 16 {
-            // The next point: somewhere near, over water deep enough.
-            var found: CGPoint?
-            for _ in 0..<10 {
-                let a = CGFloat.random(in: 0...(2 * .pi))
-                let r = CGFloat.random(in: 40...180)
-                let p = CGPoint(x: position.x + cos(a) * r, y: position.y + sin(a) * r)
-                guard p.x > 10, p.y > 10, p.x < size.width - 10, p.y < size.height - 10 else { continue }
-                if depthAt(p) > 0.3 { found = p; break }
-            }
-            target = found ?? position
-            retargetAt = now + Double.random(in: 4...9)
-        }
-        let dx = Float(target.x - position.x), dy = Float(target.y - position.y)
-        let far = (dx * dx + dy * dy).squareRoot()
-        var want = far > 1 ? atan2(dy, dx) : heading
-        // The earth ahead turns it back.
-        let ahead = CGPoint(x: position.x + CGFloat(cos(heading)) * 30, y: position.y + CGFloat(sin(heading)) * 30)
-        if depthAt(ahead) < 0.18 { want = heading + .pi * 0.7 }
-        var diff = want - heading
-        while diff > .pi { diff -= 2 * .pi }
-        while diff < -.pi { diff += 2 * .pi }
-        heading += diff * min(1, dt * (1.5 + fright * 3))
-        // Slow near what it is drawn to: a hover, not a bump.
-        var speed = cruise * (0.6 + 0.4 * depth) * (1 + fright * 1.8)
-        if draw != nil { speed = min(speed * 1.4, max(6, far * 1.2)) }
-        if far < 10, draw != nil { speed = 0 }
-        let next = CGPoint(x: position.x + CGFloat(cos(heading) * speed * dt), y: position.y + CGFloat(sin(heading) * speed * dt))
-        if depthAt(next) > 0.14 { position = next }
-        phase += dt * (3.5 + speed * 0.06)
-        if draw == nil, now > riseAt {
-            depthTarget = depthTarget < 0.4 ? Float.random(in: 0.5...0.8) : Float.random(in: 0.12...0.28)
-            riseAt = now + Double.random(in: 5...14)
-            mouthAt = now + 1.5
-        }
-        depth += (depthTarget - depth) * min(1, dt * 0.7)
-        if depth < 0.3, now > mouthAt {
-            mouthed = true
-            mouthAt = now + Double.random(in: 1.2...2.6)
-        }
-    }
+private extension CGFloat {
+    /// Points above the water as the sprite's `z`, which is in depth units.
+    var asZ: Float { Float(self) / WaterRenderer.depthScale }
 }
+
+extension PlotController: PlotIndexed {}

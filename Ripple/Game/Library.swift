@@ -194,24 +194,24 @@ enum Hint: String {
     var text: String {
         switch self {
         case .tap: return "Tap the water. Ripples carry things to the bank."
-        case .ice: return "Tap the ice to crack it. Tap again to break through. Slide to feel it."
-        case .hold: return "Hold a finger down. A bigger swell can shift heavy things."
-        case .swell: return "Two fingers together sweep a whole cluster."
+        case .ice: return "Tap the ice to crack it, tap inside the cracks to break through. Slide a finger to feel it."
+        case .hold: return "Hold a finger on the water. The swell it gathers can shift heavy things."
+        case .swell: return "Two fingers drawn together sweep a whole cluster."
         case .bounce: return "Ripples bounce off the stones. A curve of them throws a ripple back."
-        case .twin: return "Two ripples arriving together lift what one cannot."
-        case .tilt: return "Two fingers drawn slowly up the screen tilt the view. Pinch to zoom."
-        case .lens: return "Shallow water slows a ripple and bends it. A wave that crosses a sandbank still arrives tall."
-        case .order: return "No water passes a log or a can. Move what is in the way first."
+        case .twin: return "Two taps a little apart. Where their ripples meet they lift what one cannot."
+        case .tilt: return "Two fingers drawn slowly up the screen lean the view over. Pinch to zoom."
+        case .lens: return "Shallow water slows a ripple and bends it inward. A wave that crosses the sandbank arrives tall."
+        case .order: return "No water passes a log, and neither does the shoal. Move the logs first."
         case .call: return "Hold a finger on the water. The koi will come up to it."
         case .shoal: return "A quick stroke lays a wake. The shoal will follow it."
-        case .shy: return "Something hides under the pads. Keep the water over them still and hold a finger a little way off."
+        case .shy: return "Something is hiding. Let the water over it go still, then hold a finger a little way off."
         case .seeds: return "Seeds take root in the shallows. Carry them there."
         case .silt: return "The bed is silted. Every ripple clears a little."
         case .duckweed: return "Sweep the duckweed aside with a stroke. It gathers at the banks."
-        case .leaves: return "Leaves are still falling. A gust sweeps them."
-        case .bamboo: return "Fill the bamboo with a swell. It tips and knocks."
+        case .leaves: return "Leaves are still falling. Two fingers thrown across the water make a gust that sweeps them."
+        case .bamboo: return "A swell over the spout fills the bamboo. Full, it tips and knocks."
         case .chime: return "The stones sing when a wave passes. Play them in the order the pond hums."
-        case .pool: return "Rock the pond in time. When it spills over the lip the dry pool fills."
+        case .pool: return "Push the water at the lip with a slow drag, and again as it comes back. Every crest that spills over fills the pool a little."
         case .still: return "Let the water go glassy and wait."
         }
     }
@@ -222,6 +222,9 @@ struct LevelSpec: Identifiable {
     let seasonID: String
     let index: Int
     let title: String
+    /// The level's own short name, shown over the goal when it opens: "The
+    /// sheet", "Silt", "Dusk". The title stays as the chapter number.
+    var name: String = ""
     /// What the player is here to do, one entry per idea, in the order the
     /// pond wants them. Positions inside are fractions of the world until
     /// the controller places them.
@@ -474,14 +477,14 @@ enum Library {
         // only cracks a ring; a second inside that ring takes it out, and ice
         // away from open water is solid, so the hole has to be worked outward
         // until the sheet is gone.
-        out["winter-1"] = LevelSpec(id: "winter-1", seasonID: "winter", index: 1, title: "Winter, one",
+        out["winter-1"] = LevelSpec(id: "winter-1", seasonID: "winter", index: 1, title: "Winter, one", name: "The sheet",
                                     goals: [goal(.breakIce, "Break through the ice.", wakes: .clear)],
                                     hint: .ice, bloomTarget: 0.5, frozen: true)
 
         // Winter two, "the sleeper": a koi lies on the bed in the middle of
         // the pond, asleep under the sheet. Open the ice over it and it
         // stirs; a held finger on the open water brings it up.
-        out["winter-2"] = LevelSpec(id: "winter-2", seasonID: "winter", index: 2, title: "Winter, two",
+        out["winter-2"] = LevelSpec(id: "winter-2", seasonID: "winter", index: 2, title: "Winter, two", name: "Under the ice",
                                     goals: [goal(.callKoi(at: CGPoint(x: 0.5, y: 0.5), radius: 0.06), callLine, wakes: .koi)],
                                     hint: .call, bloomTarget: 1.0, frozen: true)
 
@@ -490,7 +493,7 @@ enum Library {
         // lane and lay a wake through the gap; the shoal streams after it.
         do {
             let c = channel(y: 0.45)
-            out["winter-3"] = LevelSpec(id: "winter-3", seasonID: "winter", index: 3, title: "Winter, three",
+            out["winter-3"] = LevelSpec(id: "winter-3", seasonID: "winter", index: 3, title: "Winter, three", name: "The pocket",
                                         goals: [goal(.leadShoal(gate: c.gate), shoalLine, wakes: .shoal)],
                                         rocks: c.rocks, hint: .shoal, bloomTarget: 1.5, frozen: true)
         }
@@ -499,7 +502,7 @@ enum Library {
         // in. Open the sheet over it, then send a wave tall enough to ring it.
         do {
             let bell = CGPoint(x: 0.5, y: 0.36)
-            out["winter-4"] = LevelSpec(id: "winter-4", seasonID: "winter", index: 4, title: "Winter, four",
+            out["winter-4"] = LevelSpec(id: "winter-4", seasonID: "winter", index: 4, title: "Winter, four", name: "The bell",
                                         goals: [goal(.wakeTarget(.bell, at: bell, threshold: 0.05), "Ring the bell with a wave.", wakes: .chime)],
                                         targets: [TargetSpec(kind: .bell, at: bell, threshold: 0.05)],
                                         hint: .hold, bloomTarget: 2.0, frozen: true)
@@ -508,7 +511,7 @@ enum Library {
         // Winter five, "the thaw": open water for the first time, and nothing
         // to do but leave it alone. Glassy for seven seconds and the moon
         // comes up in it.
-        out["winter-5"] = LevelSpec(id: "winter-5", seasonID: "winter", index: 5, title: "Winter, five",
+        out["winter-5"] = LevelSpec(id: "winter-5", seasonID: "winter", index: 5, title: "Winter, five", name: "Thaw",
                                     goals: [goal(.stillness(seconds: 7), "Let the pond go still.", wakes: .moon)],
                                     hint: .still, bloomTarget: 2.5)
 
@@ -516,7 +519,7 @@ enum Library {
         // the channel and the shoal penned above it. Both want bringing out.
         do {
             let c = channel(y: 0.40)
-            out["winter-6"] = LevelSpec(id: "winter-6", seasonID: "winter", index: 6, title: "Winter, six",
+            out["winter-6"] = LevelSpec(id: "winter-6", seasonID: "winter", index: 6, title: "Winter, six", name: "The whole pond",
                                         goals: [goal(.callKoi(at: CGPoint(x: 0.5, y: 0.64), radius: 0.06), callLine, wakes: .koi),
                                                 goal(.leadShoal(gate: c.gate), shoalLine, wakes: .shoal)],
                                         rocks: c.rocks, hint: .call, bloomTarget: 3.0, frozen: true)
@@ -529,7 +532,7 @@ enum Library {
 
         // Spring one, "silt": the whole bed is clouded. Every ripple scours a
         // little of it off; the pond is clear when nine tenths of it is.
-        out["spring-1"] = LevelSpec(id: "spring-1", seasonID: "spring", index: 1, title: "Spring, one",
+        out["spring-1"] = LevelSpec(id: "spring-1", seasonID: "spring", index: 1, title: "Spring, one", name: "Silt",
                                     goals: [goal(.clearSilt(clean: 0.9), "Clear the silt from the bed.", wakes: .clear)],
                                     hint: .silt, bloomTarget: 0.5)
 
@@ -538,7 +541,7 @@ enum Library {
         // shallows takes root; the ripples have to carry them there.
         do {
             let bed = Shape(centre: CGPoint(x: 0.5, y: 0.22), radius: 0.09)
-            out["spring-2"] = LevelSpec(id: "spring-2", seasonID: "spring", index: 2, title: "Spring, two",
+            out["spring-2"] = LevelSpec(id: "spring-2", seasonID: "spring", index: 2, title: "Spring, two", name: "Seeds",
                                         goals: [goal(.rootSeeds(shallows: bed, count: 3), "Carry the seeds to the shallows.", wakes: .seeds)],
                                         debris: seeds([CGPoint(x: 0.34, y: 0.72), CGPoint(x: 0.52, y: 0.80), CGPoint(x: 0.68, y: 0.70)]),
                                         shallows: [bed], hint: .seeds, bloomTarget: 1.0)
@@ -548,7 +551,7 @@ enum Library {
         // it; a koi called up beneath it nudges it open.
         do {
             let bud = CGPoint(x: 0.5, y: 0.36)
-            out["spring-3"] = LevelSpec(id: "spring-3", seasonID: "spring", index: 3, title: "Spring, three",
+            out["spring-3"] = LevelSpec(id: "spring-3", seasonID: "spring", index: 3, title: "Spring, three", name: "The bud",
                                         goals: [goal(.koiOpensBud(bud: bud), "Call the koi up beneath the bud.", wakes: .bud, .koi)],
                                         targets: [TargetSpec(kind: .bud, at: bud, threshold: 0.125)],
                                         hint: .call, bloomTarget: 1.5)
@@ -559,7 +562,7 @@ enum Library {
         // With the channel open the shoal can be led through.
         do {
             let c = channel(y: 0.46, x0: 0.22, x1: 0.78)
-            out["spring-4"] = LevelSpec(id: "spring-4", seasonID: "spring", index: 4, title: "Spring, four",
+            out["spring-4"] = LevelSpec(id: "spring-4", seasonID: "spring", index: 4, title: "Spring, four", name: "The log",
                                         goals: [goal(.clearDebris, "Move the log out of the channel.", wakes: .clear),
                                                 goal(.leadShoal(gate: c.gate), shoalLine, wakes: .shoal)],
                                         debris: [log(at: CGPoint(x: 0.5, y: 0.46), rotation: 0)],
@@ -569,7 +572,7 @@ enum Library {
         // Spring five, "the shishi-odoshi": a bamboo rocker on the top bank.
         // A crest over its spout fills it; full, it tips and knocks on its
         // stone. Three knocks.
-        out["spring-5"] = LevelSpec(id: "spring-5", seasonID: "spring", index: 5, title: "Spring, five",
+        out["spring-5"] = LevelSpec(id: "spring-5", seasonID: "spring", index: 5, title: "Spring, five", name: "Shishi-odoshi",
                                     goals: [goal(.shishiOdoshi(at: CGPoint(x: 0.5, y: 0.06), knocks: 3),
                                                  "Fill the bamboo until it knocks three times.", wakes: .bamboo)],
                                     hint: .bamboo, bloomTarget: 2.5)
@@ -579,7 +582,7 @@ enum Library {
         // see it.
         do {
             let bed = Shape(centre: CGPoint(x: 0.5, y: 0.20), radius: 0.09)
-            out["spring-6"] = LevelSpec(id: "spring-6", seasonID: "spring", index: 6, title: "Spring, six",
+            out["spring-6"] = LevelSpec(id: "spring-6", seasonID: "spring", index: 6, title: "Spring, six", name: "The garden wakes",
                                         goals: [goal(.clearSilt(clean: 0.9), "Clear the silt from the bed.", wakes: .clear),
                                                 goal(.rootSeeds(shallows: bed, count: 3), "Carry the seeds to the shallows.", wakes: .seeds),
                                                 goal(.callKoi(at: CGPoint(x: 0.5, y: 0.52), radius: 0.06), callLine, wakes: .koi)],
@@ -594,7 +597,7 @@ enum Library {
 
         // Summer one, "duckweed": a film of weed over the whole pond. Wakes
         // and swells part it; it drifts to the banks and stays there.
-        out["summer-1"] = LevelSpec(id: "summer-1", seasonID: "summer", index: 1, title: "Summer, one",
+        out["summer-1"] = LevelSpec(id: "summer-1", seasonID: "summer", index: 1, title: "Summer, one", name: "Duckweed",
                                     goals: [goal(.partDuckweed(cover: 0.12), "Part the duckweed.", wakes: .clear)],
                                     hint: .duckweed, bloomTarget: 0.5, duckweed: true)
 
@@ -608,7 +611,7 @@ enum Library {
             var pads = ring(6, centre: c, radius: 0.072, from: -2.62 + 0.2, to: 2.62 - 0.2).map { Shape(centre: $0, radius: 0.027) }
             pads.removeAll { abs($0.centre.x - c.x) < 0.02 && $0.centre.y > c.y }   // keep the gap open below
             let bank = Shape(centre: CGPoint(x: 0.5, y: 0.56), radius: 0.10)
-            out["summer-2"] = LevelSpec(id: "summer-2", seasonID: "summer", index: 2, title: "Summer, two",
+            out["summer-2"] = LevelSpec(id: "summer-2", seasonID: "summer", index: 2, title: "Summer, two", name: "The lens",
                                         goals: [goal(.wakeTarget(.bud, at: c, threshold: 0.05), "Wake the lily bud with a wave.", wakes: .bud)],
                                         shallows: [bank], pads: pads,
                                         targets: [TargetSpec(kind: .bud, at: c, threshold: 0.05)],
@@ -623,7 +626,7 @@ enum Library {
             let pads = ring(8, centre: c, radius: 0.085, from: .pi / 2 + 0.55, to: .pi / 2 + 2 * .pi - 0.55)
                 .map { Shape(centre: $0, radius: 0.030) }
             let gate = (CGPoint(x: 0.42, y: 0.51), CGPoint(x: 0.58, y: 0.51))
-            out["summer-3"] = LevelSpec(id: "summer-3", seasonID: "summer", index: 3, title: "Summer, three",
+            out["summer-3"] = LevelSpec(id: "summer-3", seasonID: "summer", index: 3, title: "Summer, three", name: "The gap",
                                         goals: [goal(.leadShoal(gate: gate), shoalLine, wakes: .shoal)],
                                         pads: pads, hint: .shoal, bloomTarget: 1.5)
         }
@@ -635,7 +638,7 @@ enum Library {
         do {
             let bed = Shape(centre: CGPoint(x: 0.5, y: 0.22), radius: 0.16)
             let stones = ring(5, centre: CGPoint(x: 0.5, y: 0.27), radius: 0.11, from: -2.7, to: -0.44)
-            out["summer-4"] = LevelSpec(id: "summer-4", seasonID: "summer", index: 4, title: "Summer, four",
+            out["summer-4"] = LevelSpec(id: "summer-4", seasonID: "summer", index: 4, title: "Summer, four", name: "Suikinkutsu",
                                         goals: [goal(.suikinkutsu(stones: stones, order: [0, 2, 1, 3, 4]),
                                                      "Play the stones in the order the pond hums.", wakes: .chime)],
                                         shallows: [bed], hint: .chime, bloomTarget: 2.0)
@@ -649,7 +652,7 @@ enum Library {
             let c = CGPoint(x: 0.5, y: 0.42)
             var pads = ring(6, centre: c, radius: 0.045, from: 0, to: 2 * .pi * 5 / 6).map { Shape(centre: $0, radius: 0.030) }
             pads.append(Shape(centre: c, radius: 0.034))
-            out["summer-5"] = LevelSpec(id: "summer-5", seasonID: "summer", index: 5, title: "Summer, five",
+            out["summer-5"] = LevelSpec(id: "summer-5", seasonID: "summer", index: 5, title: "Summer, five", name: "The shy koi",
                                         goals: [goal(.temptShyKoi(home: Shape(centre: c, radius: 0.11)), "Tempt the shy koi out.", wakes: .shy)],
                                         pads: pads, hint: .shy, bloomTarget: 2.5, duckweed: true)
         }
@@ -662,7 +665,7 @@ enum Library {
             var pads = ring(6, centre: bud, radius: 0.072, from: -2.42, to: 2.42).map { Shape(centre: $0, radius: 0.027) }
             pads.removeAll { abs($0.centre.x - bud.x) < 0.02 && $0.centre.y > bud.y }
             let c = channel(y: 0.62)
-            out["summer-6"] = LevelSpec(id: "summer-6", seasonID: "summer", index: 6, title: "Summer, six",
+            out["summer-6"] = LevelSpec(id: "summer-6", seasonID: "summer", index: 6, title: "Summer, six", name: "Summer rain",
                                         goals: [goal(.partDuckweed(cover: 0.12), "Part the duckweed.", wakes: .clear),
                                                 goal(.wakeTarget(.bud, at: bud, threshold: 0.05), "Wake the lily bud with a wave.", wakes: .bud),
                                                 goal(.leadShoal(gate: c.gate), shoalLine, wakes: .shoal)],
@@ -679,7 +682,7 @@ enum Library {
         // Autumn one, "the leaves that fall": leaves keep coming down on the
         // water for a while. A gust sweeps them; they cluster and clog. The
         // pond is done when the ones that fell are all at the banks.
-        out["autumn-1"] = LevelSpec(id: "autumn-1", seasonID: "autumn", index: 1, title: "Autumn, one",
+        out["autumn-1"] = LevelSpec(id: "autumn-1", seasonID: "autumn", index: 1, title: "Autumn, one", name: "Falling leaves",
                                     goals: [goal(.clearDebris, "Send the fallen leaves to the banks.", wakes: .clear)],
                                     hint: .leaves, bloomTarget: 0.5, leaves: 12)
 
@@ -687,7 +690,7 @@ enum Library {
         // with a low sill toward the pond. Rocking the pond in rhythm builds
         // a wave that spills over the sill; every spill fills the pool a
         // little, and full, it joins the pond.
-        out["autumn-2"] = LevelSpec(id: "autumn-2", seasonID: "autumn", index: 2, title: "Autumn, two",
+        out["autumn-2"] = LevelSpec(id: "autumn-2", seasonID: "autumn", index: 2, title: "Autumn, two", name: "The dry pool",
                                     goals: [goal(.fillPool(lip: CGPoint(x: 0.5, y: 0.145),
                                                            pool: Shape(centre: CGPoint(x: 0.5, y: 0.08), radius: 0.05),
                                                            lipHeight: 0.03), "Fill the dry pool.", wakes: .pool)],
@@ -698,7 +701,7 @@ enum Library {
         // shoal. The logs go first, then the shoal follows a wake through.
         do {
             let c = channel(y: 0.48, x0: 0.16, x1: 0.84)
-            out["autumn-3"] = LevelSpec(id: "autumn-3", seasonID: "autumn", index: 3, title: "Autumn, three",
+            out["autumn-3"] = LevelSpec(id: "autumn-3", seasonID: "autumn", index: 3, title: "Autumn, three", name: "The weir",
                                         goals: [goal(.clearDebris, "Move the logs out of the way.", wakes: .clear),
                                                 goal(.leadShoal(gate: c.gate), shoalLine, wakes: .shoal)],
                                         debris: [log(at: CGPoint(x: 0.38, y: 0.50)), log(at: CGPoint(x: 0.60, y: 0.50))],
@@ -710,7 +713,7 @@ enum Library {
         // water over the log and a patient finger tempt it out.
         do {
             let home = CGPoint(x: 0.5, y: 0.46)
-            out["autumn-4"] = LevelSpec(id: "autumn-4", seasonID: "autumn", index: 4, title: "Autumn, four",
+            out["autumn-4"] = LevelSpec(id: "autumn-4", seasonID: "autumn", index: 4, title: "Autumn, four", name: "Under the log",
                                         goals: [goal(.temptShyKoi(home: Shape(centre: home, radius: 0.06)), "Tempt the shy koi out.", wakes: .shy)],
                                         debris: [log(at: home, rotation: 0.2)],
                                         hint: .shy, bloomTarget: 2.0, leaves: 8)
@@ -719,7 +722,7 @@ enum Library {
         // Autumn five, "the stream": rain on the pond, a stream running in
         // at the top-left corner, and the leaves still coming down. The
         // current takes them one way; the rest is the player's.
-        out["autumn-5"] = LevelSpec(id: "autumn-5", seasonID: "autumn", index: 5, title: "Autumn, five",
+        out["autumn-5"] = LevelSpec(id: "autumn-5", seasonID: "autumn", index: 5, title: "Autumn, five", name: "The inlet",
                                     goals: [goal(.clearDebris, "Send the fallen leaves to the banks.", wakes: .clear)],
                                     shallows: [Shape(centre: CGPoint(x: 0.72, y: 0.40), radius: 0.10)],
                                     hint: .leaves, bloomTarget: 2.5, rain: true,
@@ -727,7 +730,7 @@ enum Library {
 
         // Autumn six, "last light": the still pond at dusk. Eight seconds of
         // glass, the moon in the water, and the year is done.
-        out["autumn-6"] = LevelSpec(id: "autumn-6", seasonID: "autumn", index: 6, title: "Autumn, six",
+        out["autumn-6"] = LevelSpec(id: "autumn-6", seasonID: "autumn", index: 6, title: "Autumn, six", name: "Dusk",
                                     goals: [goal(.stillness(seconds: 8), "Let the pond go still.", wakes: .moon)],
                                     hint: .still, bloomTarget: 3.0, dusk: true)
     }

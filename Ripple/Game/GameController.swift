@@ -2422,7 +2422,12 @@ final class GameController: ObservableObject, TouchInput {
             if let h = hint {
                 next = PondWords(title: nil, line: h.text)
             } else if elapsed < 6 {
-                next = PondWords(title: level.title, line: level.goal)
+                // The level's name over its goal, with the season and
+                // number small above them. A level without a name yet
+                // opens on its number alone.
+                next = level.name.isEmpty
+                    ? PondWords(title: level.title, line: level.goal)
+                    : PondWords(title: level.name, line: level.goal, chapter: level.title)
             } else if !statusText.isEmpty {
                 next = PondWords(title: nil, line: statusText)
             }
@@ -2430,54 +2435,79 @@ final class GameController: ObservableObject, TouchInput {
         if next != words { words = next }
     }
 
-    /// What is left, from the goals not yet met. The line is only written
-    /// again when it has changed.
+    /// What is left, from the goals not yet met, said the way the level's
+    /// opening line says things: a quiet sentence, never a readout. The
+    /// first two unmet goals are joined; any more wait their turn. The line
+    /// is only written again when it has changed.
     private func updateStatus() {
         var parts: [String] = []
         let states = evaluator.states
         for (i, g) in goals.enumerated() where i < states.count && !states[i].done {
-            let st = states[i]
-            switch g.kind {
-            case .clearDebris:
-                let left = remainingDebris + (leafFall.map { $0.total - $0.landed } ?? 0)
-                parts.append(level.leaves > 0 ? (left == 1 ? "1 leaf left" : "\(left) leaves left")
-                                              : (left == 1 ? "1 piece left" : "\(left) pieces left"))
-            case .breakIce:
-                parts.append("ice \(Int(((iceField?.fraction ?? 0) * 100).rounded()))%")
-            case .clearSilt:
-                parts.append("silt \(Int(((1 - cleaned) * 100).rounded()))%")
-            case .partDuckweed:
-                parts.append("duckweed \(Int(((renderer?.filmCover ?? 0) * 100).rounded()))%")
-            case .rootSeeds(_, let n):
-                let left = max(0, n - rootedSeeds)
-                parts.append(left == 1 ? "1 seed to root" : "\(left) seeds to root")
-            case .callKoi:
-                parts.append("koi still below")
-            case .koiOpensBud:
-                parts.append("bud still closed")
-            case .leadShoal:
-                parts.append("shoal not through")
-            case .temptShyKoi:
-                parts.append("the shy koi hides")
-            case .wakeTarget(let kind, _, _):
-                parts.append(kind == .bud ? "bud asleep" : "bell asleep")
-            case .shishiOdoshi(_, let n):
-                parts.append("\(min(knocks, n)) knock\(knocks == 1 ? "" : "s") of \(n)")
-            case .suikinkutsu(_, let order):
-                let left = max(0, order.count - notesPlayed.count)
-                parts.append(left == 1 ? "1 note to play" : "\(left) notes to play")
-            case .fillPool:
-                parts.append("pool \(Int((poolFill * 100).rounded()))% full")
-            case .stillness(let seconds):
-                let left = Int((seconds - st.held).rounded(.up))
-                parts.append(st.held > 0 ? "still for \(max(1, left)) s more" : "the pond is not still")
-            }
+            parts.append(statusPhrase(for: g.kind, state: states[i]))
         }
         // The line is written when its words change, not every frame.
         let key = SIMD4<Int>(parts.count, parts.joined(separator: ",").hashValue & 0x7FFFFFFF, 0, 0)
         guard key != statusKey else { return }
         statusKey = key
-        statusText = parts.isEmpty ? (goals.isEmpty ? "" : "The pond wakes.") : parts.joined(separator: ", ")
+        statusText = parts.isEmpty ? (goals.isEmpty ? "" : "The pond wakes.") : parts.prefix(2).joined(separator: "; ")
+    }
+
+    /// One goal's sentence while it is still open.
+    private func statusPhrase(for kind: GoalKind, state st: GoalEvaluator.State) -> String {
+        switch kind {
+        case .clearDebris:
+            let left = remainingDebris + (leafFall.map { $0.total - $0.landed } ?? 0)
+            if level.leaves > 0 {
+                if left == 1 { return "One leaf still to reach the bank" }
+                return "\(Words.count(left, capitalised: true)) leaves still to reach the bank"
+            }
+            let logs = debris.filter { !$0.cleared && $0.cls == .heavy && $0.meltsIn == nil }.count
+            if logs == left, left > 0 {
+                return left == 1 ? "The log still lies in the way" : "The logs still lie in the way"
+            }
+            if left == 1 { return "One piece still to reach the bank" }
+            return "\(Words.count(left, capitalised: true)) pieces still to reach the bank"
+        case .breakIce:
+            return Words.byThirds(iceField?.fraction ?? 1,
+                                  "A last few scraps of ice", "The ice is breaking up", "The ice holds")
+        case .clearSilt:
+            return Words.byThirds(1 - cleaned,
+                                  "The bed is nearly clear", "The silt is clearing", "The silt still lies thick")
+        case .partDuckweed:
+            return Words.byThirds(renderer?.filmCover ?? 1,
+                                  "A last drift of duckweed", "The duckweed is parting", "The duckweed lies unbroken")
+        case .rootSeeds(_, let n):
+            let left = max(0, n - rootedSeeds)
+            if left == 1 { return "One seed still to root" }
+            return "\(Words.count(left, capitalised: true)) seeds still to root"
+        case .callKoi:
+            return "The koi is still below"
+        case .koiOpensBud:
+            return "The bud waits for the koi"
+        case .leadShoal:
+            return "The shoal has not gone through"
+        case .temptShyKoi:
+            return "The shy koi keeps to its hiding place"
+        case .wakeTarget(let kind, _, _):
+            return kind == .bud ? "The bud sleeps" : "The bell hangs silent"
+        case .shishiOdoshi(_, let n):
+            let k = min(knocks, n)
+            if k == 0 { return "The bamboo waits for its first knock" }
+            return "The bamboo has knocked \(Words.times(k))"
+        case .suikinkutsu(_, let order):
+            let played = min(notesPlayed.count, order.count)
+            let left = max(0, order.count - played)
+            if played == 0 { return "The stones wait for their first note" }
+            if left == 1 { return "\(Words.count(played, capitalised: true)) notes played, one to go" }
+            return "\(Words.count(played, capitalised: true)) \(played == 1 ? "note" : "notes") played, \(Words.count(left)) to go"
+        case .fillPool:
+            if poolFill <= 0.02 { return "The pool is dry" }
+            return Words.byThirds(1 - poolFill,
+                                  "The pool is nearly full", "The pool is half full", "The pool is filling")
+        case .stillness(let seconds):
+            if st.held <= 0 { return "Let the water go glassy" }
+            return st.held < seconds * 0.6 ? "Stillness gathers" : "Almost still"
+        }
     }
 
     /// Pieces still on the water that are the player's to clear: not seeds,
@@ -2560,6 +2590,33 @@ enum HintMemory {
         return UserDefaults.standard.bool(forKey: "hint.seen.\(h.rawValue)")
     }
     static func markSeen(_ h: Hint) { UserDefaults.standard.set(true, forKey: "hint.seen.\(h.rawValue)") }
+}
+
+/// Numbers said as words, so a line under the pond never reads as a readout.
+enum Words {
+    private static let small = ["zero", "one", "two", "three", "four", "five", "six",
+                                "seven", "eight", "nine", "ten", "eleven", "twelve"]
+
+    /// "one" ... "twelve", and "many" past that.
+    static func count(_ n: Int, capitalised: Bool = false) -> String {
+        let w = n >= 0 && n < small.count ? small[n] : "many"
+        return capitalised ? w.prefix(1).uppercased() + w.dropFirst() : w
+    }
+
+    /// "once", "twice", "three times".
+    static func times(_ n: Int) -> String {
+        switch n {
+        case 1: return "once"
+        case 2: return "twice"
+        default: return "\(count(n)) times"
+        }
+    }
+
+    /// One of three phrases for how much of something remains, 0...1: the
+    /// last third, the middle, and the first.
+    static func byThirds(_ remaining: Float, _ low: String, _ mid: String, _ high: String) -> String {
+        remaining < 1.0 / 3 ? low : (remaining < 2.0 / 3 ? mid : high)
+    }
 }
 
 /// Smooth value noise in 0...1. The pond and the stream both wander their

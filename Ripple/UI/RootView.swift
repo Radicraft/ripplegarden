@@ -1,9 +1,9 @@
 import SwiftData
 import SwiftUI
 
-/// The garden path, a level, or the player's own plot. One controller lives
-/// for the whole app and is re-pointed at whichever level is opened; the
-/// plot keeps its own.
+/// The garden path, a level, or the player's own plots. One controller
+/// lives for the whole app and is re-pointed at whichever level is opened;
+/// the plots keep their own, one per plot, through the pager.
 struct RootView: View {
 
     enum Screen: Equatable {
@@ -14,7 +14,7 @@ struct RootView: View {
 
     @StateObject private var game: GameController
     @StateObject private var hub = HubController()
-    @StateObject private var plot = PlotController()
+    @StateObject private var plots = PlotPager()
     @State private var screen: Screen
 
     init() {
@@ -60,7 +60,8 @@ struct RootView: View {
                 }
                 .transition(.opacity)
             case .plot:
-                PlotView(plot: plot) {
+                // `-plot`, `-plotDug` and `-plotFull` land here on plot 0.
+                PlotView(pager: plots) {
                     withAnimation(.easeInOut(duration: 0.6)) { screen = .garden }
                 }
                 .transition(.opacity)

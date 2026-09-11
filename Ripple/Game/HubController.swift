@@ -104,7 +104,7 @@ final class HubController: ObservableObject, TouchInput {
     // MARK: - What each pool has been woken into
 
     /// Read from the store once per change, never fetched in the frame.
-    private struct PoolState {
+    private struct PoolState: Equatable {
         var unlocked = false
         var done = false
         var tokens: Set<WokeToken> = []
@@ -118,6 +118,30 @@ final class HubController: ObservableObject, TouchInput {
     /// The koi and the small fish the pools are given, one kind per pool.
     private let koiKinds = ["n_koi_1", "n_koi_5", "n_koi_3", "n_koi_2", "n_koi_6", "n_koi_4"]
     private let shoalKinds = ["minnow_1", "rudd_1", "stickleback_1", "minnow_2", "rudd_2", "stickleback_2"]
+
+    // MARK: - Petals grown on the map
+
+    /// A woken pool grows a petal of its season every `petalMinutes` of
+    /// real time, up to `petalCap`, and keeps them on its water until they
+    /// are picked. The count and the clock are saved per pool; where each
+    /// petal lies is not, so they come back scattered afresh.
+    static let petalMinutes: Double = 30
+    static let petalCap = 6
+    private struct PoolPetals {
+        var count: Int
+        var lastGrownAt: Date
+        var lastCollected: Date?
+    }
+    /// By level id.
+    private var poolPetals: [String: PoolPetals] = [:]
+    /// The petals afloat, by pool index.
+    private var petalsAfloat: [Int: [Debris]] = [:]
+    private var nextPetalID = 1
+    private var nextPetalGrowthAt: Float = 0
+    /// The petals probed last frame, after the weed tips, in probe order.
+    private var petalProbes: [Debris] = []
+    private var petalProbeBase = 0
+    private let inventory = Inventory.shared
 
     init() {
         // Spring dresses the stream; the seasons show in what sits at each
@@ -339,6 +363,14 @@ final class HubController: ObservableObject, TouchInput {
                 sourceMist.append((x, y, phase, size))
             }
         }
+        // What each pool has grown while the app was away.
+        poolPetals = [:]
+        for (id, p) in progress.allPoolPetals() {
+            poolPetals[id] = PoolPetals(count: p.count, lastGrownAt: p.lastGrownAt, lastCollected: p.lastCollected)
+        }
+        petalsAfloat = [:]
+        petalProbes = []
+        nextPetalGrowthAt = 0
         garden.depthAt = { [weak self] p in
             guard let self else { return 1 }
             return self.depth(at: CGPoint(x: p.x / self.viewSize.width, y: p.y / self.viewSize.height))
@@ -676,6 +708,21 @@ final class HubController: ObservableObject, TouchInput {
         for tip in tips {
             if let c = renderer.cell(for: tip, in: viewSize) { cells.append(c) }
         }
+        // The petals on the pools read the water too, after the weeds.
+        var petalSamples: [Int: FieldSample] = [:]
+        for (k, d) in petalProbes.enumerated() where petalProbeBase + k < samples.count {
+            petalSamples[d.id] = samples[petalProbeBase + k]
+        }
+        updatePetals(dt: dt, samples: petalSamples)
+        petalProbeBase = cells.count
+        petalProbes = []
+        for (i, list) in petalsAfloat where i < pools.count && inReach(pools[i]) {
+            for d in list where cells.count < Tuning.maxProbes {
+                guard let c = renderer.cell(for: d.position, in: viewSize) else { continue }
+                cells.append(c)
+                petalProbes.append(d)
+            }
+        }
         renderer.setProbes(cells)
 
         garden.update(dt: dt, now: now)
@@ -818,6 +865,10 @@ final class HubController: ObservableObject, TouchInput {
             guard i < life.count, abs(pool.centre.y - viewY) < reach else { continue }
             dressPool(pool, state: state, life: life[i], night: night,
                       over: &over, under: &under, solids: &solids, painting: painting)
+            // The petals the pool has grown, lying on its water.
+            for d in petalsAfloat[i] ?? [] {
+                paper(Sprite(d.sprite, at: d.position, size: petalSize(d), rotation: Float(d.angle), mode: .floater, alpha: 1))
+            }
         }
         // The haze over each stretch, thinning as its pools wake.
         for m in stretchMist {
@@ -921,11 +972,15 @@ final class HubController: ObservableObject, TouchInput {
     private func refreshStates() {
         guard statesVersion != progress.version || states.count != pools.count else { return }
         statesVersion = progress.version
-        states = pools.map { p in
+        let fresh = pools.map { p in
             PoolState(unlocked: progress.isUnlocked(level: p.level),
                       done: progress.isComplete(levelID: p.level.id),
                       tokens: progress.woke(levelID: p.level.id))
         }
+        // The wallet bumps the version too, for a petal picked off the
+        // water: the life is laid out again only when a pool has changed.
+        guard fresh != states || life.count != pools.count else { return }
+        states = fresh
         wokeFraction = [:]
         for season in Library.seasons {
             let mine = pools.indices.filter { pools[$0].season.id == season.id }
@@ -1134,6 +1189,120 @@ final class HubController: ObservableObject, TouchInput {
         }
     }
 
+    // MARK: - The petals on the pools
+
+    private func inReach(_ pool: Pool) -> Bool {
+        guard let renderer else { return false }
+        let reach = CGFloat(screenSize.height) / CGFloat(max(0.3, renderer.zoom)) * 0.75 + 180
+        return abs(pool.centre.y - CGFloat(renderer.viewCentre.y)) < reach
+    }
+
+    private func petalSize(_ d: Debris) -> CGSize {
+        let s = garden.textureSize(d.sprite)
+        let long = max(s.width, s.height)
+        let side = d.radius * 2
+        return CGSize(width: side * s.width / long, height: side * s.height / long)
+    }
+
+    /// The petals drift on the water of their pool, and every few seconds
+    /// the clocks are read for any grown since.
+    private func updatePetals(dt: Float, samples: [Int: FieldSample]) {
+        if elapsed > nextPetalGrowthAt {
+            nextPetalGrowthAt = elapsed + 5
+            growPetals(now: Date())
+        }
+        for (i, list) in petalsAfloat where i < pools.count && inReach(pools[i]) {
+            let pool = pools[i]
+            let keep = pool.radius * 0.82
+            for d in list {
+                DebrisPhysics.integrate(d, sample: samples[d.id], current: .zero, dt: dt)
+                // A petal stays on its own pool: past the rim it is eased back.
+                let dx = d.position.x - pool.centre.x, dy = d.position.y - pool.centre.y
+                let dist = hypot(dx, dy)
+                if dist > keep {
+                    d.position = CGPoint(x: pool.centre.x + dx / dist * keep, y: pool.centre.y + dy / dist * keep)
+                    d.velocity *= 0.2
+                }
+            }
+            DebrisPhysics.separate(list, dt: dt)
+        }
+    }
+
+    /// Each woken pool's clock: a petal per `petalMinutes` since the count
+    /// last stepped, up to the cap, saved as it steps. A pool seen woken
+    /// for the first time starts its clock now. `-mapPetals` fills every
+    /// woken pool at once, for looking at the map.
+    private func growPetals(now: Date) {
+        let fill = ProcessInfo.processInfo.arguments.contains("-mapPetals")
+        for (i, pool) in pools.enumerated() {
+            guard i < states.count, states[i].done else { continue }
+            let id = pool.level.id
+            var p = poolPetals[id] ?? PoolPetals(count: 0, lastGrownAt: now, lastCollected: nil)
+            var changed = poolPetals[id] == nil
+            let step = HubController.petalMinutes * 60
+            // Full: nothing grows and nothing is written; the clock is set
+            // going again when one is picked.
+            if p.count < HubController.petalCap {
+                let grown = Int(now.timeIntervalSince(p.lastGrownAt) / step)
+                let add = min(grown, HubController.petalCap - p.count)
+                if add > 0 {
+                    p.count += add
+                    p.lastGrownAt = p.count >= HubController.petalCap ? now : p.lastGrownAt.addingTimeInterval(Double(add) * step)
+                    changed = true
+                }
+                if fill, p.count < HubController.petalCap {
+                    p.count = HubController.petalCap
+                    p.lastGrownAt = now
+                    changed = true
+                }
+            }
+            if changed {
+                poolPetals[id] = p
+                progress.setPoolPetals(levelID: id, count: p.count, lastGrownAt: p.lastGrownAt, lastCollected: p.lastCollected)
+            }
+            // What is afloat catches up with the count.
+            var list = petalsAfloat[i] ?? []
+            while list.count < p.count {
+                let a = CGFloat.random(in: 0...(2 * .pi))
+                let r = CGFloat.random(in: 0.15...0.7) * pool.radius
+                let at = CGPoint(x: pool.centre.x + cos(a) * r, y: pool.centre.y + sin(a) * r * 0.9)
+                let d = Debris(id: nextPetalID, cls: .light, sprite: pool.season.woodblock.petalParticle,
+                               position: at, radius: 8, scale: 1)
+                nextPetalID += 1
+                list.append(d)
+            }
+            if list.count > p.count { list.removeLast(list.count - p.count) }
+            petalsAfloat[i] = list
+        }
+    }
+
+    /// A tap within reach of a petal on a pool takes it: a bead of a ring,
+    /// the chime, one more in the purse. False if no petal was that near.
+    private func collectPetal(near p: CGPoint) -> Bool {
+        var best: (pool: Int, index: Int, d: CGFloat)?
+        for (i, list) in petalsAfloat {
+            for (k, d) in list.enumerated() {
+                let dist = hypot(d.position.x - p.x, d.position.y - p.y)
+                if dist < 26, dist < (best?.d ?? .infinity) { best = (i, k, dist) }
+            }
+        }
+        guard let hit = best, var list = petalsAfloat[hit.pool] else { return false }
+        let d = list.remove(at: hit.index)
+        petalsAfloat[hit.pool] = list
+        let id = pools[hit.pool].level.id
+        var pp = poolPetals[id] ?? PoolPetals(count: 1, lastGrownAt: Date(), lastCollected: nil)
+        if pp.count >= HubController.petalCap { pp.lastGrownAt = Date() }
+        pp.count = max(0, pp.count - 1)
+        pp.lastCollected = Date()
+        poolPetals[id] = pp
+        progress.setPoolPetals(levelID: id, count: pp.count, lastGrownAt: pp.lastGrownAt, lastCollected: pp.lastCollected)
+        inventory.addPetals(1)
+        renderer?.addSplat(at: d.position, in: viewSize, radius: 5, amplitude: -0.06)
+        sound.petalPick()
+        haptics.plop()
+        return true
+    }
+
     // MARK: - Touch
 
     private func worldPoint(_ p: CGPoint) -> CGPoint { renderer?.worldPoint(screen: p) ?? p }
@@ -1273,6 +1442,8 @@ final class HubController: ObservableObject, TouchInput {
         if abs(momentum) > 600 { momentum = 600 * (momentum < 0 ? -1 : 1) }
         momentum = 0
         let point = worldPoint(screen)
+        // A petal under the finger is picked; the pool under it stays shut.
+        if CACurrentMediaTime() - start.began < 0.45, collectPetal(near: point) { return }
         // A tap: a ripple, the life startles, and a pool opens.
         renderer.touchDown(id: id, at: point, in: viewSize, weight: 0.5)
         renderer.touchUp(id: id)

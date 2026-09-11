@@ -78,6 +78,53 @@ final class PlotRecord {
     }
 }
 
+/// The petals a woken pool on the map has grown and not yet had picked.
+/// One row per level; if a sync leaves two, the reader takes the one
+/// with the most petals and the later clock.
+@Model
+final class PoolPetalsRecord {
+    var levelID: String = ""
+    var count: Int = 0
+    /// When the count last stepped, so growth carries on from there.
+    var lastGrownAt: Date = Date()
+    var lastCollected: Date? = nil
+
+    init(levelID: String, count: Int, lastGrownAt: Date, lastCollected: Date?) {
+        self.levelID = levelID
+        self.count = count
+        self.lastGrownAt = lastGrownAt
+        self.lastCollected = lastCollected
+    }
+}
+
+/// A plot along the bank the player has paid for. Plot 0 is never
+/// recorded: it is free. A row per plot, so two devices that both bought
+/// one merge to the union.
+@Model
+final class PlotDeedRecord {
+    var plotIndex: Int = 0
+    var dugAt: Date = Date()
+
+    init(plotIndex: Int) {
+        self.plotIndex = plotIndex
+        self.dugAt = Date()
+    }
+}
+
+/// A tint bought for one catalogue item. The latest row per item wins.
+@Model
+final class ColourwayRecord {
+    var itemID: String = ""
+    var tint: String = ""
+    var boughtAt: Date = Date()
+
+    init(itemID: String, tint: String) {
+        self.itemID = itemID
+        self.tint = tint
+        self.boughtAt = Date()
+    }
+}
+
 /// Progress lives in SwiftData and mirrors through the player's private
 /// CloudKit database, so a level finished on one device is finished on all
 /// of them. Every property has a default and nothing is unique, which is what
@@ -98,7 +145,8 @@ final class ProgressStore: ObservableObject {
 
     private init() {
         let schema = Schema([LevelRecord.self, GardenRecord.self,
-                             OwnedRecord.self, WalletRecord.self, PlotRecord.self])
+                             OwnedRecord.self, WalletRecord.self, PlotRecord.self,
+                             PoolPetalsRecord.self, PlotDeedRecord.self, ColourwayRecord.self])
         let reset = ProcessInfo.processInfo.arguments.contains("-resetProgress")
 
         // CloudKit mirroring does not throw when the entitlement is missing;
@@ -129,6 +177,9 @@ final class ProgressStore: ObservableObject {
             try? context.delete(model: OwnedRecord.self)
             try? context.delete(model: WalletRecord.self)
             try? context.delete(model: PlotRecord.self)
+            try? context.delete(model: PoolPetalsRecord.self)
+            try? context.delete(model: PlotDeedRecord.self)
+            try? context.delete(model: ColourwayRecord.self)
             try? context.save()
         }
         // `-unlockAll` opens every level for testing, and wakes each pool
@@ -335,6 +386,87 @@ final class ProgressStore: ObservableObject {
             context.insert(PlotRecord(plotIndex: index, json: data))
         }
         try? context.save()
+    }
+
+    // MARK: - The living map, the plots along the bank, the colourways
+
+    /// What a woken pool has grown, or nil if it has never grown anything.
+    func poolPetals(levelID: String) -> (count: Int, lastGrownAt: Date, lastCollected: Date?)? {
+        guard let context else { return nil }
+        let descriptor = FetchDescriptor<PoolPetalsRecord>(predicate: #Predicate { $0.levelID == levelID })
+        let rows = (try? context.fetch(descriptor)) ?? []
+        guard let row = rows.max(by: { ($0.count, $0.lastGrownAt) < ($1.count, $1.lastGrownAt) }) else { return nil }
+        return (row.count, row.lastGrownAt, row.lastCollected)
+    }
+
+    /// Every pool's petals at once, by level id, so the map reads the store
+    /// once rather than once per pool.
+    func allPoolPetals() -> [String: (count: Int, lastGrownAt: Date, lastCollected: Date?)] {
+        guard let context else { return [:] }
+        var out: [String: (count: Int, lastGrownAt: Date, lastCollected: Date?)] = [:]
+        for row in (try? context.fetch(FetchDescriptor<PoolPetalsRecord>())) ?? [] {
+            if let had = out[row.levelID], (had.count, had.lastGrownAt) >= (row.count, row.lastGrownAt) { continue }
+            out[row.levelID] = (row.count, row.lastGrownAt, row.lastCollected)
+        }
+        return out
+    }
+
+    /// Writes one pool's petals. Does not bump `version`: the map's life is
+    /// not laid out again for a petal picked.
+    func setPoolPetals(levelID: String, count: Int, lastGrownAt: Date, lastCollected: Date?) {
+        guard let context else { return }
+        let descriptor = FetchDescriptor<PoolPetalsRecord>(predicate: #Predicate { $0.levelID == levelID })
+        let rows = (try? context.fetch(descriptor)) ?? []
+        if let row = rows.first {
+            row.count = count
+            row.lastGrownAt = lastGrownAt
+            row.lastCollected = lastCollected
+            for extra in rows.dropFirst() { context.delete(extra) }
+        } else {
+            context.insert(PoolPetalsRecord(levelID: levelID, count: count, lastGrownAt: lastGrownAt, lastCollected: lastCollected))
+        }
+        try? context.save()
+    }
+
+    /// The plots the player may dig: 0 always, and every deed bought.
+    func ownedPlots() -> Set<Int> {
+        var out: Set<Int> = [0]
+        guard let context else { return out }
+        for row in (try? context.fetch(FetchDescriptor<PlotDeedRecord>())) ?? [] { out.insert(row.plotIndex) }
+        return out
+    }
+
+    func addPlotDeed(index: Int) {
+        guard let context, index > 0, !ownedPlots().contains(index) else { return }
+        context.insert(PlotDeedRecord(plotIndex: index))
+        try? context.save()
+        version += 1
+    }
+
+    /// Item id to tint name, the latest bought per item.
+    func colourways() -> [String: String] {
+        guard let context else { return [:] }
+        var out: [String: (tint: String, at: Date)] = [:]
+        for row in (try? context.fetch(FetchDescriptor<ColourwayRecord>())) ?? [] {
+            if let had = out[row.itemID], had.at > row.boughtAt { continue }
+            out[row.itemID] = (row.tint, row.boughtAt)
+        }
+        return out.mapValues(\.tint)
+    }
+
+    func setColourway(item: String, tint: String) {
+        guard let context else { return }
+        let descriptor = FetchDescriptor<ColourwayRecord>(predicate: #Predicate { $0.itemID == item })
+        let rows = (try? context.fetch(descriptor)) ?? []
+        if let row = rows.first {
+            row.tint = tint
+            row.boughtAt = Date()
+            for extra in rows.dropFirst() { context.delete(extra) }
+        } else {
+            context.insert(ColourwayRecord(itemID: item, tint: tint))
+        }
+        try? context.save()
+        version += 1
     }
 }
 
