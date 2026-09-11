@@ -730,6 +730,20 @@ final class GameController: ObservableObject, TouchInput {
         updateWind(dt: dt)
         updateInlet(dt: dt)
 
+        // The phone moving tips the pond: a broad slosh toward the side it
+        // tips to, more the harder it is handled. A still hand leaves it be.
+        if garden.handMotion > 0.05, phase == .playing {
+            handSloshAccumulator += garden.handMotion * dt * 6
+            while handSloshAccumulator >= 1 {
+                handSloshAccumulator -= 1
+                let w = viewSize.width, h = viewSize.height
+                let dir = simd_length(garden.handTilt) > 0.01 ? simd_normalize(garden.handTilt) : SIMD2<Float>(Float.random(in: -1...1), Float.random(in: -1...1))
+                let p = CGPoint(x: w * 0.5 + CGFloat(dir.x) * w * 0.3 + CGFloat.random(in: -w * 0.15...w * 0.15),
+                                y: h * 0.5 + CGFloat(dir.y) * h * 0.3 + CGFloat.random(in: -h * 0.15...h * 0.15))
+                renderer.addSplat(at: p, in: viewSize, radius: Float.random(in: 30...50), amplitude: -0.02 * min(2, garden.handMotion))
+            }
+        }
+
         // Rain: drops land all over the water, small rings by the dozen and
         // now and then a fatter one, so the surface never rests.
         if level.rain, phase == .playing || phase == .celebrating {
@@ -1508,6 +1522,7 @@ final class GameController: ObservableObject, TouchInput {
     /// The goals read the pond, and the pond shows what they have made of
     /// it: the moon coming up as the water lies still.
     private var lastWakeAt: Float = -99
+    private var handSloshAccumulator: Float = 0
     private var shoalPenned = false
 
     private func readGoals(dt: Float) {
@@ -1529,7 +1544,8 @@ final class GameController: ObservableObject, TouchInput {
                               pool: poolState,
                               targetWoke: targets.allSatisfy(\.woke),
                               sinceWake: elapsed - lastWakeAt,
-                              calledKoi: garden.calledKoi)
+                              calledKoi: garden.calledKoi,
+                              handMotion: garden.handMotion)
         evaluator.update(goals: goals, ctx: ctx)
         // Stillness rises with the wait and falls away softly at a touch.
         let still = evaluator.stillness(of: goals)
@@ -2314,8 +2330,8 @@ final class GameController: ObservableObject, TouchInput {
         if let textures = renderer?.textures {
             reveal = RewardReveal(award: RewardReveal.Award(item: drawn.item, rarity: drawn.rarity, petals: drawn.petals),
                                   textures: textures, world: viewSize,
-                                  centre: worldAt(CGPoint(x: 0.5, y: 0.42)),
-                                  wordsAt: worldAt(CGPoint(x: 0.5, y: 0.60)),
+                                  centre: worldAt(CGPoint(x: 0.5, y: 0.50)),
+                                  wordsAt: worldAt(CGPoint(x: 0.5, y: 0.70)),
                                   bank: CGPoint(x: viewSize.width - 36, y: worldAt(CGPoint(x: 0.5, y: 0.5)).y),
                                   seasonID: season.id, petalTexture: art.petalParticle)
         }
@@ -2527,7 +2543,7 @@ final class GameController: ObservableObject, TouchInput {
             return Words.byThirds(1 - poolFill,
                                   "The pool is nearly full", "The pool is half full", "The pool is filling")
         case .stillness(let seconds):
-            if st.held <= 0 { return "Let the water go glassy" }
+            if st.held <= 0 { return "Hold the phone still and let the water go glassy" }
             return st.held < seconds * 0.6 ? "Stillness gathers" : "Almost still"
         }
     }
@@ -2877,8 +2893,12 @@ final class GoalEvaluator {
             case .fillPool:
                 st.done = ctx.pool?.full ?? false
             case .stillness(let seconds):
+                // Glassy water and a still hand: moving the phone sloshes
+                // the pond, so the wait is something the player does.
                 let calm = ctx.sinceTouch > GoalTuning.calmAfterTouch && ctx.agitation < GoalTuning.calmThreshold
-                st.held = calm ? st.held + ctx.dt : 0
+                    && ctx.handMotion < GoalTuning.stillHand
+                // A stir costs some of the wait, not all of it.
+                st.held = calm ? st.held + ctx.dt : max(0, st.held - ctx.dt * 2)
                 st.done = st.held >= seconds
             }
             states[i] = st

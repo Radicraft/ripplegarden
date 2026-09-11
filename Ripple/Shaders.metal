@@ -657,9 +657,12 @@ fragment float4 floor_compose_fragment(VertexOut in                             
     if (d < 0.98) {
         float grain = 0.85 + 0.30 * fbm(q * 30.0, 3);
         float3 sand = mix(p.shallow.rgb, float3(0.70, 0.62, 0.42), 0.6) * grain;
-        float shallowness = smoothstep(0.75, 0.15, d);
-        col = mix(col, sand, shallowness * 0.55);
-        col *= 1.0 - smoothstep(0.15, 0.0, d) * 0.55;
+        // The shelf's sand comes and goes along the shore rather than
+        // ringing it at one width, and it fades in over the whole slope.
+        float wander = fbm(q * 5.0 + 3.1, 3);
+        float shallowness = smoothstep(0.85, 0.12 + 0.18 * wander, d) * (0.55 + 0.45 * wander);
+        col = mix(col, sand, shallowness * 0.45);
+        col *= 1.0 - smoothstep(0.15, 0.0, d) * 0.35;
     }
 
     float2 mcentre = float2(p.mosaic.x * aspect, p.mosaic.y);
@@ -1452,10 +1455,23 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     }
 
     if (dry > 0.001 || bankTop > 0.001) {
-        // The face: damp dark earth between the water and the bank's top.
+        // The face: damp earth between the water and the bank's top. Only a
+        // bank that faces the camera shows its face (the far shore); the
+        // sides and the near shore show their tops right down to the water,
+        // so the pond is not ringed with a dark line. Which way a shore
+        // faces comes from the slope of the bed: deeper toward the camera
+        // (+y on the plane) means the face looks at us.
         float wetHere = wetTex.sample(smp, wuv).r;
-        float3 face = floorTex.sample(smp, wuv).rgb * float3(0.42, 0.40, 0.38) * (1.0 - 0.3 * wetHere);
-        col = mix(col, face, dry);
+        float2 dtx = 4.0 / float2(depthTex.get_width(), depthTex.get_height());
+        float2 slope = float2(depthTex.sample(smp, wuv + float2(dtx.x, 0)).r - depthTex.sample(smp, wuv - float2(dtx.x, 0)).r,
+                              depthTex.sample(smp, wuv + float2(0, dtx.y)).r - depthTex.sample(smp, wuv - float2(0, dtx.y)).r);
+        float facing = length(slope) > 1e-4 ? saturate(dot(normalize(slope), float2(0.0, 1.0)) * 1.4 - 0.2) : 0.0;
+        float3 earth = floorTex.sample(smp, wuv).rgb;
+        float3 face = earth * float3(0.50, 0.47, 0.44) * (1.0 - 0.3 * wetHere);
+        // Where the face does not show, the ground runs down to the water
+        // as damp bank, a touch darker at the line, no harder than that.
+        float3 dampBank = earth * (0.92 - 0.18 * (1.0 - smoothstep(0.0, 0.10, dHere)) - 0.3 * wetHere);
+        col = mix(col, mix(dampBank, face, facing), dry);
         // The top, lit in relief from its own texture: a little bump from
         // the luminance so grass and pebbles catch the light.
         float2 tx = 1.0 / float2(floorTex.get_width(), floorTex.get_height()) * 1.5;

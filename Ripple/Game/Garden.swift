@@ -44,6 +44,11 @@ final class Garden {
     private var cameraTarget = SIMD2<Float>(0, 0)
     private var leanToward = SIMD2<Float>(0, 0)
     private let motion = CMMotionManager()
+    /// How much the phone is being moved, smoothed: 0 lying still, about 1
+    /// when handled, 2 when shaken. Nothing on the Simulator.
+    private(set) var handMotion: Float = 0
+    /// The phone's tilt away from how it was first held, in gravity units.
+    private(set) var handTilt = SIMD2<Float>(0, 0)
     private var tiltRest: SIMD2<Float>?
     private var weeds: [Weed] = []
     /// Water slope under each weed tip, set by the controller from the probes.
@@ -851,10 +856,18 @@ final class Garden {
         // the last touch that eases off. Everything is smoothed so it flows.
         let t = Float(now)
         var target = SIMD2(sin(t * 0.11) * 4.0, cos(t * 0.083) * 3.0)
-        if let g = motion.deviceMotion?.gravity {
+        if let dm = motion.deviceMotion {
+            let g = dm.gravity
             let tilt = SIMD2(Float(g.x), Float(-g.y))
             if tiltRest == nil { tiltRest = tilt }
             target += (tilt - (tiltRest ?? tilt)) * 90.0
+            // How much the phone itself is moving: a shake, a tip, a turn.
+            // The pond feels it (a still level asks for a still hand).
+            let a = dm.userAcceleration, r = dm.rotationRate
+            let raw = Float(sqrt(a.x * a.x + a.y * a.y + a.z * a.z)) * 2.5
+                    + Float(sqrt(r.x * r.x + r.y * r.y + r.z * r.z)) * 0.35
+            handMotion += (min(2, raw) - handMotion) * min(1, dt * 6)
+            handTilt = tilt - (tiltRest ?? tilt)
         }
         target += leanToward
         leanToward *= exp(-dt * 1.2)
@@ -1398,6 +1411,9 @@ final class Koi {
     /// Where the fish is being led, if it is: a held finger, the shy koi's
     /// way out or back. While set it steers here instead of wandering, and
     /// its own dive and surface timers wait.
+    /// Which way round this fish idles at a finger.
+    private let orbitSense: Float = Bool.random() ? 1 : -1
+
     struct Guide {
         var point: CGPoint
         /// Points per second when there is a way to go.
@@ -1456,8 +1472,11 @@ final class Koi {
         }
         if let g = guide {
             // Led: the point is the target and the fish's own timers wait.
+            // Coming up to a finger it rises gently, not in a bob: the
+            // rise takes a couple of seconds and eases at the top.
             target = g.point
             depthTarget = g.depth
+            depthRate = g.depth < 0.3 ? 0.9 : depthRate
             stateUntil = now + 4
         }
         var splash: (at: CGPoint, radius: Float, amplitude: Float)?
@@ -1481,8 +1500,21 @@ final class Koi {
         var want = atan2(dy, dx)
         // At the point it is led to, the heading holds with a slow sway of
         // the nose rather than hunting after a point it is already on.
-        let hovering = guide.map { reach < Float($0.stop) } ?? false
-        if hovering { want = heading + sin(Float(now) * 1.1) * 0.25 }
+        // Near the point it is led to, the fish does not stop and hunt: it
+        // idles round the finger on a slow small circle, nose in, the way a
+        // koi hangs at a hand over the water.
+        let hovering = guide.map { reach < Float($0.stop) * 1.4 } ?? false
+        if hovering, let g = guide {
+            let ring = Float(g.stop) * 0.9
+            let ax = Float(g.point.x - position.x), ay = Float(g.point.y - position.y)
+            let dist = max(1, hypot(ax, ay))
+            let around = atan2(ay, ax) + orbitSense * (.pi / 2)
+            // Mostly round, a little inward or outward to hold the ring.
+            let inward = atan2(ay, ax)
+            let mixIn = max(-1, min(1, (dist - ring) / ring))
+            want = atan2(sin(around) * (1 - abs(mixIn)) + sin(inward) * mixIn,
+                         cos(around) * (1 - abs(mixIn)) + cos(inward) * mixIn)
+        }
         if Koi.diagnostics, Int(now * 2) != Int((now - Double(dt)) * 2) {
             var d0 = want - heading
             while d0 > .pi { d0 -= 2 * .pi }
@@ -1568,10 +1600,9 @@ final class Koi {
             // Led: slow as the point nears, stop at it. Turning round to a
             // point behind needs way on, so it sweeps round in an arc
             // rather than pivoting on the spot.
-            var desired: CGFloat = 0
-            if !hovering { desired = min(g.speed, 4 + CGFloat(reach - Float(g.stop)) * 0.5) }
-            if abs(diff) > 0.7 { desired = max(desired, 24) }
-            let ease = CGFloat(min(1, dt * 1.8))
+            var desired: CGFloat = hovering ? 9 : min(g.speed, 6 + CGFloat(reach - Float(g.stop)) * 0.45)
+            if abs(diff) > 0.7, !hovering { desired = max(desired, 24) }
+            let ease = CGFloat(min(1, dt * 1.4))
             speed += (desired - speed) * ease
         }
         if speed > 46 { speed -= CGFloat(dt) * (fleeing ? 20 : 45) }

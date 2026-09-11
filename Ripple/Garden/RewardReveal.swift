@@ -356,7 +356,13 @@ final class RewardReveal {
     /// still reads and a tree still fits in the ring.
     /// Shown big, whatever it will be in the pond: the reveal is the prize,
     /// and it fills most of the ring.
-    private var shownSize: CGFloat { min(150, max(118, award.item.size)) }
+    private var shownSize: CGFloat {
+        // A tall painting (a koi, a tree) needs more along its length to
+        // read as big as a round one.
+        let t = textures.size(Catalogue.icon(for: award.item) ?? "")
+        let tall = t.height > t.width * 1.6
+        return tall ? 210 : min(150, max(118, award.item.size))
+    }
 
     /// The item as a painting, or nil if it is a body. A koi is its painting,
     /// a feature its sprite if one is in the bundle, else a stone body.
@@ -368,9 +374,12 @@ final class RewardReveal {
         case .sprite(let n, let s): name = n; stands = s
         case .koi(let t): name = t
         case .shoal(let t): name = t
-        case .feature(let kind):
-            guard Bundle.main.url(forResource: kind, withExtension: "png") != nil else { return nil }
-            name = kind
+        case .feature:
+            // A feature is drawn by the painting the catalogue gives it (a
+            // boat by its boat, a lantern by its lantern), never by its kind.
+            guard let icon = Catalogue.icon(for: award.item),
+                  Bundle.main.url(forResource: icon, withExtension: "png") != nil else { return nil }
+            name = icon
         case .solid: return nil
         }
         let t = textures.size(name)
@@ -402,8 +411,9 @@ final class RewardReveal {
         switch item.art {
         case .solid(let s, let ca, let cb, let tex):
             shape = s; a = ca; b = cb; painting = tex
-        case .feature(let kind):
-            guard Bundle.main.url(forResource: kind, withExtension: "png") == nil else { return nil }
+        case .feature:
+            // Only a feature with no painting at all is shown as a stone.
+            if let icon = Catalogue.icon(for: award.item), Bundle.main.url(forResource: icon, withExtension: "png") != nil { return nil }
             shape = 2; a = [0.56, 0.58, 0.60, 1]; b = [0.36, 0.55, 0.30, 1]; painting = nil
         default: return nil
         }

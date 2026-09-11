@@ -108,11 +108,9 @@ final class Tutorial: ObservableObject {
     private init() {
         let args = ProcessInfo.processInfo.arguments
         let store = ProgressStore.shared
-        // A player who has already woken a pond has no need of the walk;
-        // it is marked off so it never starts on a later launch either.
-        if !store.tutorialDone, !forced, Library.levels.contains(where: { store.isComplete(levelID: $0.id) }) {
-            store.tutorialDone = true
-        }
+        // The walk runs once on every fresh install, whatever progress has
+        // come back from iCloud: the owner wants every first start to begin
+        // with it.
         let skip = args.contains("-noTutorial") || (store.tutorialDone && !forced)
         step = skip ? .done : .tapPool
         if !skip { start() }

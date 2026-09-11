@@ -111,6 +111,8 @@ struct GoalContext {
     var sinceWake: Float = 99
     /// The koi that has answered a held finger and is at the surface, if any.
     var calledKoi: CGPoint? = nil
+    /// How much the phone is being moved (0 still, about 1 handled, 2 shaken).
+    var handMotion: Float = 0
 }
 
 struct ShishiOdoshiState { var fill: Float; var knocks: Int; var tilt: Float }
@@ -225,4 +227,6 @@ enum GoalTuning {
     static let rootAfter: Float = 1.5
     /// A near miss trembles a target above this fraction of its threshold.
     static let trembleFraction: Float = 0.6
+    /// Hand motion above this keeps stillness from gathering.
+    static let stillHand: Float = 0.12
 }

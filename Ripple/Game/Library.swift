@@ -212,7 +212,7 @@ enum Hint: String {
         case .bamboo: return "A swell over the spout fills the bamboo. Full, it tips and knocks."
         case .chime: return "The stones sing when a wave passes. Play them in the order the pond hums."
         case .pool: return "Push the water at the lip with a slow drag, and again as it comes back. Every crest that spills over fills the pool a little."
-        case .still: return "Let the water go glassy and wait."
+        case .still: return "Hold the phone quite still. Every move of your hand tips the water. Let it go glassy."
         }
     }
 }
@@ -518,7 +518,7 @@ enum Library {
         // to do but leave it alone. Glassy for seven seconds and the moon
         // comes up in it.
         out["winter-5"] = LevelSpec(id: "winter-5", seasonID: "winter", index: 5, title: "Winter, five", name: "Thaw",
-                                    goals: [goal(.stillness(seconds: 7), "Let the pond go still.", wakes: .moon)],
+                                    goals: [goal(.stillness(seconds: 7), "Hold the phone still and let the pond go glassy.", wakes: .moon)],
                                     hint: .still, bloomTarget: 2.5)
 
         // Winter six, "waking": the sheet again, with the koi asleep below
@@ -737,7 +737,7 @@ enum Library {
         // Autumn six, "last light": the still pond at dusk. Eight seconds of
         // glass, the moon in the water, and the year is done.
         out["autumn-6"] = LevelSpec(id: "autumn-6", seasonID: "autumn", index: 6, title: "Autumn, six", name: "Dusk",
-                                    goals: [goal(.stillness(seconds: 8), "Let the pond go still.", wakes: .moon)],
+                                    goals: [goal(.stillness(seconds: 8), "Hold the phone still and let the pond go glassy.", wakes: .moon)],
                                     hint: .still, bloomTarget: 3.0, dusk: true)
     }
 
