@@ -55,6 +55,16 @@ All files were trimmed, high-passed, loudness-matched and re-encoded to AAC in .
 | `fx_gulp.m4a` | https://pixabay.com/sound-effects/nature-fish-in-river-6114/ | fish in river | freesound_community | Pixabay Content License (no attribution required) | 0.30 s slice (5.02 to 5.32 s) of a fish mouthing at the surface, a soft wet burble. High-passed at 150 Hz. Gain kept low in the manifest so it stays soft. |
 | `fx_tremble.m4a` | https://pixabay.com/sound-effects/musical-small-wood-block-64458/ | Small wood Block | freesound_community | Pixabay Content License (no attribution required) | One isolated wood-block tick (8.15 to 8.42 s), high-passed at 150 Hz. Loudness-matched like the rest of the set, then held soft by the manifest gain (0.5). 0.27 s. |
 | `amb_night.m4a` | https://pixabay.com/sound-effects/nature-crickets-17862/ | crickets | freesound_community | Pixabay Content License (no attribution required) | Distant cricket chorus, no birds, no traffic, no frogs. 80 s window from 2:40 (avoids the clicks at 1:37 and 2:27), high-passed at 80 Hz, 4 s equal-power crossfade loop, 76 s. Source is a 24 kHz stereo mp3 so it rolls off at 11 kHz; the chorus sits at 1.8 kHz so nothing is lost. Raised about 24 dB from a very quiet original. |
+| `fx_reward_1.m4a` | https://pixabay.com/sound-effects/musical-koto-c4-82455/ | Koto C4 | freesound_community | Pixabay Content License (no attribution required) | Common win: one real koto note (C4), first 2.6 s with a 0.6 s tail fade; 6 dB of limiting on the pluck so the ring carries. |
+| `fx_reward_2.m4a` | https://pixabay.com/sound-effects/musical-koto-c4-82455/ + https://pixabay.com/sound-effects/musical-koto-g4-82454/ | Koto C4 + Koto G4 | freesound_community | Pixabay Content License (no attribution required) | Rare win: a two-note rise built from the same koto sample set, C4 then G4 entering 0.42 s later (+1 dB), 2.85 s with a 0.6 s tail fade. The phrase is assembled from two single-note recordings of one instrument; no synth. |
+| `fx_reward_3.m4a` | https://pixabay.com/sound-effects/musical-koto-hit-106066/ | Koto Hit | freesound_community | Pixabay Content License (no attribution required) | Super-rare win: a strummed koto tremolo flourish with its ring-out (0.24 to 3.20 s, 0.5 s tail fade), 2.96 s. No drum in it. |
+| `fx_petal.m4a` | https://pixabay.com/sound-effects/household-glass-ding-2-70206/ | Glass ding 2 | freesound_community | Pixabay Content License (no attribution required) | First tap on glass (0.44 to 1.04 s), 1.7 kHz fundamental, 0.25 s tail fade, high-passed at 300 Hz. 0.60 s. |
+| `fx_dig_1.m4a` | https://pixabay.com/sound-effects/film-special-effects-digging20200426-125956-01-40420/ | Digging20200426-125956_01 | freesound_community | Pixabay Content License (no attribution required) | One scoop (0.18 to 0.72 s) from a hand-tool-in-soil take; the smallest-sounding dig on Pixabay. Whether the earth was wet is not stated on the page. |
+| `fx_dig_2.m4a` | https://pixabay.com/sound-effects/film-special-effects-digging20200426-125956-01-40420/ | Digging20200426-125956_01 | freesound_community | Pixabay Content License (no attribution required) | Another scoop from the same take (3.28 to 3.92 s). |
+| `fx_fill.m4a` | https://pixabay.com/sound-effects/nature-water-trickling-31169/ | Water Trickling | freesound_community | Pixabay Content License (no attribution required) | Trickle with drips into a pool, 6 s window from 0:05 crossfaded into a 5 s loop (1 s equal-power), high-passed at 80 Hz, 3 dB of limiting. Mono 96 kbps like the other effects because it is a loop=true effect, not an ambience bed. |
+| `fx_pellets.m4a` | https://pixabay.com/sound-effects/nature-water-drops-6223/ | Water Drops | freesound_community | Pixabay Content License (no attribution required) | No pellet-on-water recording exists on Pixabay. This is a real 1.2 s scatter of seven small drips (3.30 to 4.50 s) played at 0.7x length (about 5 semitones up) so the plips read as small and quick. 0.84 s. Flagged as the weakest match in the batch. |
+| `fx_boat.m4a` | https://pixabay.com/sound-effects/film-special-effects-paper-rustle-81855/ | Paper Rustle | freesound_community | Pixabay Content License (no attribution required) | One short rustle (0.20 to 1.18 s), high-passed at 200 Hz, 5 dB limiting on the crackle. |
+| `fx_sluice.m4a` | https://pixabay.com/sound-effects/film-special-effects-rubbing-stone-333609/ | Rubbing Stone | CreatorsHome | Pixabay Content License (no attribution required) | Stone rubbed across stone, one low grinding shift (0.05 to 1.30 s), high-passed at 50 Hz. 1.25 s. |
 
 ## Attribution text
 
@@ -62,10 +72,10 @@ None is required. If a credits screen is wanted anyway, this line covers the who
 
 > Ambience and sound effects from Pixabay, under the Pixabay Content License.
 > Thanks to AudioPapkin, Alex_Jauk, ArNi_World, DRAGON-STUDIO, Fronbondi_Skegs, Kuzu420,
-> LensPulse, Lesiakower, Mollyroselee, OxidVideos, Soumages, SSPsurvival, sumaga123, TanwerAman,
-> Universfield and the Freesound community.
+> CreatorsHome, LensPulse, Lesiakower, Mollyroselee, OxidVideos, Soumages, SSPsurvival, sumaga123,
+> TanwerAman, Universfield and the Freesound community.
 
-## Loudness method (2026-09-11 additions)
+## Loudness method (2026-09-11 additions, batches 1 and 2)
 
 No LUFS meter is installed on this Mac, so integrated loudness was measured with a Python
 implementation of ITU-R BS.1770-4 (K-weighting pre-filter + RLB high-pass, 400 ms blocks with

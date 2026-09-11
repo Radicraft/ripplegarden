@@ -358,5 +358,95 @@
     "loop": true,
     "pitchVariation": 0.0,
     "credit": "\"crickets\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_reward_1",
+    "file": "fx_reward_1.m4a",
+    "kind": "effect",
+    "gain": 0.85,
+    "loop": false,
+    "pitchVariation": 0.0,
+    "credit": "\"Koto C4\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_reward_2",
+    "file": "fx_reward_2.m4a",
+    "kind": "effect",
+    "gain": 0.85,
+    "loop": false,
+    "pitchVariation": 0.0,
+    "credit": "\"Koto C4\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required) + \"Koto G4\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_reward_3",
+    "file": "fx_reward_3.m4a",
+    "kind": "effect",
+    "gain": 0.9,
+    "loop": false,
+    "pitchVariation": 0.0,
+    "credit": "\"Koto Hit\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_petal",
+    "file": "fx_petal.m4a",
+    "kind": "effect",
+    "gain": 0.6,
+    "loop": false,
+    "pitchVariation": 0.05,
+    "credit": "\"Glass ding 2\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_dig_1",
+    "file": "fx_dig_1.m4a",
+    "kind": "effect",
+    "gain": 0.8,
+    "loop": false,
+    "pitchVariation": 0.08,
+    "credit": "\"Digging20200426-125956_01\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_dig_2",
+    "file": "fx_dig_2.m4a",
+    "kind": "effect",
+    "gain": 0.8,
+    "loop": false,
+    "pitchVariation": 0.08,
+    "credit": "\"Digging20200426-125956_01\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_fill",
+    "file": "fx_fill.m4a",
+    "kind": "effect",
+    "gain": 0.6,
+    "loop": true,
+    "pitchVariation": 0.0,
+    "credit": "\"Water Trickling\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_pellets",
+    "file": "fx_pellets.m4a",
+    "kind": "effect",
+    "gain": 0.7,
+    "loop": false,
+    "pitchVariation": 0.06,
+    "credit": "\"Water Drops\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_boat",
+    "file": "fx_boat.m4a",
+    "kind": "effect",
+    "gain": 0.6,
+    "loop": false,
+    "pitchVariation": 0.08,
+    "credit": "\"Paper Rustle\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_sluice",
+    "file": "fx_sluice.m4a",
+    "kind": "effect",
+    "gain": 0.8,
+    "loop": false,
+    "pitchVariation": 0.05,
+    "credit": "\"Rubbing Stone\" by CreatorsHome (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
   }
 ]

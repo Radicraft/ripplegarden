@@ -379,4 +379,52 @@ final class Haptics {
             soft.prepare()
         }
     }
+
+    // MARK: - The reward
+
+    /// One soft swell in the hand, a rounded rise and fall.
+    private func rewardSwell(at t: TimeInterval, peak: Float, seconds: TimeInterval) -> (CHHapticEvent, CHHapticParameterCurve) {
+        let swell = CHHapticEvent(eventType: .hapticContinuous,
+                                  parameters: [CHHapticEventParameter(parameterID: .hapticIntensity, value: peak),
+                                               CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.08)],
+                                  relativeTime: t, duration: seconds)
+        let shape = CHHapticParameterCurve(parameterID: .hapticIntensityControl,
+                                           controlPoints: [.init(relativeTime: 0, value: 0.1),
+                                                           .init(relativeTime: seconds * 0.4, value: 1.0),
+                                                           .init(relativeTime: seconds, value: 0.0)],
+                                           relativeTime: t)
+        return (swell, shape)
+    }
+
+    /// The burst of the reward: a common win is one soft swell, a rare one
+    /// two, a gold one a pattern rising over most of a second.
+    func reward(tier: Rarity) {
+        guard enabled else { return }
+        guard engine != nil else {
+            medium.impactOccurred(intensity: tier == .common ? 0.6 : 0.9)
+            medium.prepare()
+            return
+        }
+        switch tier {
+        case .common:
+            let (e, c) = rewardSwell(at: 0, peak: 0.45, seconds: 0.4)
+            play([e], curves: [c])
+        case .rare:
+            let (e1, c1) = rewardSwell(at: 0, peak: 0.5, seconds: 0.35)
+            let (e2, c2) = rewardSwell(at: 0.32, peak: 0.65, seconds: 0.4)
+            play([e1, e2], curves: [c1, c2])
+        case .superRare:
+            let rise = CHHapticEvent(eventType: .hapticContinuous,
+                                     parameters: [CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.9),
+                                                  CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.15)],
+                                     relativeTime: 0, duration: 0.8)
+            let climb = CHHapticParameterCurve(parameterID: .hapticIntensityControl,
+                                               controlPoints: [.init(relativeTime: 0, value: 0.15),
+                                                               .init(relativeTime: 0.55, value: 0.9),
+                                                               .init(relativeTime: 0.8, value: 0.0)],
+                                               relativeTime: 0)
+            play([rise, transient(0.35, 0.3, at: 0.12), transient(0.5, 0.35, at: 0.30),
+                  transient(0.7, 0.4, at: 0.48), transient(0.95, 0.45, at: 0.66)], curves: [climb])
+        }
+    }
 }

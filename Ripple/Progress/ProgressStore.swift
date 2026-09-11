@@ -30,6 +30,54 @@ final class GardenRecord {
     }
 }
 
+/// One thing the player owns from the garden catalogue. A record per win,
+/// so a second copy of a common is a second record and `count` stays 1
+/// unless a store merges them; readers sum by item id.
+@Model
+final class OwnedRecord {
+    var itemID: String = ""
+    var wonAt: Date = Date()
+    var fromLevel: String = ""
+    var count: Int = 1
+
+    init(itemID: String, wonAt: Date, fromLevel: String, count: Int = 1) {
+        self.itemID = itemID
+        self.wonAt = wonAt
+        self.fromLevel = fromLevel
+        self.count = count
+    }
+}
+
+/// The petal purse and the pity counters. Meant as one row; if a sync ever
+/// leaves two, the reader takes the richest one.
+@Model
+final class WalletRecord {
+    var petals: Int = 0
+    var winsSinceRare: Int = 0
+    var winsSinceGold: Int = 0
+
+    init(petals: Int = 0, winsSinceRare: Int = 0, winsSinceGold: Int = 0) {
+        self.petals = petals
+        self.winsSinceRare = winsSinceRare
+        self.winsSinceGold = winsSinceGold
+    }
+}
+
+/// A plot of the player's own pond, its `PlotState` as JSON. One row per
+/// plot index; more plots come at gate 3.
+@Model
+final class PlotRecord {
+    var plotIndex: Int = 0
+    var json: Data? = nil
+    var savedAt: Date = Date()
+
+    init(plotIndex: Int, json: Data) {
+        self.plotIndex = plotIndex
+        self.json = json
+        self.savedAt = Date()
+    }
+}
+
 /// Progress lives in SwiftData and mirrors through the player's private
 /// CloudKit database, so a level finished on one device is finished on all
 /// of them. Every property has a default and nothing is unique, which is what
@@ -49,7 +97,8 @@ final class ProgressStore: ObservableObject {
     @Published private(set) var version = 0
 
     private init() {
-        let schema = Schema([LevelRecord.self, GardenRecord.self])
+        let schema = Schema([LevelRecord.self, GardenRecord.self,
+                             OwnedRecord.self, WalletRecord.self, PlotRecord.self])
         let reset = ProcessInfo.processInfo.arguments.contains("-resetProgress")
 
         // CloudKit mirroring does not throw when the entitlement is missing;
@@ -77,6 +126,9 @@ final class ProgressStore: ObservableObject {
         if reset {
             try? context.delete(model: LevelRecord.self)
             try? context.delete(model: GardenRecord.self)
+            try? context.delete(model: OwnedRecord.self)
+            try? context.delete(model: WalletRecord.self)
+            try? context.delete(model: PlotRecord.self)
             try? context.save()
         }
         // `-unlockAll` opens every level for testing, and wakes each pool
@@ -90,6 +142,12 @@ final class ProgressStore: ObservableObject {
             for l in Library.levels {
                 markWoke(levelID: l.id, tokens: ProgressStore.rehearsalTokens(for: l))
             }
+        }
+        // The garden's flags live in Inventory, which reads this store, so
+        // it is woken a turn later rather than from inside this init.
+        let gardenFlags = ["-grantAll", "-grant", "-drawCheck"]
+        if ProcessInfo.processInfo.arguments.contains(where: gardenFlags.contains) {
+            DispatchQueue.main.async { _ = Inventory.shared }
         }
     }
 
@@ -194,6 +252,89 @@ final class ProgressStore: ObservableObject {
         }
         try? context.save()
         version += 1
+    }
+    // MARK: - The garden: what is owned, the purse, the plot
+
+    /// Everything owned, oldest win first. Records synced from two devices
+    /// for the same item are merged by summing their counts.
+    func owned() -> [OwnedItem] {
+        guard let context else { return [] }
+        var descriptor = FetchDescriptor<OwnedRecord>()
+        descriptor.sortBy = [SortDescriptor(\.wonAt)]
+        var out: [OwnedItem] = []
+        var index: [String: Int] = [:]
+        for r in (try? context.fetch(descriptor)) ?? [] {
+            if let i = index[r.itemID] {
+                out[i].count += max(1, r.count)
+            } else {
+                index[r.itemID] = out.count
+                out.append(OwnedItem(id: r.itemID, wonAt: r.wonAt, fromLevel: r.fromLevel, count: max(1, r.count)))
+            }
+        }
+        return out
+    }
+
+    /// A win: a new record for the item, even if one is already owned.
+    func addOwned(_ item: OwnedItem) {
+        guard let context else { return }
+        context.insert(OwnedRecord(itemID: item.id, wonAt: item.wonAt, fromLevel: item.fromLevel, count: max(1, item.count)))
+        try? context.save()
+        version += 1
+    }
+
+    /// Takes every owned record away; `-resetProgress` and the grant flags.
+    func clearOwned() {
+        guard let context else { return }
+        try? context.delete(model: OwnedRecord.self)
+        try? context.save()
+        version += 1
+    }
+
+    private func walletRecord() -> WalletRecord? {
+        guard let context else { return nil }
+        let rows = (try? context.fetch(FetchDescriptor<WalletRecord>())) ?? []
+        return rows.max { $0.petals < $1.petals }
+    }
+
+    func wallet() -> (petals: Int, sinceRare: Int, sinceGold: Int) {
+        guard let w = walletRecord() else { return (0, 0, 0) }
+        return (w.petals, w.winsSinceRare, w.winsSinceGold)
+    }
+
+    func setWallet(petals: Int, sinceRare: Int, sinceGold: Int) {
+        guard let context else { return }
+        if let w = walletRecord() {
+            w.petals = petals
+            w.winsSinceRare = sinceRare
+            w.winsSinceGold = sinceGold
+        } else {
+            context.insert(WalletRecord(petals: petals, winsSinceRare: sinceRare, winsSinceGold: sinceGold))
+        }
+        try? context.save()
+        version += 1
+    }
+
+    /// The saved plot, or nil if it has never been dug.
+    func plot(index: Int) -> PlotState? {
+        guard let context else { return nil }
+        let descriptor = FetchDescriptor<PlotRecord>(predicate: #Predicate { $0.plotIndex == index })
+        let rows = (try? context.fetch(descriptor)) ?? []
+        guard let row = rows.max(by: { $0.savedAt < $1.savedAt }), let data = row.json else { return nil }
+        return try? JSONDecoder().decode(PlotState.self, from: data)
+    }
+
+    func savePlot(_ state: PlotState, index: Int) {
+        guard let context, let data = try? JSONEncoder().encode(state) else { return }
+        let descriptor = FetchDescriptor<PlotRecord>(predicate: #Predicate { $0.plotIndex == index })
+        let rows = (try? context.fetch(descriptor)) ?? []
+        if let row = rows.max(by: { $0.savedAt < $1.savedAt }) {
+            row.json = data
+            row.savedAt = Date()
+            for extra in rows where extra !== row { context.delete(extra) }
+        } else {
+            context.insert(PlotRecord(plotIndex: index, json: data))
+        }
+        try? context.save()
     }
 }
 

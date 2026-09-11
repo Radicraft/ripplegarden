@@ -39,6 +39,15 @@ final class GameController: ObservableObject, TouchInput {
     let haptics = Haptics()
     private let progress = ProgressStore.shared
     private var garden: Garden
+    /// The reward moment running over the celebration, nil the rest of the time.
+    private var reveal: RewardReveal?
+    /// The look the level loaded with, so the bed can go gold and come back.
+    private var baseLook: FloorLook?
+    /// The completion's third word. RootView wires it to the player's own pond.
+    var onYourPond: (() -> Void)?
+    /// `-winNow`: the level is finished six seconds after launch, so the
+    /// reward can be seen without playing.
+    private var winNow = ProcessInfo.processInfo.arguments.contains("-winNow")
 
     private weak var renderer: WaterRenderer?
     /// The world (the whole pond) in points. Bigger than the screen.
@@ -280,6 +289,7 @@ final class GameController: ObservableObject, TouchInput {
     /// fingers are let go.
     func leave() {
         celebration?.cancel()
+        reveal = nil
         phrase?.cancel()
         garden.releaseCall()
         calling.removeAll()
@@ -339,6 +349,7 @@ final class GameController: ObservableObject, TouchInput {
 
     func load(level newLevel: LevelSpec) {
         celebration?.cancel()
+        reveal = nil
         presented = nil
         words = nil
         statusText = ""
@@ -397,6 +408,7 @@ final class GameController: ObservableObject, TouchInput {
         var look = art.floor
         look.mosaicCentre = SIMD2(Float(newLevel.mosaicCentre.x), Float(newLevel.mosaicCentre.y))
         look.mosaicRadius = Float(newLevel.mosaicRadius)
+        baseLook = look
         renderer?.floorLook = look
         // The materials this pond is made of: silt haze over the whole bed,
         // a film of duckweed over the water, or neither.
@@ -806,6 +818,8 @@ final class GameController: ObservableObject, TouchInput {
             garden.addBubble(at: d.position)
         }
 
+        updateReveal(dt: dt, renderer: renderer)
+
         // Silt progress.
         cleaned = 1 - renderer.siltRemaining
         if cleaned > lastCleaned + 0.005 {
@@ -846,7 +860,7 @@ final class GameController: ObservableObject, TouchInput {
                 shoalPenned = false
                 garden.penShoals(below: nil)
             }
-            if evaluator.allDone { finish() }
+            if evaluator.allDone || (winNow && elapsed > 6) { finish() }
         }
 
         // Feed the renderer.
@@ -1025,6 +1039,16 @@ final class GameController: ObservableObject, TouchInput {
             under.append(Sprite(art.rock, at: CGPoint(x: r.centre.x + 6, y: r.centre.y + 9),
                                 size: CGSize(width: side, height: side * rockAspect), mode: .shadow, alpha: 0.55, z: -1.0))
         }
+        // The reward rising from the deep, while it is under.
+        let revealDraw = reveal?.sprites()
+        if let r = revealDraw { under += r.under }
+        if let bodies = reveal?.solids() {
+            for b in bodies.under {
+                var inst = b.instance
+                if let name = b.painting { inst.texture = painting(name) }
+                underBodies.append(inst)
+            }
+        }
         renderer.submergedSprites = under
 
         // On the water: rocks, debris, blossom, then the flora frame on top.
@@ -1098,6 +1122,13 @@ final class GameController: ObservableObject, TouchInput {
                          rotation: 0, mode: .floater, alpha: min(1, grown * 3 + 0.2)), cast: 6)
         }
         solids += koiBodies.surface
+        if let bodies = reveal?.solids() {
+            for b in bodies.surface {
+                var inst = b.instance
+                if let name = b.painting { inst.texture = painting(name) }
+                solids.append(inst)
+            }
+        }
         for d in debris where !d.cleared {
             // Under unbroken ice a piece is a shape in the dark, not a thing
             // on the water: its floor shadow stays, the rest waits for the
@@ -1152,6 +1183,18 @@ final class GameController: ObservableObject, TouchInput {
         // Drops in the air are water, not paper: no cut edge under them.
         over += garden.dropletSprites()
         over += garden.dripSprites()
+        // The reward: what it threw up, its ring of light, the item once it
+        // is out of the water, and its name. Light and words carry no cut
+        // edge; the petals it throws are paper.
+        if let r = revealDraw {
+            for s in r.over {
+                if s.texture == "mote" || s.texture.hasPrefix("reward_") || s.texture == "ring_light" || s.gpu.mode & 3 == SpriteInstance.Mode.shadow.rawValue {
+                    over.append(s)
+                } else {
+                    paper(s)
+                }
+            }
+        }
         // A leaping fish is a painting in the air, not a cut-out on the water.
         over += garden.leapSprites()
         for s in garden.floraSprites() { paper(s, cast: s.texture == art.bank ? 0 : 18) }
@@ -2018,6 +2061,12 @@ final class GameController: ObservableObject, TouchInput {
         touchedYet = true
         dismissHint()
         guard phase == .playing || phase == .celebrating, viewSize != .zero else { return }
+        // The reward is up: a tap anywhere sends it on its way to the bank.
+        if let r = reveal, r.canDive {
+            r.dive()
+            haptics.tap(weight: 0.4)
+            return
+        }
         screenTouches[id] = screen
         let point = worldPoint(screen)
         let size = viewSize
@@ -2239,23 +2288,43 @@ final class GameController: ObservableObject, TouchInput {
 
     private func finish() {
         phase = .celebrating
+        winNow = false
         iceField?.sinkAll(time: renderer?.clock ?? 0)
         garden.releaseCall()
         calling.removeAll()
         let target = level.bloomTarget
+        let alreadyComplete = progress.isComplete(levelID: level.id)
         progress.markComplete(levelID: level.id, seasonID: season.id, bloomStage: target)
         // What this pond woke stays woken on the map.
         let woke = goals.reduce(into: Set<WokeToken>()) { $0.formUnion($1.wakes) }
         progress.markWoke(levelID: level.id, tokens: woke)
+        // The draw: what this win gives, and what it pays.
+        var rng = SystemRandomNumberGenerator()
+        let drawn = RewardSource.award(level: level.id, replay: alreadyComplete, using: &rng)
+        if let textures = renderer?.textures {
+            reveal = RewardReveal(award: RewardReveal.Award(item: drawn.item, rarity: drawn.rarity, petals: drawn.petals),
+                                  textures: textures, world: viewSize,
+                                  centre: worldAt(CGPoint(x: 0.5, y: 0.42)),
+                                  wordsAt: worldAt(CGPoint(x: 0.5, y: 0.60)),
+                                  bank: CGPoint(x: viewSize.width - 36, y: worldAt(CGPoint(x: 0.5, y: 0.5)).y),
+                                  seasonID: season.id, petalTexture: art.petalParticle)
+        }
+        // The bloom and the reveal overlap: the burst comes with the bloom,
+        // the item rises a moment later, and the words wait for the dive.
         celebration = Task { @MainActor [weak self] in
             guard let self else { return }
             try? await Task.sleep(for: .seconds(0.8))
             if Task.isCancelled { return }
-            self.sound.complete()
-            self.haptics.complete()
             self.garden.bloom(to: target, duration: 5.0)
-            try? await Task.sleep(for: .seconds(5.2))
+            if let r = self.reveal { r.burst() } else { self.sound.complete(); self.haptics.complete() }
+            try? await Task.sleep(for: .seconds(1.2))
             if Task.isCancelled { return }
+            self.reveal?.reveal()
+            while let r = self.reveal, !r.isDone {
+                try? await Task.sleep(for: .milliseconds(50))
+                if Task.isCancelled { return }
+            }
+            self.reveal = nil
             self.phase = .complete
             // Nothing at all for a moment: no scrim, no words, no cue. The
             // ripples the player made are allowed to die out on their own,
@@ -2264,6 +2333,57 @@ final class GameController: ObservableObject, TouchInput {
             if Task.isCancelled { return }
             self.showCompletion()
         }
+    }
+
+    /// The reward moment is fed, and what it asks for goes into the water,
+    /// the garden, the bed, the speaker and the hand.
+    private func updateReveal(dt: Float, renderer: WaterRenderer) {
+        guard let r = reveal else { return }
+        r.update(dt: dt)
+        for s in r.splashes { renderer.addSplat(at: s.at, in: viewSize, radius: s.radius, amplitude: s.amplitude) }
+        for b in r.bubbles { garden.addBubble(at: b) }
+        for e in r.events {
+            switch e {
+            case .chord:
+                sound.rewardChord(tier: r.award.rarity)
+                haptics.reward(tier: r.award.rarity)
+            case .revealNote:
+                sound.rewardNote(tier: r.award.rarity)
+            case .dive:
+                sound.rewardDive()
+                haptics.plop()
+            case .petals:
+                sound.petalPick()
+                haptics.tap(weight: 0.3)
+            }
+        }
+        r.drain()
+        // The bed's light goes gold for the burst and comes back.
+        if let base = baseLook {
+            let gold = r.bedGold
+            if gold > 0.004 || revealGoldShown > 0.004 {
+                renderer.floorLook = GameController.golden(base, by: gold)
+                revealGoldShown = gold
+            }
+        }
+    }
+    /// How gold the bed was last painted, so it is painted back once.
+    private var revealGoldShown: Float = 0
+
+    /// The season's bed warmed toward gold by `t`: the light of the reward
+    /// on the floor and in the water.
+    private static func golden(_ base: FloorLook, by t: Float) -> FloorLook {
+        var look = base
+        func warm(_ c: SIMD3<Float>) -> SIMD3<Float> {
+            let gold = c * SIMD3(1.45, 1.22, 0.62) + SIMD3(0.16, 0.11, 0.0)
+            return simd_mix(c, gold, SIMD3(repeating: t * 0.75))
+        }
+        look.deep = warm(base.deep)
+        look.mid = warm(base.mid)
+        look.shallow = warm(base.shallow)
+        look.waterTint = simd_mix(base.waterTint, SIMD3(1.0, 0.90, 0.66), SIMD3(repeating: t))
+        look.waterTintStrength = base.waterTintStrength + 0.25 * t
+        return look
     }
 
     func next() {
@@ -2470,8 +2590,8 @@ enum DepthPainter {
 
     /// Where the bowl stops and the shore begins, and where the ground is
     /// dry. The line between them wanders, so no pond has a straight edge.
-    static let shoreStart: Float = 0.90
-    static let shoreEnd: Float = 0.97
+    static let shoreStart: Float = 0.86
+    static let shoreEnd: Float = 0.93
     /// Depth of dry ground. Below `dryDepth` no ripple reaches a piece.
     static let dryDepth: Float = 0.03
 
@@ -2480,11 +2600,14 @@ enum DepthPainter {
     /// and it swells and pinches a little round its length.
     static func rimAt(bx: Float, by: Float, aspect: Float) -> Float {
         let rx = abs(bx) / (0.5 * aspect), ry = abs(by) / 0.5
-        let n: Float = 5
+        // A rounder shape than before (the sides were nearly straight),
+        // with a bigger slow swell so the pond is a lobed oval, and enough
+        // bank round it for the plants to stand on.
+        let n: Float = 3.4
         let rounded = pow(pow(rx, n) + pow(ry, n), 1 / n)
         // Sampled on a circle so the wobble meets itself round the back.
         let angle = atan2(by, bx)
-        let swell = (ShoreNoise.value(cos(angle) * 1.6 + 10, sin(angle) * 1.6 + 10) - 0.5) * 0.14
+        let swell = (ShoreNoise.value(cos(angle) * 1.6 + 10, sin(angle) * 1.6 + 10) - 0.5) * 0.22
         return rounded / (1 + swell)
     }
 

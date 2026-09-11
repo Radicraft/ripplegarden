@@ -473,4 +473,64 @@ final class SoundDirector {
         guard present("amb_night") else { return }
         startAmbience(named: "amb_night")
     }
+
+    // MARK: - The reward
+
+    /// The three notes of the reward, as pitches on the finishing chime
+    /// until the recordings are in: a common win is one, rare two, gold all
+    /// three climbing.
+    private static let rewardPitches: [Float] = [1.0, 1.12, 1.26]
+
+    /// One note of the chord: the recording for it when the manifest has it,
+    /// else the finishing chime at that pitch with the bell under it.
+    private func rewardNote(_ index: Int, gain: Float = 1) {
+        let n = max(0, min(2, index))
+        if present("fx_reward_\(n + 1)") {
+            play("fx_reward_\(n + 1)", gain: 0.9 * gain)
+        } else {
+            let pitch = SoundDirector.rewardPitches[n]
+            play("fx_chime_complete", gain: 0.85 * gain, pitch: pitch)
+            play("fx_bell", gain: 0.3 * gain, pitch: pitch)
+        }
+    }
+
+    /// The chord that comes with the burst: as many notes as the tier
+    /// deserves, each a little after the last.
+    func rewardChord(tier: Rarity) {
+        let notes = tier == .superRare ? 3 : (tier == .rare ? 2 : 1)
+        for i in 0..<notes {
+            let delay = 0.16 * Double(i)
+            if i == 0 { rewardNote(0) } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.rewardNote(i) }
+            }
+        }
+        liftAir(1.15, seconds: 1.2)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.play("fx_bird_flutter", gain: 0.4) }
+    }
+
+    /// The item breaks the surface: a rare one gets a second note, a gold
+    /// one the top two.
+    func rewardNote(tier: Rarity) {
+        switch tier {
+        case .common: break
+        case .rare: rewardNote(1, gain: 0.7)
+        case .superRare:
+            rewardNote(1, gain: 0.7)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in self?.rewardNote(2, gain: 0.7) }
+        }
+    }
+
+    /// A petal picked off the water, and the petals a win paid.
+    func petalPick() {
+        if present("fx_petal") { play("fx_petal", gain: 0.6) }
+        else { play(pick("fx_drop", 3), gain: 0.35, pitch: 1.7) }
+    }
+
+    /// The item goes under for the bank.
+    func rewardDive() {
+        play(pick("fx_splash_small", 3), gain: 0.7, pitch: 0.92)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.play(self?.pick("fx_drop", 3) ?? "fx_drop", gain: 0.3, pitch: 0.8)
+        }
+    }
 }

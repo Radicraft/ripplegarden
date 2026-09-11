@@ -883,6 +883,13 @@ vertex SpriteOut sprite_vertex(SpriteVertexIn vin                         [[stag
     out.uv = uv;
     out.tint = s.tint;
     out.alpha = s.alpha;
+    // The branches over the pond lie in a plane a hand above the water.
+    // Seen from nearly level they foreshorten to a smear along the
+    // horizon, so as the camera lies over they fade out, and their
+    // reflections with them; the canopy is above the eye by then.
+    float pitch = acos(clamp(-cam.forward.z, 0.0, 1.0));
+    bool canopy = spine < 0 && !weed && !stands && abs(abs(s._pad.y) - 0.9) < 0.006;
+    if (canopy) { out.alpha *= 1.0 - smoothstep(0.82, 1.02, pitch); }
     out.wet = wet;
     // A weed's root is hazed like the bed; its tip is nearly clear.
     out.depth = weed ? mix(0.85, 0.15, tailness) : s.depth;
@@ -1187,10 +1194,12 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     // decides whether this pixel looks at that ground.
     float2 gOut = planeUnderPixel(screenPt, 0.07 * cam.focal.y, cam) / cam.world.xy;
     if (any(gOut < 0.0) || any(gOut > 1.0)) {
-        // Past the pond the ground goes on: the same bank, its top raised
-        // the hand the bank stands, lit in relief the same way, settling
-        // darker with distance over a wandering edge, hazing toward a
-        // horizon, and above the horizon a printed sky. No line is straight.
+        // Past the pond the ground goes on. First the bank itself, read
+        // back across the edge so its grass and pebbles carry on without a
+        // seam; then, along a wandering line, open meadow in the bank's own
+        // tones with printed grass strokes that thin with distance; further
+        // off it darkens and hazes toward the horizon, where a line of
+        // hazed trees stands under a bokashi sky. No line is straight.
         float2 centre = cam.focal.zw * 0.5;
         float2 o = (screenPt - centre) / cam.focal.x;
         float3 dir = cam.forward.xyz + cam.right.xyz * o.x + cam.down.xyz * o.y;
@@ -1199,39 +1208,67 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         float paper = fbm(in.uv * p.viewport / 6.0, 2);
         float3 horizonCol = mix(float3(0.80, 0.72, 0.62), float3(0.84, 0.82, 0.74), noon);
         float3 zenithCol = mix(float3(0.60, 0.58, 0.62), float3(0.55, 0.67, 0.76), noon);
-        // The sky, where the line of sight never meets the ground: a
-        // bokashi gradation from a warm horizon up to a cooler blue.
         float3 nd = normalize(dir);
-        float up = saturate(nd.z * 2.5);
+        // The eye's horizon sits a little above level: the meadow runs a
+        // few pond-lengths out before the trees, so the treeline is met
+        // only when the camera lies right over.
+        float hz = nd.z + 0.11;
+        float up = saturate(hz * 2.5);
         float3 sky = mix(horizonCol, zenithCol, pow(up, 0.6));
         float sun = pow(saturate(dot(nd, L)), 120.0);
         sky += float3(1.0, 0.92, 0.80) * sun * 0.35;
         sky *= 0.94 + 0.10 * paper;
-        if (nd.z > -0.015) {
-            // A far treeline stands along the horizon, hazed almost to the
-            // sky's own colour: hills of trees printed in one soft ink.
+        if (hz > -0.002) {
+            // Two ranges of trees along the horizon: a far one hazed almost
+            // to the sky, a nearer one a shade darker, both with soft
+            // rounded tops. Hills of trees printed in one soft ink.
             float az = atan2(nd.y, nd.x);
-            float hills = 0.010 + 0.030 * fbm(float2(az * 2.2, 0.4), 3) + 0.010 * fbm(float2(az * 14.0, 2.1), 2);
-            float tree = 1.0 - smoothstep(hills - 0.004, hills + 0.004, nd.z + 0.015);
-            float3 inkFar = mix(horizonCol, float3(0.36, 0.40, 0.42), 0.55);
-            float3 look = mix(sky, inkFar, tree);
+            float far = 0.006 + 0.026 * fbm(float2(az * 2.2, 0.4), 3) + 0.008 * fbm(float2(az * 14.0, 2.1), 2);
+            float near = 0.002 + 0.018 * fbm(float2(az * 3.6 + 5.0, 1.7), 3) + 0.006 * fbm(float2(az * 22.0, 4.4), 2);
+            float treeFar = 1.0 - smoothstep(far - 0.003, far + 0.003, hz);
+            float treeNear = 1.0 - smoothstep(near - 0.002, near + 0.002, hz);
+            float3 inkFar = mix(horizonCol, float3(0.36, 0.40, 0.42), 0.42);
+            float3 inkNear = mix(horizonCol, float3(0.30, 0.34, 0.34), 0.62);
+            float3 look = mix(sky, inkFar, treeFar);
+            look = mix(look, inkNear, treeNear);
             look *= 0.94 + 0.10 * paper;
             return float4(look, 1.0);
         }
         float2 g = gOut;
-        // Right past the edge the ground is the bank carried on (the shore
-        // band read back inward, so the join is seamless); a little further
-        // it eases, along a wandering line, into open earth in the same
-        // tones: the band's colours averaged along the edge, with their own
-        // grain and patches, so nothing streaks and no line is straight.
         float2 edge = clamp(g, 0.0, 1.0);
         float2 inward = float2(g.x < 0.0 ? 1.0 : (g.x > 1.0 ? -1.0 : 0.0),
                                g.y < 0.0 ? 1.0 : (g.y > 1.0 ? -1.0 : 0.0));
         float2 beyond = max(max(-g, g - 1.0), 0.0);
-        // The shore band is a few points wide at the sides; the samples
-        // stay inside it, on dry ground, never on the water.
-        float2 bandW = 16.0 / cam.world.xy;
-        float2 m = clamp(edge + inward * min(beyond, bandW), 0.0, 1.0);
+        float dist = length(beyond * cam.world.xy) / cam.world.y;
+        float2 gs = g * float2(cam.world.x / cam.world.y, 1.0);
+        // One colour for all the open ground: the bank's own, averaged
+        // right round the pond from points that are dry, so nothing of the
+        // bank is stretched out and no corner reads a different colour.
+        float3 base = float3(0.0);
+        float baseW = 0.0;
+        for (int k = 0; k < 6; k++) {
+            float t = 0.08 + 0.168 * float(k);
+            float2 ins = float2(10.0, 10.0) / cam.world.xy;
+            float2 qs[4] = { float2(t, ins.y), float2(t, 1.0 - ins.y), float2(ins.x, t), float2(1.0 - ins.x, t) };
+            for (int j = 0; j < 4; j++) {
+                float dq = depthTex.sample(smp, qs[j]).r;
+                float wq = 1.0 - smoothstep(0.07, 0.12, dq);
+                base += floorTex.sample(smp, qs[j]).rgb * wq;
+                baseW += wq;
+            }
+        }
+        base = baseW > 0.5 ? base / baseW : float3(0.46, 0.42, 0.34);
+        // The bank carried on: the shore band read back across the edge,
+        // folded rather than stretched, its seam wandering, and only where
+        // what it reads is dry ground.
+        float2 bandW = 34.0 / cam.world.xy;
+        float2 wob = float2(fbm(gs * 17.0 + 3.1, 2), fbm(gs * 17.0 + 7.9, 2)) - 0.5;
+        float2 fold = beyond + abs(inward) * 0.5 * bandW * wob;
+        float2 pp = fmod(max(fold, 0.0), 2.0 * bandW);
+        pp = bandW - abs(pp - bandW);
+        float2 m = clamp(edge + inward * pp + float2(inward.y, inward.x) * wob * bandW * 0.6, 0.0, 1.0);
+        float dm = depthTex.sample(smp, m).r;
+        float onGround = 1.0 - smoothstep(0.07, 0.12, dm);
         float2 tx = 1.5 / float2(floorTex.get_width(), floorTex.get_height());
         float3 g0 = floorTex.sample(smp, m).rgb;
         float lL = dot(floorTex.sample(smp, clamp(m - float2(tx.x, 0), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
@@ -1240,42 +1277,48 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         float lU = dot(floorTex.sample(smp, clamp(m + float2(0, tx.y), 0.0, 1.0)).rgb, float3(0.3, 0.59, 0.11));
         float3 bn = normalize(float3(-(lR - lL) * 6.0, -(lU - lD) * 6.0, 1.0));
         float lit = 0.72 + 0.45 * max(0.0, dot(bn, L));
-        // The bank inside the pond is drawn damp-dark all over its dry
-        // band; the ground out here matches it so the edge has no step.
-        float3 ground = g0 * lit * 0.75;
-        // Open earth: the band's colour averaged along the edge, the
-        // sample points wandering in two directions so the average never
-        // reads as columns.
-        // The whole edge's colour, the same for every pixel past it, so
-        // the open ground carries no feature of the bank stretched out.
-        float2 along = float2(abs(inward.y), abs(inward.x));
-        float2 gs = g * float2(cam.world.x / cam.world.y, 1.0);
-        float3 base = float3(0.0);
-        for (int k = 0; k < 9; k++) {
-            float2 q = clamp(edge * (1.0 - along) + along * (0.1 + 0.1 * float(k)) + inward * bandW * 0.5, 0.0, 1.0);
-            base += floorTex.sample(smp, q).rgb;
-        }
-        base /= 9.0;
-        float3 earth = base * 0.75 * (0.84 + 0.32 * fbm(gs * 40.0, 3)) * (0.86 + 0.28 * fbm(gs * 7.0 + 2.3, 3)) * (0.72 + 0.45 * max(0.0, L.z));
-        float dist = length(beyond * cam.world.xy) / cam.world.y;
-        float wobble = (fbm(gs * 11.0, 3) - 0.5) * 0.05;
-        float open = smoothstep(0.004, 0.04, dist + wobble * 0.6);
-        ground = mix(ground, earth, open);
-        // And further off it quietens: darker, less colour.
-        float far = smoothstep(0.08, 0.5, dist);
+        float3 carried = g0 * lit * 0.75;
+        // Open meadow: the bank's colour with its own patches and grain,
+        // and short grass strokes printed over it, laid the one way and
+        // thinning with distance, so it reads as ground and not as fog.
+        float3 earth = base * 0.78 * (0.86 + 0.28 * fbm(gs * 40.0, 3)) * (0.88 + 0.24 * fbm(gs * 7.0 + 2.3, 3)) * (0.72 + 0.45 * max(0.0, L.z));
+        float farness = smoothstep(0.06, 0.55, dist);
+        float strokeN = fbm(gs * float2(160.0, 26.0) + 11.0, 2);
+        float strokes = smoothstep(0.58, 0.72, strokeN) * (1.0 - farness) * 0.55;
+        earth = mix(earth, earth * float3(0.70, 0.78, 0.60), strokes);
+        // Darker tufts, sparser, near the pond only.
+        float tuftN = fbm(gs * float2(70.0, 90.0) + 4.4, 2);
+        float tufts = smoothstep(0.66, 0.74, tuftN) * (1.0 - smoothstep(0.02, 0.2, dist)) * 0.5;
+        earth = mix(earth, earth * float3(0.55, 0.62, 0.48), tufts);
+        float wobble = (fbm(gs * 11.0, 3) - 0.5) * 0.07;
+        float open = smoothstep(0.004, 0.05, dist + wobble);
+        float3 ground = mix(mix(earth, carried, onGround), earth, open);
+        // And further off it quietens: darker, less colour, then the haze
+        // of the air toward the horizon, the colour of the sky there.
         float glum = dot(ground, float3(0.3, 0.59, 0.11));
-        ground = mix(ground, mix(ground, float3(glum), 0.4) * 0.78, far);
-        // Haze toward the horizon, the colour of the sky there.
-        float haze = smoothstep(-0.32, -0.015, nd.z);
-        ground = mix(ground, horizonCol, haze * 0.9);
+        ground = mix(ground, mix(ground, float3(glum), 0.4) * 0.80, farness);
+        float haze = smoothstep(-0.26, -0.11, nd.z);
+        ground = mix(ground, horizonCol, haze * 0.82);
         ground *= 0.92 + 0.14 * paper;
         return float4(ground, 1.0);
     }
 
     if (any(wuv < 0.0) || any(wuv > 1.0)) {
-        // Looking under the near bank's own edge: damp dark earth.
+        // The bank's face at the world's edge, seen from in front: damp
+        // dark earth, its texture the bank's own read back across the
+        // edge (folded, never stretched), with the soil's grain over it.
         float paper = fbm(in.uv * p.viewport / 6.0, 2);
-        float3 face = floorTex.sample(smp, clamp(wuv, 0.0, 1.0)).rgb * float3(0.42, 0.40, 0.38);
+        float2 edge = clamp(wuv, 0.0, 1.0);
+        float2 inward = float2(wuv.x < 0.0 ? 1.0 : (wuv.x > 1.0 ? -1.0 : 0.0),
+                               wuv.y < 0.0 ? 1.0 : (wuv.y > 1.0 ? -1.0 : 0.0));
+        float2 beyond = max(max(-wuv, wuv - 1.0), 0.0);
+        float2 bandW = 22.0 / cam.world.xy;
+        float2 pp = fmod(beyond, 2.0 * bandW);
+        pp = bandW - abs(pp - bandW);
+        float2 m = clamp(edge + inward * pp, 0.0, 1.0);
+        float3 face = floorTex.sample(smp, m).rgb * float3(0.50, 0.47, 0.44);
+        float2 fs = wuv * float2(cam.world.x / cam.world.y, 1.0);
+        face *= 0.86 + 0.28 * fbm(fs * 60.0, 2);
         return float4(face * (0.92 + 0.14 * paper), 1.0);
     }
 
@@ -1829,6 +1872,12 @@ fragment float4 solid_fragment(SolidOut in [[stage_in]],
             float4 px = painting.sample(smp, float2(in.cap.x, 1.0 - in.cap.y));
             if (px.a < 0.3) { discard_fragment(); }
             base = px.rgb;
+            // A second colour, when it differs from the first, is the
+            // season's cast over the painting: a pad goes dull under a
+            // winter sky and yellows in autumn. The same colour twice
+            // leaves the painting as it was.
+            float cast = saturate(length(in.colourB.rgb - in.colourA.rgb) * 3.0);
+            base = mix(base, base * in.colourB.rgb * 2.0, cast);
             spec = 0.25;
         } else {
             base = in.colourA.rgb * (in.part > 1.5 ? 0.55 : 0.8);

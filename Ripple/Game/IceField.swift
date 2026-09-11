@@ -73,9 +73,9 @@ final class IceField {
             let v = (CGFloat(y) + 0.5) / fh
             for x in 0..<width {
                 let u = (CGFloat(x) + 0.5) / fw
-                // Only the rim can be dry: the middle is never asked.
+                // Only the outer part can be dry: the middle is never asked.
                 let rim = max(abs(u - 0.5), abs(v - 0.5)) * 2
-                guard rim > 0.86 else { continue }
+                guard rim > 0.55 else { continue }
                 if !wet(CGPoint(x: u, y: v)) { cells[y * width + x] = 0 }
             }
         }

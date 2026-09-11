@@ -295,15 +295,16 @@ enum Library {
             under: [], skaters: [], flyers: [],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
             reeds: ["reed_w_1", "reed_w_2", "reed_w_3", "reed_w_4"],
-            flowers: ["flower_w_1", "flower_w_2", "moss_1"],
+            flowers: ["flower_w_1", "flower_w_2"],
             shoal: ["minnow_1"],
-            iceFragments: ["ice_1", "ice_2", "ice_3", "ice_4", "ice_5", "ice_8", "ice_9", "ice_10"],
+            iceFragments: ["ice_1", "ice_2", "ice_3", "ice_5", "ice_9", "ice_10"],
             ambientFall: "snow_2"),
         photographic: nil, rootNote: 440,
         tagline: "The pond sleeps under ice. Wake it gently.")
 
     static let springWoodblock = ArtSet(
-        branch: ["spring_branch_1", "spring_branch_2", "spring_branch_3", "spring_branch_4"],
+        // Buds from the first level: the bare branch reads as winter still.
+        branch: ["spring_branch_2", "spring_branch_3", "spring_branch_4", "spring_branch_4"],
         branchScale: 0.72, branchInset: 14, branchRightScale: 0.62, branchRightDrop: 70,
         bank: nil, bankSink: 6,
         light: ["petal_n_1", "petal_n_2", "petal_n_3", "petal_n_4", "petal_n_5", "petal_n_6"],
@@ -325,7 +326,7 @@ enum Library {
         gravel: ["gravel_1", "gravel_2", "gravel_3", "gravel_4"],
         sand: ["sand_1", "sand_2", "sand_3"],
         reeds: ["reed_s_1", "reed_s_2", "reed_s_3", "reed_s_4"],
-        flowers: ["flower_s_1", "flower_s_2", "flower_s_3", "fern_1", "moss_1"],
+        flowers: ["flower_s_1", "flower_s_2", "flower_s_3", "fern_1"],
         shoal: ["minnow_1", "stickleback_1"],
         frog: ("frog_top", "lilypad_frog"),
         newt: "newt_1",
@@ -377,7 +378,9 @@ enum Library {
     static let autumn = Season(
         id: "autumn", name: "Autumn", order: 4,
         woodblock: ArtSet(
-            branch: ["autumn_branch_1", "autumn_branch_2", "autumn_branch_3", "autumn_branch_4"],
+            // The first painting is summer green, so the year starts turned:
+            // yellow, then orange, then red.
+            branch: ["autumn_branch_2", "autumn_branch_3", "autumn_branch_4", "autumn_branch_4"],
             branchScale: 0.72, branchInset: 14, branchRightScale: 0.62, branchRightDrop: 70,
             bank: nil, bankSink: 6,
             light: ["leaf_1", "leaf_2", "leaf_3"],
@@ -393,7 +396,7 @@ enum Library {
             under: ["boatman_1"], skaters: ["skater_2"], flyers: [],
             clouds: ["cloud_1", "cloud_2", "cloud_3", "cloud_4"],
             reeds: ["reed_a_1", "reed_a_2", "reed_a_3", "reed_a_4", "bulrush_1", "bulrush_2"],
-            flowers: ["flower_a_1", "flower_a_2", "flower_a_3", "moss_1"],
+            flowers: ["flower_a_1", "flower_a_2", "flower_a_3"],
             shoal: ["stickleback_2"], newt: "newt_1"),
         photographic: nil, rootNote: 392,
         tagline: "Maple on the pond. The year settles.")

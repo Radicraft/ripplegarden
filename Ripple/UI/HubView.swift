@@ -6,6 +6,7 @@ struct HubView: View {
 
     @ObservedObject var hub: HubController
     let onPlay: (LevelSpec) -> Void
+    @Environment(\.openPlot) private var openPlot
 
     var body: some View {
         ZStack {
@@ -20,7 +21,11 @@ struct HubView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
-        .onAppear { hub.onPlay = onPlay }
+        .onAppear {
+            hub.onPlay = onPlay
+            // A finger drawn sideways across the stream goes to the player's pond.
+            hub.onSwipeToPlot = openPlot
+        }
     }
 
     private var gear: some View {

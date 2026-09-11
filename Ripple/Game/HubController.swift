@@ -60,6 +60,11 @@ final class HubController: ObservableObject, TouchInput {
     private var centreTarget = SIMD2<Float>(0, 0)
     private var momentum: Float = 0
     private var scroll: (id: Int, lastY: CGFloat, lastAt: TimeInterval, moved: Bool, startY: CGFloat)?
+    /// A finger drawn sideways across the stream goes over the bank to the
+    /// player's own pond. Set by the view that hosts both.
+    var onSwipeToPlot: (() -> Void)?
+    private var swipeStartX: CGFloat = 0
+    private var swipedAway = false
     private var pending: [Int: (start: CGPoint, began: TimeInterval)] = [:]
     private var touches: [Int: CGPoint] = [:]
     /// Two fingers drawn the same way up or down the screen tilt the camera,
@@ -319,10 +324,13 @@ final class HubController: ObservableObject, TouchInput {
         }
         lips = (1..<seasons.count).map { bottom - stretch * CGFloat($0) }
         entries = seasons.enumerated().map { ($0.element.name, bottom - stretch * CGFloat($0.offset) - 34) }
-        mouthY = bottom + 160
-        storeNote = CGPoint(x: w * 0.5, y: top - 34)
+        // The title and the note at the source sit on the near fringe of the
+        // mist at each end, where the water is still dark under them; the
+        // mist itself lies further out, over the world's ends.
+        mouthY = bottom + 140
+        storeNote = CGPoint(x: w * 0.5, y: top - 22)
         sourceMist = []
-        for end in [top - 70, bottom + 170] {
+        for end in [top - 118, bottom + 250] {
             for k in 0..<7 {
                 let x: CGFloat = CGFloat(k) / 6 * w
                 let y: CGFloat = end + CGFloat.random(in: -30...50)
@@ -392,13 +400,18 @@ final class HubController: ObservableObject, TouchInput {
                 let n = Int.random(in: 3...5, using: &rng)
                 for k in 0..<n {
                     let ang = CGFloat(k) / CGFloat(n) * 2 * .pi + CGFloat.random(in: -0.4...0.4, using: &rng)
+                    // Nothing is laid straight below the pool, where its word sits.
+                    if abs(ang - .pi / 2) < 0.55 { continue }
                     let r = pool.radius * CGFloat.random(in: 0.75...1.15, using: &rng)
                     let p = CGPoint(x: pool.centre.x + cos(ang) * r, y: pool.centre.y + sin(ang) * r * 0.9)
                     let turn = Float.random(in: 0...(2 * .pi), using: &rng)
                     switch season.id {
                     case "winter":
-                        let ice = ["ice_1", "ice_2", "ice_3", "ice_4", "ice_5", "ice_8", "ice_9", "ice_10"].randomElement(using: &rng)!
-                        let sz = CGFloat.random(in: 30...56, using: &rng)
+                        // Only the chunks that read as ice at this size; the
+                        // sliver and the clean triangle read as cut paper.
+                        guard k < 3 else { continue }
+                        let ice = ["ice_1", "ice_2", "ice_3", "ice_5", "ice_9", "ice_10"].randomElement(using: &rng)!
+                        let sz = CGFloat.random(in: 40...64, using: &rng)
                         dressing.append(Sprite(ice, at: p, size: CGSize(width: sz, height: sz * 0.7), rotation: turn, mode: .floater, alpha: 1, z: 0.02))
                     case "spring":
                         let petal = "petal_n_\(Int.random(in: 1...6, using: &rng))"
@@ -553,18 +566,20 @@ final class HubController: ObservableObject, TouchInput {
                 sinceRoot[side] += 55
                 // The waterline itself: pebbles, gravel and mud at the edge,
                 // some half in the water, and now and then a stone sitting in it.
-                for _ in 0..<Int.random(in: 1...3, using: &rng) {
+                for _ in 0..<Int.random(in: 1...2, using: &rng) {
                     let kind = Int.random(in: 0...9, using: &rng)
-                    let name = kind < 5 ? "stone_a_\(Int.random(in: 1...8, using: &rng))"
-                             : kind < 8 ? "gravel_\(Int.random(in: 1...4, using: &rng))"
+                    // Mostly single pebbles; a patch of gravel or sand now
+                    // and then, small, or the bank fills with grey lumps.
+                    let name = kind < 7 ? "stone_a_\(Int.random(in: 1...8, using: &rng))"
+                             : kind < 9 ? "gravel_\(Int.random(in: 1...4, using: &rng))"
                                         : "sand_\(Int.random(in: 1...3, using: &rng))"
-                    let sz = kind < 5 ? CGFloat.random(in: 12...26, using: &rng) : CGFloat.random(in: 30...50, using: &rng)
+                    let sz = kind < 7 ? CGFloat.random(in: 12...26, using: &rng) : CGFloat.random(in: 20...32, using: &rng)
                     let along = CGFloat.random(in: -26...26, using: &rng)
                     let inOut = CGFloat.random(in: -10...16, using: &rng)   // minus: into the water
                     let at = CGPoint(x: edge.x + (flip ? -inOut : inOut), y: edge.y + along)
                     dressing.append(Sprite(name, at: at, size: CGSize(width: sz, height: sz * 0.8),
                                            rotation: Float.random(in: 0...(2 * .pi), using: &rng), mode: .floater,
-                                           alpha: kind < 5 ? 1 : 0.8, tint: kind < 5 ? [1, 1, 1, 1] : [0.62, 0.6, 0.55, 1], z: 0.015 + (inOut > 0 ? 0.06 : 0)))
+                                           alpha: kind < 7 ? 1 : 0.7, tint: kind < 7 ? [1, 1, 1, 1] : [0.55, 0.54, 0.5, 1], z: 0.015 + (inOut > 0 ? 0.06 : 0)))
                 }
                 if CGFloat.random(in: 0...1, using: &rng) < 0.12 {
                     // A stone in the shallows, half out of the water.
@@ -587,18 +602,30 @@ final class HubController: ObservableObject, TouchInput {
                 } else if roll < 0.5 * growth {
                     let name = "tuft_\(Int.random(in: 1...3, using: &rng))"
                     let sz = CGFloat.random(in: 36...60, using: &rng)
-                    // Rooted on the bank, leaning a little out over the water.
+                    // Rooted on the bank and standing up from it, like the
+                    // ponds' reeds, so it has a side and not just a top.
                     let at = CGPoint(x: edge.x + (flip ? sz * 0.18 : -sz * 0.18), y: edge.y + CGFloat.random(in: -12...12, using: &rng))
-                    let lean: Float = flip ? .pi : 0
-                    dressing.append(Sprite(name, at: at, size: CGSize(width: sz, height: sz * 0.55),
-                                           rotation: lean + Float.random(in: -0.5...0.5, using: &rng), mode: .floater, alpha: winter ? 0.75 : 1, z: 0.09))
+                    let size = CGSize(width: sz, height: sz * 0.55)
+                    dressing.append(Sprite(name, at: CGPoint(x: at.x + 5, y: at.y + size.height * 0.3),
+                                           size: CGSize(width: sz, height: size.height * 0.5), rotation: 0,
+                                           mode: .shadow, alpha: 0.28, flipX: flip, z: 0.075))
+                    dressing.append(Sprite(name, at: at, size: size,
+                                           rotation: -.pi / 2 + Float.random(in: -0.25...0.25, using: &rng), alpha: winter ? 0.75 : 1,
+                                           flipX: flip, wave: Float.random(in: 0...(2 * .pi), using: &rng), z: 0.075, stands: true))
                 } else if roll < 0.78 * growth, !reedSet.isEmpty {
                     let name = reedSet.randomElement(using: &rng)!
                     let ht = CGFloat.random(in: 70...110, using: &rng)
                     let t = garden.textureSize(name)
-                    let at = CGPoint(x: edge.x + (flip ? 14 : -14), y: edge.y - ht * 0.42)
-                    dressing.append(Sprite(name, at: at, size: CGSize(width: ht * t.width / max(1, t.height), height: ht),
-                                           rotation: Float.random(in: -0.2...0.2, using: &rng), mode: .floater, alpha: 1, flipX: flip, z: 0.32))
+                    let wd = ht * t.width / max(1, t.height)
+                    // Standing at the waterline, root on the bank, a flat
+                    // shadow laid on the water beside it.
+                    let at = CGPoint(x: edge.x + (flip ? 14 : -14), y: edge.y)
+                    dressing.append(Sprite(name, at: CGPoint(x: at.x + 6, y: at.y + ht * 0.3),
+                                           size: CGSize(width: wd, height: ht * 0.5), rotation: 0,
+                                           mode: .shadow, alpha: 0.3, flipX: flip, z: 0.075))
+                    dressing.append(Sprite(name, at: at, size: CGSize(width: wd, height: ht),
+                                           rotation: -.pi / 2 + Float.random(in: -0.2...0.2, using: &rng), alpha: 1, flipX: flip,
+                                           wave: Float.random(in: 0...(2 * .pi), using: &rng), z: 0.075, stands: true))
                 }
             }
             y += 55
@@ -767,9 +794,13 @@ final class HubController: ObservableObject, TouchInput {
                                         colourB: winter ? [0.62, 0.66, 0.72, 1] : [0.36, 0.55, 0.30, 1]))
             let pad = CGPoint(x: pool.centre.x - pool.radius * 0.55, y: pool.centre.y + pool.radius * 0.5)
             over.append(Sprite("lilypad_1", at: CGPoint(x: pad.x + 3, y: pad.y + 4), size: CGSize(width: 62, height: 62), mode: .shadow, alpha: 0.3, z: 0))
+            // The pad wears the season: dulled and greyed on the winter
+            // stretch, yellowing in autumn, its own green in between.
+            let padCast: SIMD4<Float> = winter ? [0.40, 0.43, 0.42, 1]
+                                      : pool.season.id == "autumn" ? [0.56, 0.48, 0.30, 1] : [0.16, 0.36, 0.22, 1]
             solids.append(SolidInstance(position: SIMD2(Float(pad.x), Float(pad.y)), lift: 1.5, yaw: Float(pool.centre.y * 0.01), roll: 0,
                                         texture: painting("lilypad_1"), tilt: .zero, length: 3, radius: 29, shape: 4, alpha: 1,
-                                        colourA: [0.16, 0.36, 0.22, 1], colourB: [0.16, 0.36, 0.22, 1]))
+                                        colourA: [0.16, 0.36, 0.22, 1], colourB: padCast))
             let bud = done ? "bud_open" : "bud_closed"
             solids.append(SolidInstance(position: SIMD2(Float(pad.x + 2), Float(pad.y - 4)), lift: 4.5, yaw: 0, roll: 0,
                                         texture: painting(bud), tilt: .zero, length: 3, radius: 22, shape: 4, alpha: unlocked ? 1 : 0.35,
@@ -846,9 +877,12 @@ final class HubController: ObservableObject, TouchInput {
                                size: CGSize(width: f.size * 2.2 * pulse, height: f.size * pulse), rotation: f.phase * 0.1,
                                mode: .floater, alpha: 0.42, z: 0.02))
         }
+        // Snow in the air: soft flakes drifting over the winter stretch. The
+        // snow mound painting at this size printed as little white caps.
         for f in snow {
-            over.append(Sprite("snow_2", at: CGPoint(x: f.x, y: f.y), size: CGSize(width: f.size, height: f.size),
-                               rotation: f.phase, mode: .floater, alpha: 0.85, z: 0.5))
+            let fall = CGFloat(sin(Double(elapsed) * 0.7 + Double(f.phase))) * 6
+            over.append(Sprite("mote", at: CGPoint(x: f.x + fall, y: f.y + fall * 0.5), size: CGSize(width: f.size * 0.6, height: f.size * 0.6),
+                               rotation: f.phase, alpha: 0.75, tint: [1.0, 1.0, 1.0, 1], z: 0.5))
         }
         over += garden.skySprites()
         over += garden.mistSprites()
@@ -1117,7 +1151,7 @@ final class HubController: ObservableObject, TouchInput {
         let now = CACurrentMediaTime()
         pending[id] = (screen, now)
         touches[id] = screen
-        if scroll == nil { scroll = (id, screen.y, now, false, screen.y) }
+        if scroll == nil { scroll = (id, screen.y, now, false, screen.y); swipeStartX = screen.x; swipedAway = false }
         // A second finger down beside the first: they may be a tilt.
         if tilt == nil, let other = touches.keys.first(where: { $0 != id }), let op = touches[other] {
             tilt = Tilt(ids: [other, id], last: [other: op, id: screen], lastAt: now)
@@ -1160,6 +1194,18 @@ final class HubController: ObservableObject, TouchInput {
         guard var s = scroll, s.id == id, let renderer else { return }
         let dy = screen.y - s.lastY
         let now = CACurrentMediaTime()
+        // Drawn to the LEFT across the water, well past what a scroll would
+        // wander: the camera goes over the right bank to the player's pond.
+        let dx = swipeStartX - screen.x
+        if !swipedAway, tilt == nil, dx > 70, dx > abs(screen.y - s.startY) * 1.6, onSwipeToPlot != nil {
+            swipedAway = true
+            scroll = nil
+            momentum = 0
+            sound.paper()
+            haptics.plop()
+            onSwipeToPlot?()
+            return
+        }
         if !s.moved, abs(screen.y - s.startY) > 8 { s.moved = true }
         if s.moved {
             centreTarget.y -= Float(dy) / renderer.zoom

@@ -60,7 +60,8 @@ struct LevelView: View {
                       hasNext: controller.hasNext,
                       onClose: { controller.closeMenu() },
                       onGarden: onExit,
-                      onNext: { controller.next() })
+                      onNext: { controller.next() },
+                      onYourPond: { controller.onYourPond?() })
                 .transition(.opacity)
         }
     }

@@ -1,17 +1,20 @@
 import SwiftData
 import SwiftUI
 
-/// The garden path, or a level. One controller lives for the whole app and is
-/// re-pointed at whichever level is opened.
+/// The garden path, a level, or the player's own plot. One controller lives
+/// for the whole app and is re-pointed at whichever level is opened; the
+/// plot keeps its own.
 struct RootView: View {
 
     enum Screen: Equatable {
         case garden
         case level(String)
+        case plot
     }
 
     @StateObject private var game: GameController
     @StateObject private var hub = HubController()
+    @StateObject private var plot = PlotController()
     @State private var screen: Screen
 
     init() {
@@ -24,6 +27,8 @@ struct RootView: View {
             first = .level(l.id)
         } else if args.contains("-demo"), !args.contains("-tour") {
             first = .level(start.id)
+        } else if args.contains("-plot") || args.contains("-plotDug") || args.contains("-plotFull") {
+            first = .plot
         }
         _game = StateObject(wrappedValue: GameController(level: start, style: style))
         _screen = State(initialValue: first)
@@ -37,10 +42,25 @@ struct RootView: View {
                     game.prepare(level: level)
                     withAnimation(.easeInOut(duration: 0.6)) { screen = .level(level.id) }
                 }
+                // What the map calls to page sideways to the plot, once the
+                // hub's swipe is wired to it (`\.openPlot`).
+                .environment(\.openPlot, { withAnimation(.easeInOut(duration: 0.6)) { screen = .plot } })
                 .transition(.opacity)
             case .level:
                 LevelView(controller: game) {
                     game.leave()
+                    withAnimation(.easeInOut(duration: 0.6)) { screen = .garden }
+                }
+                .onAppear {
+                    // The completion's third word: straight to the player's pond.
+                    game.onYourPond = {
+                        game.leave()
+                        withAnimation(.easeInOut(duration: 0.6)) { screen = .plot }
+                    }
+                }
+                .transition(.opacity)
+            case .plot:
+                PlotView(plot: plot) {
                     withAnimation(.easeInOut(duration: 0.6)) { screen = .garden }
                 }
                 .transition(.opacity)

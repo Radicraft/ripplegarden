@@ -482,7 +482,9 @@ final class Garden {
             }
         }
         for name in art.sand { drop(name, sizePt: 96, count: 1, rimBias: 0.9) }
-        for name in art.gravel { drop(name, sizePt: 84, count: 1, rimBias: 0.7) }
+        // Gravel sparingly: a clutch of pebbles with an ink edge round it
+        // reads as a bunch of grapes when there is one every few steps.
+        for (i, name) in art.gravel.enumerated() where i % 2 == 0 { drop(name, sizePt: 62, count: 1, rimBias: 0.7) }
         for (i, name) in art.stones.enumerated() {
             drop(name, sizePt: i < 3 ? 78 : 46, count: i < 3 ? 2 : 3, rimBias: 0.85)
         }
@@ -968,9 +970,12 @@ final class Garden {
             // Stones are bodies now; only the flat scatter stays a cut-out.
             if piece.texture.hasPrefix("stone") { continue }
             let pale = piece.texture.hasPrefix("sand") || piece.texture.hasPrefix("gravel")
+            let gravel = piece.texture.hasPrefix("gravel")
+            // Sand and gravel sink into the bed's own tone; gravel further,
+            // so its outline does not print.
             out.append(Sprite(piece.texture, at: piece.position, size: sz, rotation: piece.rotation,
-                              mode: .submerged, alpha: pale ? 0.85 : 1, depth: 0.3 + piece.depth * 0.5,
-                              tint: pale ? [0.62, 0.66, 0.62, 1] : [1, 1, 1, 1], z: piece.z))
+                              mode: .submerged, alpha: gravel ? 0.7 : (pale ? 0.85 : 1), depth: 0.3 + piece.depth * 0.5,
+                              tint: gravel ? [0.52, 0.56, 0.52, 1] : (pale ? [0.62, 0.66, 0.62, 1] : [1, 1, 1, 1]), z: piece.z))
         }
         for c in clouds {
             out.append(Sprite(c.texture, at: CGPoint(x: c.position.x + 30, y: c.position.y + 90),

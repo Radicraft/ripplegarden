@@ -111,6 +111,9 @@ struct MenuLayer: View {
     let onClose: () -> Void
     var onGarden: () -> Void = {}
     var onNext: () -> Void = {}
+    /// The completion's third word: the player's own pond, where what they
+    /// just won has gone. Nil until RootView wires it.
+    var onYourPond: (() -> Void)? = nil
 
     @ObservedObject private var settings = Settings.shared
     @ObservedObject private var store = Store.shared
@@ -244,8 +247,9 @@ struct MenuLayer: View {
 
     // MARK: - The pond is clear
 
-    /// Four words and two ways on. No score, no stars, no time. The scrim is
-    /// lighter here so the cleared pond is the thing you look at.
+    /// Four words and three ways on: back to the garden, to your own pond,
+    /// or the next level. No score, no stars, no time. The scrim is lighter
+    /// here so the cleared pond is the thing you look at.
     private var completion: some View {
         GeometryReader { g in
             Text("The pond wakes.")
@@ -266,6 +270,14 @@ struct MenuLayer: View {
                     .frame(height: 56)
                     .contentShape(Rectangle())
                     .onTapGesture { pressed(); onGarden() }
+                Spacer(minLength: 0)
+                Text("Your pond")
+                    .font(Ink.label(Size.row))
+                    .tracking(0.15)
+                    .foregroundStyle(Ink.paper)
+                    .frame(height: 56)
+                    .contentShape(Rectangle())
+                    .onTapGesture { pressed(); onYourPond?() }
                 Spacer(minLength: 0)
                 if hasNext {
                     Text("Next")
