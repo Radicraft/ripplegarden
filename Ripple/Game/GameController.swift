@@ -314,6 +314,7 @@ final class GameController: ObservableObject, TouchInput {
         // The view being replaced must stop driving the level.
         self.renderer?.onFrame = nil
         self.renderer = renderer
+        renderer.pitchLimit = WaterRenderer.maxPitch
         renderer.style = style
         garden.textureSize = { [weak renderer] name in renderer?.textures.size(name) ?? CGSize(width: 1, height: 1) }
         renderer.onFrame = { [weak self] dt in self?.frame(dt: dt) }
@@ -428,6 +429,9 @@ final class GameController: ObservableObject, TouchInput {
         garden.depthAt = { [weak self] p in
             DepthPainter.depth(at: CGPoint(x: p.x / size.width, y: p.y / size.height), level: spec,
                                aspect: Float(size.width / size.height), poolFill: self?.poolFill ?? 0)
+        }
+        garden.groundAt = { p in
+            DepthPainter.ground(at: CGPoint(x: p.x / size.width, y: p.y / size.height), aspect: Float(size.width / size.height))
         }
         garden.configure(art: art, size: viewSize, bloomStage: progress.bloomStage(for: season.id))
         // Mist lies thick over a cold pond and hardly at all over a warm one.

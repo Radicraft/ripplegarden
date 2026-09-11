@@ -435,9 +435,12 @@ final class WaterRenderer: NSObject, MTKViewDelegate {
     /// The tilt now, and the tilt the fingers asked for. The one eases toward
     /// the other so the camera never snaps.
     private(set) var pitch: Float = WaterRenderer.chosenPitch
+    /// The furthest this scene lets the camera lie over: a pond goes all
+    /// the way to the horizon, the map (four screens tall) stays steeper.
+    var pitchLimit: Float = WaterRenderer.maxPitch
     var pitchTarget: Float = WaterRenderer.chosenPitch {
         didSet {
-            pitchTarget = max(WaterRenderer.minPitch, min(WaterRenderer.maxPitch, pitchTarget))
+            pitchTarget = max(WaterRenderer.minPitch, min(pitchLimit, pitchTarget))
             WaterRenderer.chosenPitch = pitchTarget
         }
     }

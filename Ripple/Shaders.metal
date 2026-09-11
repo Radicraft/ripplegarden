@@ -1182,7 +1182,11 @@ fragment float4 water_fragment(VertexOut in                              [[stage
     float2 screenPt = in.uv * cam.focal.zw;
     float2 worldPt = surfaceUnderPixel(screenPt, cam);
     float2 wuv = worldPt / cam.world.xy;
-    if (any(wuv < 0.0) || any(wuv > 1.0)) {
+    // The ground past the pond stands as high as the bank, so it is where
+    // the line of sight meets the raised plane, not the water plane, that
+    // decides whether this pixel looks at that ground.
+    float2 gOut = planeUnderPixel(screenPt, 0.07 * cam.focal.y, cam) / cam.world.xy;
+    if (any(gOut < 0.0) || any(gOut > 1.0)) {
         // Past the pond the ground goes on: the same bank, its top raised
         // the hand the bank stands, lit in relief the same way, settling
         // darker with distance over a wandering edge, hazing toward a
@@ -1214,8 +1218,7 @@ fragment float4 water_fragment(VertexOut in                              [[stage
             look *= 0.94 + 0.10 * paper;
             return float4(look, 1.0);
         }
-        float bankH = 0.07 * cam.focal.y;
-        float2 g = planeUnderPixel(screenPt, bankH, cam) / cam.world.xy;
+        float2 g = gOut;
         // Right past the edge the ground is the bank carried on (the shore
         // band read back inward, so the join is seamless); a little further
         // it eases, along a wandering line, into open earth in the same
@@ -1225,7 +1228,9 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         float2 inward = float2(g.x < 0.0 ? 1.0 : (g.x > 1.0 ? -1.0 : 0.0),
                                g.y < 0.0 ? 1.0 : (g.y > 1.0 ? -1.0 : 0.0));
         float2 beyond = max(max(-g, g - 1.0), 0.0);
-        float2 bandW = float2(0.05 * cam.world.y / cam.world.x, 0.05);
+        // The shore band is a few points wide at the sides; the samples
+        // stay inside it, on dry ground, never on the water.
+        float2 bandW = 16.0 / cam.world.xy;
         float2 m = clamp(edge + inward * min(beyond, bandW), 0.0, 1.0);
         float2 tx = 1.5 / float2(floorTex.get_width(), floorTex.get_height());
         float3 g0 = floorTex.sample(smp, m).rgb;
@@ -1241,16 +1246,17 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         // Open earth: the band's colour averaged along the edge, the
         // sample points wandering in two directions so the average never
         // reads as columns.
-        float2 along = float2(inward.y, inward.x);
+        // The whole edge's colour, the same for every pixel past it, so
+        // the open ground carries no feature of the bank stretched out.
+        float2 along = float2(abs(inward.y), abs(inward.x));
         float2 gs = g * float2(cam.world.x / cam.world.y, 1.0);
         float3 base = float3(0.0);
-        for (int k = -4; k <= 4; k++) {
-            float wob = fbm(gs * 3.0 + float(k) * 1.7, 2) - 0.5;
-            float2 q = clamp(edge + along * (float(k) * 0.06 + wob * 0.3) + inward * bandW * (0.3 + 0.5 * fbm(gs * 2.0 + float(k), 2)), 0.0, 1.0);
+        for (int k = 0; k < 9; k++) {
+            float2 q = clamp(edge * (1.0 - along) + along * (0.1 + 0.1 * float(k)) + inward * bandW * 0.5, 0.0, 1.0);
             base += floorTex.sample(smp, q).rgb;
         }
         base /= 9.0;
-        float3 earth = base * 0.75 * (0.86 + 0.28 * fbm(gs * 32.0, 3)) * (0.88 + 0.24 * fbm(gs * 5.0 + 2.3, 2)) * (0.72 + 0.45 * max(0.0, L.z));
+        float3 earth = base * 0.75 * (0.84 + 0.32 * fbm(gs * 40.0, 3)) * (0.86 + 0.28 * fbm(gs * 7.0 + 2.3, 3)) * (0.72 + 0.45 * max(0.0, L.z));
         float dist = length(beyond * cam.world.xy) / cam.world.y;
         float wobble = (fbm(gs * 11.0, 3) - 0.5) * 0.05;
         float open = smoothstep(0.004, 0.04, dist + wobble * 0.6);
@@ -1264,6 +1270,13 @@ fragment float4 water_fragment(VertexOut in                              [[stage
         ground = mix(ground, horizonCol, haze * 0.9);
         ground *= 0.92 + 0.14 * paper;
         return float4(ground, 1.0);
+    }
+
+    if (any(wuv < 0.0) || any(wuv > 1.0)) {
+        // Looking under the near bank's own edge: damp dark earth.
+        float paper = fbm(in.uv * p.viewport / 6.0, 2);
+        float3 face = floorTex.sample(smp, clamp(wuv, 0.0, 1.0)).rgb * float3(0.42, 0.40, 0.38);
+        return float4(face * (0.92 + 0.14 * paper), 1.0);
     }
 
     float2 texel = 1.0 / float2(p.size);

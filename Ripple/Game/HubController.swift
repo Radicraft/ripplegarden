@@ -150,6 +150,8 @@ final class HubController: ObservableObject, TouchInput {
         garden.textureSize = { [weak renderer] name in renderer?.textures.size(name) ?? CGSize(width: 1, height: 1) }
         renderer.onFrame = { [weak self] dt in self?.frame(dt: dt) }
         renderer.zoom = 0.9
+        renderer.pitchLimit = 0.8
+        renderer.pitchTarget = min(renderer.pitchTarget, 0.8)
         sound.blendAmbience(["amb_stream": 0.5])
         nextLifeSoundAt = 6
     }
@@ -317,7 +319,7 @@ final class HubController: ObservableObject, TouchInput {
         }
         lips = (1..<seasons.count).map { bottom - stretch * CGFloat($0) }
         entries = seasons.enumerated().map { ($0.element.name, bottom - stretch * CGFloat($0.offset) - 34) }
-        mouthY = bottom + 92
+        mouthY = bottom + 160
         storeNote = CGPoint(x: w * 0.5, y: top - 34)
         sourceMist = []
         for end in [top - 70, bottom + 170] {
@@ -798,9 +800,11 @@ final class HubController: ObservableObject, TouchInput {
                                size: CGSize(width: m.size * breath, height: m.size * breath * t.height / max(1, t.width)),
                                mode: .floater, alpha: alpha, tint: [0.93, 0.97, 1.0, 1], z: 0.38))
         }
-        // Words: a washi chip beside each pool, the season's name on the line
-        // where its stretch is entered, the title at the mouth. Paper on
-        // the water, so they tilt with it and move with the camera.
+        // Words: a level's number set in the interface's own serif under
+        // its pool (the next one to play carries the one vermilion rule),
+        // the season's name on the line where its stretch is entered, the
+        // title at the mouth. No paper: the words ride the water like the
+        // pads and move with the camera.
         if let tex = renderer.textures as TextureCache? {
             for (i, pool) in pools.enumerated() {
                 let idx = Library.levels(in: pool.season).firstIndex { $0.id == pool.level.id } ?? 0
@@ -808,27 +812,20 @@ final class HubController: ObservableObject, TouchInput {
                 let word = idx < words.count ? words[idx] : "\(idx + 1)"
                 let done = i < states.count && states[i].done
                 let unlocked = i < states.count && states[i].unlocked
-                let name = LabelSprites.chip(word, done: done, textures: tex)
-                let at = CGPoint(x: pool.centre.x - pool.radius * 0.3, y: pool.centre.y + pool.radius * 0.95)
-                let tip = Float(sin(Double(pool.centre.y) * 0.013 + Double(idx))) * 0.11
-                paper(Sprite(name, at: at, size: CGSize(width: 86, height: 36), rotation: tip,
-                             mode: .floater, alpha: unlocked ? 1 : 0.55, z: 0.1))
-            }
-            for e in entries {
-                let name = LabelSprites.caption(e.name, points: 26, textures: tex)
+                let state: LabelSprites.MarkerState = done ? .done : (unlocked ? .open : .locked)
+                let name = LabelSprites.marker(word, state: state, textures: tex)
                 let t = tex.size(name)
-                let h: CGFloat = 26 * 1.9
-                over.append(Sprite(name, at: CGPoint(x: viewSize.width / 2, y: e.y), size: CGSize(width: h * t.width / max(1, t.height), height: h),
-                                   mode: .floater, alpha: 1, z: 0.25))
+                let h: CGFloat = 24 * 1.9
+                let at = CGPoint(x: pool.centre.x, y: pool.centre.y + pool.radius * 1.12)
+                over.append(Sprite(name, at: at, size: CGSize(width: h * t.width / max(1, t.height), height: h),
+                                   mode: .floater, alpha: 1, z: 0.12))
             }
             // Beyond autumn, at the source, a note about the seasons to come.
-            let note = LabelSprites.chip("Seasons to come", done: false, textures: tex, wide: true)
-            paper(Sprite(note, at: storeNote, size: CGSize(width: 150, height: 40), rotation: 0.05, mode: .floater, alpha: 1, z: 0.1))
-            let title = LabelSprites.caption("Ripple Garden", points: 32, textures: tex)
-            let ts = tex.size(title)
-            let th: CGFloat = 32 * 1.9
-            over.append(Sprite(title, at: CGPoint(x: viewSize.width / 2, y: mouthY), size: CGSize(width: th * ts.width / max(1, ts.height), height: th),
-                               mode: .floater, alpha: 1, z: 0.3))
+            let note = LabelSprites.caption("Seasons to come", points: 20, textures: tex)
+            let nt = tex.size(note)
+            let nh: CGFloat = 20 * 1.9
+            over.append(Sprite(note, at: storeNote, size: CGSize(width: nh * nt.width / max(1, nt.height), height: nh),
+                               mode: .floater, alpha: 0.9, z: 0.12))
         }
         for s in garden.skaterSprites() { paper(s) }
         for s in garden.petalSprites() { paper(s) }
@@ -855,6 +852,26 @@ final class HubController: ObservableObject, TouchInput {
         }
         over += garden.skySprites()
         over += garden.mistSprites()
+        // The season names and the title go on last, over the mist: each
+        // season's name on the bank at the line where its stretch is
+        // entered, on the side away from the pool nearest the line.
+        if let tex = renderer.textures as TextureCache? {
+            for (si, e) in entries.enumerated() {
+                let name = LabelSprites.caption(e.name, points: 26, textures: tex)
+                let t = tex.size(name)
+                let h: CGFloat = 26 * 1.9
+                let lastPoolRight = si > 0 && ((si - 1) * 6 + 5) % 2 == 1
+                let firstPoolRight = (si * 6) % 2 == 1
+                let x = viewSize.width * ((lastPoolRight || firstPoolRight) ? 0.24 : 0.76)
+                over.append(Sprite(name, at: CGPoint(x: x, y: e.y), size: CGSize(width: h * t.width / max(1, t.height), height: h),
+                                   mode: .floater, alpha: 1, z: 0.4))
+            }
+            let title = LabelSprites.caption("Ripple Garden", points: 32, textures: tex)
+            let ts = tex.size(title)
+            let th: CGFloat = 32 * 1.9
+            over.append(Sprite(title, at: CGPoint(x: viewSize.width / 2, y: mouthY), size: CGSize(width: th * ts.width / max(1, ts.height), height: th),
+                               mode: .floater, alpha: 1, z: 0.4))
+        }
         renderer.submergedSprites = under
         renderer.surfaceSprites = over
         renderer.contactShadows = []

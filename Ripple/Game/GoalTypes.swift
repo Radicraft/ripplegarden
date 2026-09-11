@@ -218,7 +218,7 @@ enum GoalTuning {
     /// A koi counts as called when it has been up within the radius this long.
     static let callHold: Float = 1.5
     /// Reach of a held finger for calling a koi, points.
-    static let callReach: CGFloat = 260
+    static let callReach: CGFloat = 420
     /// A seed roots after resting this long in the shallows.
     static let rootAfter: Float = 1.5
     /// A near miss trembles a target above this fraction of its threshold.

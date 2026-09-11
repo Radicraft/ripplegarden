@@ -356,18 +356,22 @@ enum DemoScript {
             return true
 
         case .callKoi(let at, _):
+            // One finger at a time: a second landing beside a held one
+            // reads as a pair and drops the hold.
+            guard !holding else { return true }
             hold(controller, at: at, size: size, for: 3.0)
             return true
 
         case .koiOpensBud(let bud):
             // A finger held a little below the bud: the koi comes up under it.
+            guard !holding else { return true }
             hold(controller, at: CGPoint(x: bud.x, y: bud.y + 34), size: size, for: 3.0)
             return true
 
         case .leadShoal(let gate):
             // A flick from the shoal through the middle of the gate and on
             // past it; the shoal follows for a few seconds, so not every beat.
-            guard beats % 5 == 0 else { return true }
+            guard beats % 4 == 0 else { return true }
             let mid = CGPoint(x: (gate.0.x + gate.1.x) / 2, y: (gate.0.y + gate.1.y) / 2)
             let from = controller.shoalCentroids.min {
                 hypot($0.x - mid.x, $0.y - mid.y) < hypot($1.x - mid.x, $1.y - mid.y)

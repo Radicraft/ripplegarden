@@ -90,6 +90,9 @@ final class Garden {
     private var nextBedBubbleAt: TimeInterval = 0
     /// The bowl depth at a point, 0...1 (1 deep), set by the controller.
     var depthAt: (CGPoint) -> Float = { _ in 1 }
+    /// The bed alone, without the rocks and pads standing in it: what says
+    /// where the bank is, so nothing is planted on a stone.
+    var groundAt: ((CGPoint) -> Float)?
     /// How much of the pond is still under ice, 0...1. The koi stay deep
     /// until the water opens.
     var iceCover: Float = 0
@@ -508,7 +511,7 @@ final class Garden {
             while r < max(w, h) {
                 let q = CGPoint(x: c.x + dir.dx * r, y: c.y + dir.dy * r)
                 if q.x < 6 || q.y < 6 || q.x > w - 6 || q.y > h - 6 { break }
-                if depthAt(q) < 0.10 { shore = q; break }
+                if (groundAt ?? depthAt)(q) < 0.10 { shore = q; break }
                 r += 5
             }
             guard let edge = shore else { continue }
@@ -2476,8 +2479,8 @@ final class Shoal {
     func follow(path: [CGPoint], now: TimeInterval) {
         guard let start = path.first, let end = path.last, !fish.isEmpty else { return }
         wander = end
-        wanderUntil = now + 5
-        followUntil = now + 5
+        wanderUntil = now + 8
+        followUntil = now + 8
         self.path = path
         pathIndex = 0
         leader = fish.min { a, b in
