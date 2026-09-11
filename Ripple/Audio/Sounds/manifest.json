@@ -259,5 +259,104 @@
     "loop": false,
     "pitchVariation": 0.0,
     "credit": "\"E flat Tibetan singing bowl struck\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_bamboo_knock",
+    "file": "fx_bamboo_knock.m4a",
+    "kind": "effect",
+    "gain": 0.9,
+    "loop": false,
+    "pitchVariation": 0.05,
+    "credit": "\"bamboo\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_water_chime_1",
+    "file": "fx_water_chime_1.m4a",
+    "kind": "effect",
+    "gain": 0.8,
+    "loop": false,
+    "pitchVariation": 0.04,
+    "credit": "\"Droplets in a Cave\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_water_chime_2",
+    "file": "fx_water_chime_2.m4a",
+    "kind": "effect",
+    "gain": 0.85,
+    "loop": false,
+    "pitchVariation": 0.04,
+    "credit": "\"Droplets in a Cave\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_water_chime_3",
+    "file": "fx_water_chime_3.m4a",
+    "kind": "effect",
+    "gain": 0.8,
+    "loop": false,
+    "pitchVariation": 0.04,
+    "credit": "\"Droplets in a Cave\" by DRAGON-STUDIO (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_spill",
+    "file": "fx_spill.m4a",
+    "kind": "effect",
+    "gain": 0.75,
+    "loop": false,
+    "pitchVariation": 0.06,
+    "credit": "\"Pouring Water\" by Universfield (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_leaves_1",
+    "file": "fx_leaves_1.m4a",
+    "kind": "effect",
+    "gain": 0.7,
+    "loop": false,
+    "pitchVariation": 0.08,
+    "credit": "\"Leaves Rustling 2\" by TanwerAman (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_leaves_2",
+    "file": "fx_leaves_2.m4a",
+    "kind": "effect",
+    "gain": 0.7,
+    "loop": false,
+    "pitchVariation": 0.08,
+    "credit": "\"Leaves Rustle 03\" by TanwerAman (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_weed_rustle",
+    "file": "fx_weed_rustle.m4a",
+    "kind": "effect",
+    "gain": 0.7,
+    "loop": false,
+    "pitchVariation": 0.08,
+    "credit": "\"footsteps in the swamp\" by SSPsurvival (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_gulp",
+    "file": "fx_gulp.m4a",
+    "kind": "effect",
+    "gain": 0.6,
+    "loop": false,
+    "pitchVariation": 0.08,
+    "credit": "\"fish in river\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "fx_tremble",
+    "file": "fx_tremble.m4a",
+    "kind": "effect",
+    "gain": 0.5,
+    "loop": false,
+    "pitchVariation": 0.06,
+    "credit": "\"Small wood Block\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
+  },
+  {
+    "name": "amb_night",
+    "file": "amb_night.m4a",
+    "kind": "ambience",
+    "gain": 0.5,
+    "loop": true,
+    "pitchVariation": 0.0,
+    "credit": "\"crickets\" by freesound_community (Pixabay), Pixabay Content License (free for commercial use, no attribution required)"
   }
 ]

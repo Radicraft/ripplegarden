@@ -44,6 +44,17 @@ All files were trimmed, high-passed, loudness-matched and re-encoded to AAC in .
 | `fx_bird_flutter.m4a` | https://pixabay.com/sound-effects/nature-bird-wings-463212/ | Bird Wings | DRAGON-STUDIO | Pixabay Content License (no attribution required) | Wing beats, silence trimmed off the head. |
 | `fx_paper.m4a` | https://pixabay.com/sound-effects/film-special-effects-foley-paper-handling-amp-page-turning-sfx-584919/ | Foley Paper Handling & Page Turning SFX | LensPulse | Pixabay Content License (no attribution required) | One sheet set down, sliced from a foley series. Gain kept low so it stays soft. |
 | `fx_chime_complete.m4a` | https://pixabay.com/sound-effects/musical-e-flat-tibetan-singing-bowl-struck-38746/ | E flat Tibetan singing bowl struck | freesound_community | Pixabay Content License (no attribution required) | One strike with a 1.2 s fade on the tail. Pitch variation zero. |
+| `fx_bamboo_knock.m4a` | https://pixabay.com/sound-effects/film-special-effects-bamboo-79047/ | bamboo | freesound_community | Pixabay Content License (no attribution required) | One hollow bamboo-tube knock sliced from a bamboo chime recording (1.62 to 1.92 s), high-passed at 120 Hz and slowed 1.35x (about 5 semitones down) so the tube reads as a shishi-odoshi rather than a small chime. 0.41 s. |
+| `fx_water_chime_1.m4a` | https://pixabay.com/sound-effects/nature-droplets-in-a-cave-482871/ | Droplets in a Cave | DRAGON-STUDIO | Pixabay Content License (no attribution required) | First drop (0.53 to 1.75 s): the drip, a short gap, then the cave resonance ringing at about 1.8 kHz. The drip transient was limited by up to 20 dB (with 9 dB make-up) so the ring sits 7 to 14 dB under it instead of 26 dB; 150 ms tail fade. No suikinkutsu recording exists on Pixabay; this is the nearest resonant drop. |
+| `fx_water_chime_2.m4a` | https://pixabay.com/sound-effects/nature-droplets-in-a-cave-482871/ | Droplets in a Cave | DRAGON-STUDIO | Pixabay Content License (no attribution required) | Second drop (1.73 to 3.10 s), rings at about 2.6 kHz. Same limiting as chime 1. |
+| `fx_water_chime_3.m4a` | https://pixabay.com/sound-effects/nature-droplets-in-a-cave-482871/ | Droplets in a Cave | DRAGON-STUDIO | Pixabay Content License (no attribution required) | Fifth drop (5.93 s to end), rings at about 1.2 kHz, the lowest of the three. Same limiting as chime 1. |
+| `fx_spill.m4a` | https://pixabay.com/sound-effects/film-special-effects-pouring-water-191999/ | Pouring Water | Universfield | Pixabay Content License (no attribution required) | 0.10 to 2.30 s: a short pour burst settling into a trickle. 3 dB of peak limiting on the burst, 300 ms tail fade. 2.2 s. |
+| `fx_leaves_1.m4a` | https://pixabay.com/sound-effects/nature-leaves-rustling-2-329002/ | Leaves Rustling 2 | TanwerAman | Pixabay Content License (no attribution required) | Whole take, silence trimmed, high-passed at 150 Hz. 1.67 s. |
+| `fx_leaves_2.m4a` | https://pixabay.com/sound-effects/nature-leaves-rustle-03-329001/ | Leaves Rustle 03 | TanwerAman | Pixabay Content License (no attribution required) | Whole take, silence trimmed, high-passed at 150 Hz, 3 dB of peak limiting on the crackle spikes. 1.47 s. Sibling of fx_leaves_1 from the same author. |
+| `fx_weed_rustle.m4a` | https://pixabay.com/sound-effects/nature-footsteps-in-the-swamp-354544/ | footsteps in the swamp | SSPsurvival | Pixabay Content License (no attribution required) | 0.52 s slice (13.80 to 14.32 s) of wet grass shifting in water, chosen because it has no footfall impact in it. High-passed at 120 Hz. No dedicated wet-vegetation recording exists on Pixabay; this is a real recording of the event rather than a layered fake. |
+| `fx_gulp.m4a` | https://pixabay.com/sound-effects/nature-fish-in-river-6114/ | fish in river | freesound_community | Pixabay Content License (no attribution required) | 0.30 s slice (5.02 to 5.32 s) of a fish mouthing at the surface, a soft wet burble. High-passed at 150 Hz. Gain kept low in the manifest so it stays soft. |
+| `fx_tremble.m4a` | https://pixabay.com/sound-effects/musical-small-wood-block-64458/ | Small wood Block | freesound_community | Pixabay Content License (no attribution required) | One isolated wood-block tick (8.15 to 8.42 s), high-passed at 150 Hz. Loudness-matched like the rest of the set, then held soft by the manifest gain (0.5). 0.27 s. |
+| `amb_night.m4a` | https://pixabay.com/sound-effects/nature-crickets-17862/ | crickets | freesound_community | Pixabay Content License (no attribution required) | Distant cricket chorus, no birds, no traffic, no frogs. 80 s window from 2:40 (avoids the clicks at 1:37 and 2:27), high-passed at 80 Hz, 4 s equal-power crossfade loop, 76 s. Source is a 24 kHz stereo mp3 so it rolls off at 11 kHz; the chorus sits at 1.8 kHz so nothing is lost. Raised about 24 dB from a very quiet original. |
 
 ## Attribution text
 
@@ -51,5 +62,16 @@ None is required. If a credits screen is wanted anyway, this line covers the who
 
 > Ambience and sound effects from Pixabay, under the Pixabay Content License.
 > Thanks to AudioPapkin, Alex_Jauk, ArNi_World, DRAGON-STUDIO, Fronbondi_Skegs, Kuzu420,
-> LensPulse, Lesiakower, Mollyroselee, OxidVideos, Soumages, sumaga123, Universfield and
-> the Freesound community.
+> LensPulse, Lesiakower, Mollyroselee, OxidVideos, Soumages, SSPsurvival, sumaga123, TanwerAman,
+> Universfield and the Freesound community.
+
+## Loudness method (2026-09-11 additions)
+
+No LUFS meter is installed on this Mac, so integrated loudness was measured with a Python
+implementation of ITU-R BS.1770-4 (K-weighting pre-filter + RLB high-pass, 400 ms blocks with
+100 ms hop, -70 LUFS absolute gate, -10 LU relative gate). Checked against the earlier files:
+fx_bell reads -19.9, fx_drop_1 -18.6, fx_reeds -18.7, so the meter agrees with the -20 LUFS
+the first batch was matched to. Effects were normalised to -20 LUFS with a -1 dBFS peak
+ceiling (very percussive ones land lower after the ceiling, as fx_wood_knock did); amb_night
+was set to -21 LUFS, between the existing beds (which read -16 to -22 on this meter).
+All files: afconvert to AAC, 48 kHz, effects 96 kbps mono, ambience 160 kbps stereo.

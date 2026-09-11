@@ -107,6 +107,8 @@ struct GoalContext {
     var chime: SuikinkutsuState?
     var pool: DryPoolState?
     var targetWoke: Bool
+    /// Seconds since a wake was last laid for the shoal to follow.
+    var sinceWake: Float = 99
 }
 
 struct ShishiOdoshiState { var fill: Float; var knocks: Int; var tilt: Float }

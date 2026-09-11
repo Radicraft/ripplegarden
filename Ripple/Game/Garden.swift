@@ -593,6 +593,12 @@ final class Garden {
     /// A fast stroke laid a wake. The shoal nearest its start takes it up:
     /// its wander point becomes the far end for five seconds and the fish
     /// nearest the start leads the rest along the line.
+    /// The shoal keeps to the water below this line (larger y) until it is
+    /// led out through the gate; nil frees it. Set after `configure`.
+    func penShoals(below y: CGFloat?) {
+        for s in shoals { s.pen(below: y, in: size) }
+    }
+
     func followWake(path: [CGPoint]) {
         guard let start = path.first, path.count >= 2 else { return }
         let taker = shoals.min { a, b in
@@ -1429,6 +1435,12 @@ final class Koi {
         // Fleeing, the fish turns as hard as its body allows and its speed
         // decays back to a cruise; otherwise it turns lazily.
         let fleeing = now < fleeUntil
+        // A point behind the fish and closer than the arc it can turn in lies
+        // inside its turning circle: turning now would only orbit it. It
+        // swims on straight to open the distance, then comes round head on.
+        if guide != nil, !hovering, abs(diff) > 1.3, reach < Float(width) * 1.1 * 2.4 {
+            diff = 0
+        }
         if let g = guide {
             // Led: slow as the point nears, stop at it. Turning round to a
             // point behind needs way on, so it sweeps round in an arc
@@ -2423,6 +2435,22 @@ final class Shoal {
     /// going for five seconds, and the fish nearest the start leads the rest
     /// along it point by point; the others keep station on the leader the
     /// way they always do.
+    /// Water the shoal keeps to (y beyond this line) until it is led away.
+    private var penLine: CGFloat?
+
+    func pen(below y: CGFloat?, in size: CGSize) {
+        penLine = y
+        guard let y, let c = centroid, c.y < y + 40 else { return }
+        // The pond is new: the shoal starts inside its pocket, unseen.
+        let centre = CGPoint(x: size.width * CGFloat.random(in: 0.3...0.7),
+                             y: min(size.height * 0.85, y + CGFloat.random(in: 120...220)))
+        for f in fish {
+            f.position = CGPoint(x: centre.x + CGFloat.random(in: -40...40), y: centre.y + CGFloat.random(in: -40...40))
+        }
+        wander = centre
+        wanderUntil = 0
+    }
+
     func follow(path: [CGPoint], now: TimeInterval) {
         guard let start = path.first, let end = path.last, !fish.isEmpty else { return }
         wander = end
@@ -2464,9 +2492,12 @@ final class Shoal {
 
     func update(dt: Float, now: TimeInterval, in size: CGSize, rocks: [(centre: CGPoint, radius: CGFloat)], koi: [CGPoint]) {
         if now > wanderUntil {
-            wander = CGPoint(x: size.width * CGFloat.random(in: 0.18...0.82), y: size.height * CGFloat.random(in: 0.18...0.82))
+            // Penned, the shoal wanders only its own pocket.
+            let top = penLine.map { min(0.8, ($0 + 60) / size.height) } ?? 0.18
+            wander = CGPoint(x: size.width * CGFloat.random(in: 0.18...0.82), y: size.height * CGFloat.random(in: top...0.82))
             wanderUntil = now + Double.random(in: 6...14)
         }
+        let penned = now >= followUntil ? penLine : nil
         fright *= exp(-dt * 0.9)
         let n = fish.count
         guard n > 0 else { return }
@@ -2522,6 +2553,8 @@ final class Shoal {
             let margin: Float = 50
             if p.x < margin { steer.x += (margin - p.x) * 3 }
             if p.y < margin { steer.y += (margin - p.y) * 3 }
+            // The pen's line is a bank to a shoal that has not been led out.
+            if let pen = penned, p.y < Float(pen) + margin { steer.y += (Float(pen) + margin - p.y) * 3 }
             if p.x > Float(size.width) - margin { steer.x -= (p.x - (Float(size.width) - margin)) * 3 }
             if p.y > Float(size.height) - margin { steer.y -= (p.y - (Float(size.height) - margin)) * 3 }
             for r in rocks {

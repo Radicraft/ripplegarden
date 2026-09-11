@@ -248,7 +248,7 @@ struct MenuLayer: View {
     /// lighter here so the cleared pond is the thing you look at.
     private var completion: some View {
         GeometryReader { g in
-            Text("The pond is clear.")
+            Text("The pond wakes.")
                 .font(Ink.serif(Size.word))
                 .tracking(1.12)
                 .foregroundStyle(Ink.paper)

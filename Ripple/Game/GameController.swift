@@ -514,6 +514,7 @@ final class GameController: ObservableObject, TouchInput {
         evaluator.reset(count: goals.count)
         instruments = []
         var shy: Shape?
+        var pen: CGFloat?
         for g in goals {
             switch g.kind {
             case .shishiOdoshi(let at, _):
@@ -527,11 +528,16 @@ final class GameController: ObservableObject, TouchInput {
                 instruments.append(DryPool(lip: lip, pool: pool, lipHeight: h))
             case .temptShyKoi(let home):
                 shy = home
+            case .leadShoal(let gate):
+                // The shoal waits in the pocket below the gate until it is led.
+                pen = max(gate.0.y, gate.1.y) + 30
             default:
                 break
             }
         }
         garden.setShyHome(shy)
+        garden.penShoals(below: pen)
+        shoalPenned = pen != nil
         // Sixteen cells over the open middle of the pond, well in from the
         // banks and the things that stand in it.
         calmCells = []
@@ -827,6 +833,11 @@ final class GameController: ObservableObject, TouchInput {
         updateCalm(samples: samples, dt: dt)
         if phase == .playing {
             readGoals(dt: dt)
+            // Once led through, the shoal has the whole pond.
+            if shoalPenned, evaluator.isDone(goals: goals) { if case .leadShoal = $0.kind { return true }; return false } {
+                shoalPenned = false
+                garden.penShoals(below: nil)
+            }
             if evaluator.allDone { finish() }
         }
 
@@ -1392,6 +1403,9 @@ final class GameController: ObservableObject, TouchInput {
 
     /// The goals read the pond, and the pond shows what they have made of
     /// it: the moon coming up as the water lies still.
+    private var lastWakeAt: Float = -99
+    private var shoalPenned = false
+
     private func readGoals(dt: Float) {
         guard !goals.isEmpty else { return }
         let ctx = GoalContext(dt: dt, elapsed: elapsed,
@@ -1409,7 +1423,8 @@ final class GameController: ObservableObject, TouchInput {
                               bamboo: bambooState,
                               chime: chimeState,
                               pool: poolState,
-                              targetWoke: targets.allSatisfy(\.woke))
+                              targetWoke: targets.allSatisfy(\.woke),
+                              sinceWake: elapsed - lastWakeAt)
         evaluator.update(goals: goals, ctx: ctx)
         // Stillness rises with the wait and falls away softly at a touch.
         let still = evaluator.stillness(of: goals)
@@ -2132,7 +2147,10 @@ final class GameController: ObservableObject, TouchInput {
             endCall(id)
             renderer?.touchUp(id: id)
             // The wake is laid: the shoal takes it up.
-            if t.isWake, t.wakePath.count >= 2 { garden.followWake(path: t.wakePath + [point]) }
+            if t.isWake, t.wakePath.count >= 2 {
+                garden.followWake(path: t.wakePath + [point])
+                lastWakeAt = elapsed
+            }
             // A plain tap, and one just landed beside it: a stone drops in.
             let plain = !t.isWake && !t.isSlosh && !t.spent && t.held < Float(GameTuning.doubleTapSeconds)
             let now = CACurrentMediaTime()
@@ -2516,6 +2534,12 @@ final class GoalEvaluator {
 
     /// How far toward its stillness the pond has come, 0...1, over the
     /// stillness goals (1 when there are none and everything else is met).
+    /// Whether the first goal matching `test` is done.
+    func isDone(goals: [GoalSpec], _ test: (GoalSpec) -> Bool) -> Bool {
+        for (i, g) in goals.enumerated() where i < states.count && test(g) { return states[i].done }
+        return false
+    }
+
     func stillness(of goals: [GoalSpec]) -> Float {
         var out: Float = 0
         for (i, g) in goals.enumerated() where i < states.count {
@@ -2566,9 +2590,13 @@ final class GoalEvaluator {
             case .koiOpensBud:
                 st.done = ctx.targetWoke
             case .leadShoal(let gate):
+                // Only a shoal that was led counts: through the gate from
+                // its own side within a few seconds of a wake being laid.
                 let now = ctx.shoalCentroids
-                if st.centroids.count == now.count {
-                    for (k, c) in now.enumerated() where Self.crosses(st.centroids[k], c, gate: gate.0, gate.1) {
+                if st.centroids.count == now.count, ctx.sinceWake < 8 {
+                    let gy = (gate.0.y + gate.1.y) / 2
+                    for (k, c) in now.enumerated()
+                    where st.centroids[k].y > gy && Self.crosses(st.centroids[k], c, gate: gate.0, gate.1) {
                         st.done = true
                     }
                 }
